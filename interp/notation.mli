@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -13,26 +13,18 @@ open Libnames
 open Constrexpr
 open Glob_term
 open Notation_term
+open Notationextern
 
 (** Notations *)
+
+val notation_cat : Libobject.category
 
 val pr_notation : notation -> Pp.t
 (** Printing *)
 
-val notation_entry_eq : notation_entry -> notation_entry -> bool
-(** Equality on [notation_entry]. *)
-
-val notation_entry_level_eq : notation_entry_level -> notation_entry_level -> bool
-(** Equality on [notation_entry_level]. *)
-
-val notation_with_optional_scope_eq : notation_with_optional_scope -> notation_with_optional_scope -> bool
-
-val notation_eq : notation -> notation -> bool
-(** Equality on [notation]. *)
-
-module NotationSet : Set.S with type elt = notation
+module NotationSet : CSet.ExtS with type elt = notation
 module NotationMap : CMap.ExtS with type key = notation and module Set := NotationSet
-module SpecificNotationSet : Set.S with type elt = specific_notation
+module SpecificNotationSet : CSet.ExtS with type elt = specific_notation
 module SpecificNotationMap : CMap.ExtS with type key = specific_notation and module Set := SpecificNotationSet
 
 (** {6 Scopes } *)
@@ -56,15 +48,19 @@ val scope_is_open_in_scopes : scope_name -> scopes -> bool
 val scope_is_open : scope_name -> bool
 
 (** Open scope *)
+val open_scope : scope_name -> unit
+val close_scope : scope_name -> unit
 
-val open_close_scope :
-  (* locality *) bool * (* open *) bool * scope_name -> unit
+(** Return a scope taking either a scope name or delimiter *)
+val normalize_scope : string -> scope_name
 
 (** Extend a list of scopes *)
 val empty_scope_stack : scopes
 val push_scope : scope_name -> scopes -> scopes
 
 val find_scope : scope_name -> scope
+
+val scope_delimiters : scope -> delimiters option
 
 (** Declare delimiters for printing *)
 
@@ -80,6 +76,13 @@ val find_delimiters_scope : ?loc:Loc.t -> delimiters -> scope_name
    must fail with an appropriate error message *)
 
 type notation_location = (DirPath.t * DirPath.t) * string
+(** 1st dirpath: dirpath of the library
+    2nd dirpath: module and section-only dirpath (ie [Lib.current_dirpath true])
+    string: string used to generate the notation
+
+    dirpaths are used for dumpglob, string for printing (pr_notation_info)
+*)
+
 type required_module = full_path * string list
 type rawnum = NumTok.Signed.t
 
@@ -141,16 +144,17 @@ type pos_neg_int63_ty =
   { pos_neg_int63_ty : Names.inductive }
 
 type target_kind =
-  | Int of int_ty (* Coq.Init.Number.int + uint *)
-  | UInt of int_ty (* Coq.Init.Number.uint *)
-  | Z of z_pos_ty (* Coq.Numbers.BinNums.Z and positive *)
-  | Int63 of pos_neg_int63_ty (* Coq.Numbers.Cyclic.Int63.PrimInt63.pos_neg_int63 *)
-  | Float64 (* Coq.Floats.PrimFloat.float *)
-  | Number of number_ty (* Coq.Init.Number.number + uint + int *)
+  | Int of int_ty (* Corelib.Init.Number.int + uint *)
+  | UInt of int_ty (* Corelib.Init.Number.uint *)
+  | Z of z_pos_ty (* Corelib.Numbers.BinNums.Z and positive *)
+  | Int63 of pos_neg_int63_ty (* Corelib.Numbers.Cyclic.Int63.PrimInt63.pos_neg_int63 *)
+  | Float64 (* Corelib.Floats.PrimFloat.float *)
+  | Number of number_ty (* Corelib.Init.Number.number + uint + int *)
 
 type string_target_kind =
   | ListByte
   | Byte
+  | PString
 
 type option_kind = Option | Direct
 type 'target conversion_kind = 'target * option_kind
@@ -170,7 +174,7 @@ type 'target conversion_kind = 'target * option_kind
    [ToPostCheck r] behaves as [ToPostCopy] except in the reverse
    translation which fails if the copied term is not [r].
    When [n] is null, no translation is performed. *)
-type to_post_arg = ToPostCopy | ToPostAs of int | ToPostHole | ToPostCheck of GlobRef.t
+type to_post_arg = ToPostCopy | ToPostAs of int | ToPostHole | ToPostCheck of Constr.t
 type ('target, 'warning) prim_token_notation_obj =
   { to_kind : 'target conversion_kind;
     to_ty : GlobRef.t;
@@ -206,28 +210,14 @@ type prim_token_infos = {
 
 val enable_prim_token_interpretation : prim_token_infos -> unit
 
-(** Compatibility.
-    Avoid the next two functions, they will now store unnecessary
-    objects in the library segment. Instead, combine
-    [register_*_interpretation] and [enable_prim_token_interpretation]
-    (the latter inside a [Mltop.declare_cache_obj]).
-*)
-
-val declare_numeral_interpreter : ?local:bool -> scope_name -> required_module ->
-  Z.t prim_token_interpreter ->
-  glob_constr list * Z.t prim_token_uninterpreter * bool -> unit
-val declare_string_interpreter : ?local:bool -> scope_name -> required_module ->
-  string prim_token_interpreter ->
-  glob_constr list * string prim_token_uninterpreter * bool -> unit
-
 (** Return the [term]/[cases_pattern] bound to a primitive token in a
    given scope context*)
 
 val interp_prim_token : ?loc:Loc.t -> prim_token -> subscopes ->
-  glob_constr * (notation_location * scope_name option)
+  glob_constr * scope_name option
 (* This function returns a glob_const representing a pattern *)
-val interp_prim_token_cases_pattern_expr : ?loc:Loc.t -> (GlobRef.t -> unit) -> prim_token ->
-  subscopes -> glob_constr * (notation_location * scope_name option)
+val interp_prim_token_cases_pattern_expr : ?loc:Loc.t -> (Glob_term.glob_constr -> unit) -> prim_token ->
+  subscopes -> glob_constr * scope_name option
 
 (** Return the primitive token associated to a [term]/[cases_pattern];
    raise [No_match] if no such token *)
@@ -242,45 +232,22 @@ val availability_of_prim_token :
 
 (** {6 Declare and interpret back and forth a notation } *)
 
-(** Binds a notation in a given scope to an interpretation *)
-type interp_rule =
-  | NotationRule of specific_notation
-  | SynDefRule of KerName.t
-
-type notation_use =
-  | OnlyPrinting
-  | OnlyParsing
-  | ParsingAndPrinting
-
-val declare_uninterpretation : ?also_in_cases_pattern:bool -> interp_rule -> interpretation -> unit
+val warning_overridden_name : string
 
 type entry_coercion_kind =
-  | IsEntryCoercion of notation_entry_level
+  | IsEntryCoercion of notation_entry_level * notation_entry_relative_level
   | IsEntryGlobal of string * int
   | IsEntryIdent of string * int
 
 val declare_notation : notation_with_optional_scope * notation ->
   interpretation -> notation_location -> use:notation_use ->
-  also_in_cases_pattern:bool ->
   entry_coercion_kind option ->
-  Deprecation.t option -> unit
+  UserWarn.t option -> unit
 
 
 (** Return the interpretation bound to a notation *)
 val interp_notation : ?loc:Loc.t -> notation -> subscopes ->
       interpretation * (notation_location * scope_name option)
-
-type notation_applicative_status =
-  | AppBoundedNotation of int
-  | AppUnboundedNotation
-  | NotAppNotation
-
-type notation_rule = interp_rule * interpretation * notation_applicative_status
-
-(** Return the possible notations for a given term *)
-val uninterp_notations : 'a glob_constr_g -> notation_rule list
-val uninterp_cases_pattern_notations : 'a cases_pattern_g -> notation_rule list
-val uninterp_ind_pattern_notations : inductive -> notation_rule list
 
 (** Test if a notation is available in the scopes
    context [scopes]; if available, the result is not None; the first
@@ -288,19 +255,46 @@ val uninterp_ind_pattern_notations : inductive -> notation_rule list
 val availability_of_notation : specific_notation -> subscopes ->
   (scope_name option * delimiters option) option
 
-val is_printing_inactive_rule : interp_rule -> interpretation -> bool
+val is_printing_inactive_rule : Notationextern.interp_rule -> interpretation -> bool
+
+type 'a notation_query_pattern_gen = {
+    notation_entry_pattern : notation_entry list;
+    interp_rule_key_pattern : (notation_key, 'a) Util.union option;
+    use_pattern : notation_use;
+    scope_pattern : notation_with_optional_scope option;
+    interpretation_pattern : interpretation option;
+  }
+
+type notation_query_pattern = qualid notation_query_pattern_gen
+
+val toggle_notations : on:bool -> all:bool -> ?verbose:bool -> (glob_constr -> Pp.t) -> notation_query_pattern -> unit
 
 (** {6 Miscellaneous} *)
 
-(** If head is true, also allows applied global references. *)
-val interp_notation_as_global_reference : ?loc:Loc.t -> head:bool -> (GlobRef.t -> bool) ->
-      notation_key -> delimiters option -> GlobRef.t
+(** Take a notation string and turn it into a notation key. eg. ["x +  y"] becomes ["_ + _"]. *)
+val interpret_notation_string : string -> string
+
+type notation_as_reference_error =
+  | AmbiguousNotationAsReference of notation_key
+  | NotationNotReference of Environ.env * Evd.evar_map * notation_key * (notation_key * notation_constr) list
+
+exception NotationAsReferenceError of notation_as_reference_error
+
+(** If head is true, also allows applied global references.
+    Raise NotationAsReferenceError if not resolvable as a global reference *)
+val interp_notation_as_global_reference : ?loc:Loc.t -> head:bool ->
+      (GlobRef.t -> bool) -> notation_key -> delimiters option -> GlobRef.t
+
+(** Same together with the full notation *)
+val interp_notation_as_global_reference_expanded : ?loc:Loc.t -> head:bool ->
+      (GlobRef.t -> bool) -> notation_key -> delimiters option ->
+  (notation_entry * notation_key) * notation_key * notation_with_optional_scope * interpretation * GlobRef.t
 
 (** Declares and looks for scopes associated to arguments of a global ref *)
 val declare_arguments_scope :
-  bool (** true=local *) -> GlobRef.t -> scope_name option list -> unit
+  bool (** true=local *) -> GlobRef.t -> scope_name list list -> unit
 
-val find_arguments_scope : GlobRef.t -> scope_name option list
+val find_arguments_scope : GlobRef.t -> scope_name list list
 
 type scope_class
 
@@ -310,14 +304,17 @@ val scope_class_compare : scope_class -> scope_class -> int
 val subst_scope_class :
   Environ.env -> Mod_subst.substitution -> scope_class -> scope_class option
 
-val declare_scope_class : scope_name -> scope_class -> unit
-val declare_ref_arguments_scope : Evd.evar_map -> GlobRef.t -> unit
+type add_scope_where = AddScopeTop | AddScopeBottom
+(** add new scope at top or bottom of existing stack (default is reset) *)
+val declare_scope_class : (* local: *) bool -> scope_name -> ?where:add_scope_where -> scope_class -> unit
+val declare_ref_arguments_scope : GlobRef.t -> unit
 
-val compute_arguments_scope : Environ.env -> Evd.evar_map -> EConstr.types -> scope_name option list
-val compute_type_scope : Environ.env -> Evd.evar_map -> EConstr.types -> scope_name option
+val compute_arguments_scope : Environ.env -> Evd.evar_map -> EConstr.types -> scope_name list list
+val compute_type_scope : Environ.env -> Evd.evar_map -> EConstr.types -> scope_name list
+val compute_glob_type_scope : 'a Glob_term.glob_constr_g -> scope_name list
 
-(** Get the current scope bound to Sortclass, if it exists *)
-val current_type_scope_name : unit -> scope_name option
+(** Get the current scopes bound to Sortclass *)
+val current_type_scope_names : unit -> scope_name list
 
 val scope_class_of_class : Coercionops.cl_typ -> scope_class
 
@@ -341,6 +338,9 @@ type notation_symbols = {
   symbols : symbol list; (* the decomposition of the notation into terminals and nonterminals *)
 }
 
+val is_prim_token_constant_in_constr :
+  notation_entry * symbol list -> bool
+
 (** Decompose a notation of the form "a 'U' b" together with the lists
     of pairs of recursive variables and the list of all variables
     binding in the notation *)
@@ -355,25 +355,32 @@ val locate_notation : (glob_constr -> Pp.t) -> notation_key ->
 
 val pr_visibility: (glob_constr -> Pp.t) -> scope_name option -> Pp.t
 
-val make_notation_entry_level : notation_entry -> entry_level -> notation_entry_level
+(** Coercions between entries *)
+
+val is_coercion : notation_entry_level -> notation_entry_relative_level -> bool
+  (** For a rule of the form
+      "Notation string := x (in some-entry, x at some-relative-entry)",
+      tell if going from some-entry to some-relative-entry is coercing *)
+
+val declare_entry_coercion : specific_notation -> notation_entry_level -> notation_entry_relative_level -> unit
+  (** Add a coercion from some-entry to some-relative-entry *)
 
 type entry_coercion = (notation_with_optional_scope * notation) list
-val declare_entry_coercion : specific_notation -> entry_level option -> notation_entry_level -> unit
-val availability_of_entry_coercion : notation_entry_level -> notation_entry_level -> entry_coercion option
+val availability_of_entry_coercion : ?non_included:bool -> notation_entry_relative_level -> notation_entry_level -> entry_coercion option
+  (** Return a coercion path from some-relative-entry to some-entry if there is one *)
+
+(** Special properties of entries *)
 
 val declare_custom_entry_has_global : string -> int -> unit
 val declare_custom_entry_has_ident : string -> int -> unit
 
-val entry_has_global : notation_entry_level -> bool
-val entry_has_ident : notation_entry_level -> bool
+val entry_has_global : notation_entry_relative_level -> bool
+val entry_has_ident : notation_entry_relative_level -> bool
 
-(** Dealing with precedences *)
+val app_level : int
 
-type level = notation_entry * entry_level * entry_relative_level list
-  (* first argument is InCustomEntry s for custom entries *)
-
-val level_eq : level -> level -> bool
-val entry_relative_level_eq : entry_relative_level -> entry_relative_level -> bool
+val prec_less : entry_level -> entry_relative_level -> bool
+val may_capture_cont_after : entry_level option -> entry_relative_level -> bool
 
 (** {6 Declare and test the level of a (possibly uninterpreted) notation } *)
 

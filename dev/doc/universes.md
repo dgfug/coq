@@ -2,11 +2,11 @@ Notes on universe polymorphism
 ------------------------------
 
 The implementation of universe polymorphism introduces a few changes
-to the API of Coq. First and foremost, the term language changes, as
+to the API of Rocq. First and foremost, the term language changes, as
 global references now carry a universe level substitution:
 
 ~~~ocaml
-type 'a puniverses = 'a * Univ.Instance.t
+type 'a puniverses = 'a * UVars.Instance.t
 type pconstant = constant puniverses
 type pinductive = inductive puniverses
 type pconstructor = constructor puniverses
@@ -35,7 +35,7 @@ universes etc.. Structures are hashconsed (with a hack to take care
 of the fact that deserialization breaks sharing).
 
   Definitions (constants, inductives) now carry around not only
-constraints but also the universes they introduced (a Univ.UContext.t).
+constraints but also the universes they introduced (a UVars.UContext.t).
 There is another kind of contexts `Univ.ContextSet.t`, the latter has
 a set of universes, while the former has serialized the levels in an
 array, and is used for polymorphic objects. Both have "reified"
@@ -153,7 +153,7 @@ constr might get instantiated instead of generating equality constraints
 (Evd.univ_rigid does that).
 
 On this issue, I recommend forcing commands to take `global_reference`s
-only, the user can declare his specialized terms used as hints as
+only. Users can declare their specialized terms used as hints as
 constants and this is cleaner. Alas, backward-compatibility-wise,
 this is the only solution I found. In the case of global_references
 only, it's just a matter of using `Evd.fresh_global` /

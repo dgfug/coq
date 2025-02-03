@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,14 +8,18 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
+open Names
 open Environ
 open Entries
 open Constrexpr
+open Libnames
 
 (** Module internalization errors *)
 
 type module_internalization_error =
-  | NotAModuleNorModtype of string
+  | NotAModuleNorModtype of qualid
+  | NotAModuleType of qualid
+  | NotAModule of qualid
   | IncorrectWithInModule
   | IncorrectModuleApplication
 
@@ -30,5 +34,12 @@ exception ModuleInternalizationError of module_internalization_error
 
 type module_kind = Module | ModType | ModAny
 
+type module_struct_expr = (universe_decl_expr option * constr_expr) Declarations.module_alg_expr
+
+(** Module internalization, i.e. from AST to module expression *)
+val intern_module_ast :
+  module_kind -> module_ast -> module_struct_expr * ModPath.t * module_kind
+
+(** Module interpretation, i.e. from module expression to typed module entry *)
 val interp_module_ast :
-  env -> module_kind -> module_ast -> module_struct_entry * module_kind * Univ.ContextSet.t
+  env -> module_kind -> ModPath.t -> module_struct_expr -> module_struct_entry * Univ.ContextSet.t

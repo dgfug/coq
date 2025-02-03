@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -87,8 +87,8 @@ val replace_var_by_term :
    [is_free_in id rt] checks if [id] is a free variable in [rt]
 *)
 val is_free_in : Id.t -> glob_constr -> bool
-val are_unifiable : cases_pattern -> cases_pattern -> bool
-val eq_cases_pattern : cases_pattern -> cases_pattern -> bool
+val are_unifiable : Environ.env -> cases_pattern -> cases_pattern -> bool
+val eq_cases_pattern : Environ.env -> cases_pattern -> cases_pattern -> bool
 
 (*
    ids_of_pat : cases_pattern -> Id.Set.t
@@ -100,8 +100,7 @@ val expand_as : glob_constr -> glob_constr
 (* [resolve_and_replace_implicits ?expected_type env sigma rt] solves implicits of [rt] w.r.t. [env] and [sigma] and then replace them by their solution
  *)
 val resolve_and_replace_implicits :
-     ?flags:Pretyping.inference_flags
-  -> ?expected_type:Pretyping.typing_constraint
+     EConstr.types
   -> Environ.env
   -> Evd.evar_map
   -> glob_constr

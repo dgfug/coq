@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -17,7 +17,7 @@ open Termops
 open EConstr
 open Inductiveops
 open Constr_matching
-open Coqlib
+open Rocqlib
 open Declarations
 open Context.Rel.Declaration
 
@@ -44,7 +44,7 @@ let meta2 = mkmeta 2
 let match_with_non_recursive_type env sigma t =
   match EConstr.kind sigma t with
     | App _ ->
-        let (hdapp,args) = decompose_app sigma t in
+        let (hdapp,args) = decompose_app_list sigma t in
         (match EConstr.kind sigma hdapp with
            | Ind (ind,u) ->
                if (Environ.lookup_mind (fst ind) env).mind_finite == CoFinite then
@@ -85,8 +85,6 @@ let is_lax_conjunction = function
 | Some false -> true
 | _ -> false
 
-let prod_assum sigma t = fst (decompose_prod_assum sigma t)
-
 (* whd_beta normalize the types of arguments in a product *)
 let rec whd_beta_prod env sigma c = match EConstr.kind sigma c with
   | Prod (n,t,c) -> mkProd (n,Reductionops.whd_beta env sigma t,whd_beta_prod env sigma c)
@@ -94,7 +92,7 @@ let rec whd_beta_prod env sigma c = match EConstr.kind sigma c with
   | _ -> c
 
 let match_with_one_constructor env sigma style onlybinary allow_rec t =
-  let (hdapp,args) = decompose_app sigma t in
+  let (hdapp,args) = decompose_app_list sigma t in
   let res = match EConstr.kind sigma hdapp with
   | Ind ind ->
       let (mib,mip) = Inductive.lookup_mind_specif env (fst ind) in
@@ -120,8 +118,8 @@ let match_with_one_constructor env sigma style onlybinary allow_rec t =
           let ctx, cty = mip.mind_nf_lc.(0) in
           let cty = EConstr.of_constr (Term.it_mkProd_or_LetIn cty ctx) in
           let ctyp = whd_beta_prod env sigma
-            (Termops.prod_applist_assum sigma (Context.Rel.length mib.mind_params_ctxt) cty args) in
-          let cargs = List.map RelDecl.get_type (prod_assum sigma ctyp) in
+            (Termops.prod_applist_decls sigma (Context.Rel.length mib.mind_params_ctxt) cty args) in
+          let cargs = List.map RelDecl.get_type (EConstr.prod_decls sigma ctyp) in
           if not (is_lax_conjunction style) || has_nodep_prod env sigma ctyp then
             (* Record or non strict conjunction *)
             Some (hdapp,List.rev cargs)
@@ -150,10 +148,9 @@ let is_record env sigma t =
 let match_with_tuple env sigma t =
   let t = match_with_one_constructor env sigma None false true t in
   Option.map (fun (hd,l) ->
-    let ind = destInd sigma hd in
-    let ind = on_snd (fun u -> EInstance.kind sigma u) ind in
-    let (mib,mip) = Global.lookup_pinductive ind in
-    let isrec = mis_is_recursive (fst ind,mib,mip) in
+    let ind, _ = destInd sigma hd in
+    let (mib,mip) = Inductive.lookup_mind_specif env ind in
+    let isrec = mis_is_recursive (ind,mib,mip) in
     (hd,l,isrec)) t
 
 let is_tuple env sigma t =
@@ -173,11 +170,11 @@ let test_strict_disjunction (mib, mip) =
   Array.for_all_i check 0 mip.mind_nf_lc
 
 let match_with_disjunction ?(strict=false) ?(onlybinary=false) env sigma t =
-  let (hdapp,args) = decompose_app sigma t in
+  let (hdapp,args) = decompose_app_list sigma t in
   let res = match EConstr.kind sigma hdapp with
   | Ind (ind,u)  ->
       let car = constructors_nrealargs env ind in
-      let (mib,mip) = Global.lookup_inductive ind in
+      let (mib,mip) = Inductive.lookup_mind_specif env ind in
       if Array.for_all (fun ar -> Int.equal ar 1) car
       && not (mis_is_recursive (ind,mib,mip))
       && (Int.equal mip.mind_nrealargs 0)
@@ -256,37 +253,30 @@ type equation_kind =
 
 exception NoEquationFound
 
-open Glob_term
-open Evar_kinds
+open Pattern
 
-let mkPattern c = snd (Patternops.pattern_of_glob_constr c)
-let mkGApp f args = DAst.make @@ GApp (f, args)
-let mkGHole = DAst.make @@
-  GHole (QuestionMark {
-        Evar_kinds.default_question_mark with Evar_kinds.qm_obligation=Define false;
-  }, Namegen.IntroAnonymous, None)
-let mkGProd id c1 c2 = DAst.make @@
-  GProd (Name (Id.of_string id), Explicit, c1, c2)
-let mkGArrow c1 c2 = DAst.make @@
-  GProd (Anonymous, Explicit, c1, c2)
-let mkGVar id = DAst.make @@ GVar (Id.of_string id)
-let mkGPatVar id = DAst.make @@ GPatVar(Evar_kinds.FirstOrderPatVar (Id.of_string id))
-let mkGRef r = DAst.make @@ GRef (Lazy.force r, None)
-let mkGAppRef r args = mkGApp (mkGRef r) args
+let mkPRel n = PRel n
+let mkPApp f args = PApp (f, Array.of_list args)
+let mkPHole = PMeta None
+let mkPProd id c1 c2 = PProd (Name (Id.of_string id), c1, c2)
+let mkPArrow c1 c2 = PProd (Anonymous, c1, c2)
+let mkPPatVar id = PMeta (Some (Id.of_string id))
+let mkPRef r = PRef (lib_ref r)
+let mkPAppRef r args = mkPApp (mkPRef r) args
 
 (** forall x : _, _ x x *)
-let coq_refl_leibniz1_pattern =
-  mkPattern (mkGProd "x" mkGHole (mkGApp mkGHole [mkGVar "x"; mkGVar "x";]))
+let rocq_refl_leibniz1_pattern =
+  mkPProd "x" mkPHole (mkPApp mkPHole [mkPRel 1; mkPRel 1])
 
 (** forall A:_, forall x:A, _ A x x *)
-let coq_refl_leibniz2_pattern =
-  mkPattern (mkGProd "A" mkGHole (mkGProd "x" (mkGVar "A")
-    (mkGApp mkGHole [mkGVar "A"; mkGVar "x"; mkGVar "x";])))
+let rocq_refl_leibniz2_pattern =
+  mkPProd "A" mkPHole (mkPProd "x" (mkPRel 1)
+    (mkPApp mkPHole [mkPRel 2; mkPRel 1; mkPRel 1]))
 
 (** forall A:_, forall x:A, _ A x A x *)
-let coq_refl_jm_pattern       =
-  mkPattern (mkGProd "A" mkGHole (mkGProd "x" (mkGVar "A")
-    (mkGApp mkGHole [mkGVar "A"; mkGVar "x"; mkGVar "A"; mkGVar "x";])))
+let rocq_refl_jm_pattern       =
+  mkPProd "A" mkPHole (mkPProd "x" (mkPRel 1)
+    (mkPApp mkPHole [mkPRel 2; mkPRel 1; mkPRel 2; mkPRel 1]))
 
 let match_with_equation env sigma t =
   if not (isApp sigma t) then raise NoEquationFound;
@@ -294,27 +284,28 @@ let match_with_equation env sigma t =
   match EConstr.kind sigma hdapp with
   | Ind (ind,u) ->
     (try
-       if Coqlib.check_ind_ref "core.eq.type" ind then
-         Some (build_coq_eq_data()),hdapp,
+      let gr = GlobRef.IndRef ind in
+       if Rocqlib.check_ref "core.eq.type" gr then
+         Some (build_rocq_eq_data()),hdapp,
          PolymorphicLeibnizEq(args.(0),args.(1),args.(2))
-       else if Coqlib.check_ind_ref "core.identity.type" ind then
-         Some (build_coq_identity_data()),hdapp,
+       else if Rocqlib.check_ref "core.identity.type" gr then
+         Some (build_rocq_identity_data()),hdapp,
          PolymorphicLeibnizEq(args.(0),args.(1),args.(2))
-       else if Coqlib.check_ind_ref "core.JMeq.type" ind then
-         Some (build_coq_jmeq_data()),hdapp,
+       else if Rocqlib.check_ref "core.JMeq.type" gr then
+         Some (build_rocq_jmeq_data()),hdapp,
          HeterogenousEq(args.(0),args.(1),args.(2),args.(3))
        else
-         let (mib,mip) = Global.lookup_inductive ind in
+         let (mib,mip) = Inductive.lookup_mind_specif env ind in
          let constr_types = mip.mind_nf_lc in
          let nconstr = Array.length mip.mind_consnames in
          if Int.equal nconstr 1 then
            let (ctx, cty) = constr_types.(0) in
            let cty = EConstr.of_constr (Term.it_mkProd_or_LetIn cty ctx) in
-           if is_matching env sigma coq_refl_leibniz1_pattern cty then
+           if is_matching env sigma rocq_refl_leibniz1_pattern cty then
              None, hdapp, MonomorphicLeibnizEq(args.(0),args.(1))
-           else if is_matching env sigma coq_refl_leibniz2_pattern cty then
+           else if is_matching env sigma rocq_refl_leibniz2_pattern cty then
              None, hdapp, PolymorphicLeibnizEq(args.(0),args.(1),args.(2))
-           else if is_matching env sigma coq_refl_jm_pattern cty then
+           else if is_matching env sigma rocq_refl_jm_pattern cty then
              None, hdapp, HeterogenousEq(args.(0),args.(1),args.(2),args.(3))
            else raise NoEquationFound
          else raise NoEquationFound
@@ -327,16 +318,15 @@ let match_with_equation env sigma t =
    True/unit which is the degenerate equality type (isomorphic to ()=());
    in particular, True/unit are provable by "reflexivity" *)
 
-let is_inductive_equality ind =
-  let (mib,mip) = Global.lookup_inductive ind in
+let is_inductive_equality env ind =
+  let (mib,mip) = Inductive.lookup_mind_specif env ind in
   let nconstr = Array.length mip.mind_consnames in
-  let env = Global.env () in
   Int.equal nconstr 1 && Int.equal (constructor_nrealargs env (ind,1)) 0
 
 let match_with_equality_type env sigma t =
-  let (hdapp,args) = decompose_app sigma t in
+  let (hdapp,args) = decompose_app_list sigma t in
   match EConstr.kind sigma hdapp with
-  | Ind (ind,_) when is_inductive_equality ind -> Some (hdapp,args)
+  | Ind (ind,_) when is_inductive_equality env ind -> Some (hdapp,args)
   | _ -> None
 
 let is_equality_type env sigma t = Option.has_some (match_with_equality_type env sigma t)
@@ -344,10 +334,10 @@ let is_equality_type env sigma t = Option.has_some (match_with_equality_type env
 (* Arrows/Implication/Negation *)
 
 (** X1 -> X2 **)
-let coq_arrow_pattern = mkPattern (mkGArrow (mkGPatVar "X1") (mkGPatVar "X2"))
+let rocq_arrow_pattern = mkPArrow (mkPPatVar "X1") (mkPPatVar "X2")
 
 let match_arrow_pattern env sigma t =
-  let result = matches env sigma coq_arrow_pattern t in
+  let result = matches env sigma rocq_arrow_pattern t in
   match Id.Map.bindings result with
     | [(m1,arg);(m2,mind)] ->
       assert (Id.equal m1 meta1 && Id.equal m2 meta2); (arg, mind)
@@ -378,7 +368,7 @@ let match_with_forall_term env sigma c =
 let is_forall_term env sigma c = Option.has_some (match_with_forall_term env sigma c)
 
 let match_with_nodep_ind env sigma t =
-  let (hdapp,args) = decompose_app sigma t in
+  let (hdapp,args) = decompose_app_list sigma t in
   match EConstr.kind sigma hdapp with
   | Ind (ind, _)  ->
      let (mib,mip) = Inductive.lookup_mind_specif env ind in
@@ -398,10 +388,10 @@ let match_with_nodep_ind env sigma t =
 let is_nodep_ind env sigma t = Option.has_some (match_with_nodep_ind env sigma t)
 
 let match_with_sigma_type env sigma t =
-  let (hdapp,args) = decompose_app sigma t in
+  let (hdapp,args) = decompose_app_list sigma t in
   match EConstr.kind sigma hdapp with
   | Ind (ind, _) ->
-     let (mib,mip) = Global.lookup_inductive ind in
+     let (mib,mip) = Inductive.lookup_mind_specif env ind in
      if Int.equal (Array.length (mib.mind_packets)) 1
         && (Int.equal mip.mind_nrealargs 0)
         && (Int.equal (Array.length mip.mind_consnames)1)
@@ -427,17 +417,17 @@ let rec first_match matcher = function
 
 (*** Equality *)
 
-let match_eq sigma eqn (ref, hetero) =
+let match_eq env sigma eqn (ref, hetero) =
   let ref =
     try Lazy.force ref
     with e when CErrors.noncritical e -> raise PatternMatchingFailure
   in
   match EConstr.kind sigma eqn with
   | App (c, [|t; x; y|]) ->
-    if not hetero && isRefX sigma ref c then PolymorphicLeibnizEq (t, x, y)
+    if not hetero && isRefX env sigma ref c then PolymorphicLeibnizEq (t, x, y)
     else raise PatternMatchingFailure
   | App (c, [|t; x; t'; x'|]) ->
-    if hetero && isRefX sigma ref c then HeterogenousEq (t, x, t', x')
+    if hetero && isRefX env sigma ref c then HeterogenousEq (t, x, t', x')
     else raise PatternMatchingFailure
   | _ -> raise PatternMatchingFailure
 
@@ -445,12 +435,12 @@ let no_check () = true
 let check_jmeq_loaded () = has_ref "core.JMeq.type"
 
 let equalities =
-  [(lazy(lib_ref "core.eq.type"), false), no_check, build_coq_eq_data;
-   (lazy(lib_ref "core.JMeq.type"), true), check_jmeq_loaded, build_coq_jmeq_data;
-   (lazy(lib_ref "core.identity.type"), false), no_check, build_coq_identity_data]
+  [(lazy(lib_ref "core.eq.type"), false), no_check, build_rocq_eq_data;
+   (lazy(lib_ref "core.JMeq.type"), true), check_jmeq_loaded, build_rocq_jmeq_data;
+   (lazy(lib_ref "core.identity.type"), false), no_check, build_rocq_identity_data]
 
-let find_eq_data sigma eqn = (* fails with PatternMatchingFailure *)
-  let d,k = first_match (match_eq sigma eqn) equalities in
+let find_eq_data env sigma eqn = (* fails with PatternMatchingFailure *)
+  let d,k = first_match (match_eq env sigma eqn) equalities in
   let hd,u = destInd sigma (fst (destApp sigma eqn)) in
     d,u,k
 
@@ -463,13 +453,13 @@ let extract_eq_args env sigma = function
       else raise PatternMatchingFailure
 
 let find_eq_data_decompose env sigma eqn =
-  let (lbeq,u,eq_args) = find_eq_data sigma eqn in
+  let (lbeq,u,eq_args) = find_eq_data env sigma eqn in
   (lbeq,u,extract_eq_args env sigma eq_args)
 
 let find_this_eq_data_decompose env sigma eqn =
   let (lbeq,u,eq_args) =
     try (*first_match (match_eq eqn) inversible_equalities*)
-      find_eq_data sigma eqn
+      find_eq_data env sigma eqn
     with PatternMatchingFailure ->
       user_err  (str "No primitive equality found.") in
   let eq_args =
@@ -480,27 +470,27 @@ let find_this_eq_data_decompose env sigma eqn =
 
 (*** Sigma-types *)
 
-let match_sigma env sigma ex =
+let match_sigma_data env sigma ex =
   match EConstr.kind sigma ex with
-  | App (f, [| a; p; car; cdr |]) when isRefX sigma (lib_ref "core.sig.intro") f ->
+  | App (f, [| a; p; car; cdr |]) when is_lib_ref env sigma "core.sig.intro" f ->
       build_sigma (), (snd (destConstruct sigma f), a, p, car, cdr)
-  | App (f, [| a; p; car; cdr |]) when isRefX sigma (lib_ref "core.sigT.intro") f ->
+  | App (f, [| a; p; car; cdr |]) when is_lib_ref env sigma "core.sigT.intro" f ->
     build_sigma_type (), (snd (destConstruct sigma f), a, p, car, cdr)
   | _ -> raise PatternMatchingFailure
 
 let find_sigma_data_decompose env ex = (* fails with PatternMatchingFailure *)
-  match_sigma env ex
+  match_sigma_data env ex
 
 (* Pattern "(sig ?1 ?2)" *)
-let coq_sig_pattern =
-  lazy (mkPattern (mkGAppRef (lazy (lib_ref "core.sig.type")) [mkGPatVar "X1"; mkGPatVar "X2"]))
+let rocq_sig_pattern =
+  lazy (mkPAppRef "core.sig.type" [mkPPatVar "X1"; mkPPatVar "X2"])
 
 let match_sigma env sigma t =
-  match Id.Map.bindings (matches env sigma (Lazy.force coq_sig_pattern) t) with
+  match Id.Map.bindings (matches env sigma (Lazy.force rocq_sig_pattern) t) with
     | [(_,a); (_,p)] -> (a,p)
     | _ -> anomaly (Pp.str "Unexpected pattern.")
 
-let is_matching_sigma env sigma t = is_matching env sigma (Lazy.force coq_sig_pattern) t
+let is_matching_sigma env sigma t = is_matching env sigma (Lazy.force rocq_sig_pattern) t
 
 (*** Decidable equalities *)
 
@@ -509,50 +499,64 @@ let is_matching_sigma env sigma t = is_matching env sigma (Lazy.force coq_sig_pa
 (* Pattern "{<?1>x=y}+{~(<?1>x=y)}" *)
 (* i.e. "(sumbool (eq ?1 x y) ~(eq ?1 x y))" *)
 
-let coq_eqdec ~sum ~rev =
+let rocq_eqdec ~sum ~rev =
   lazy (
-    let eqn = mkGAppRef (lazy (lib_ref "core.eq.type")) (List.map mkGPatVar ["X1"; "X2"; "X3"]) in
-    let args = [eqn; mkGAppRef (lazy (lib_ref "core.not.type")) [eqn]] in
+    let eqn = mkPAppRef "core.eq.type" (List.map mkPPatVar ["X1"; "X2"; "X3"]) in
+    let args = [eqn; mkPAppRef "core.not.type" [eqn]] in
     let args = if rev then List.rev args else args in
-    mkPattern (mkGAppRef sum args)
+    mkPAppRef sum args
   )
 
-let sumbool_type = lazy (lib_ref "core.sumbool.type")
-let or_type = lazy (lib_ref "core.or.type")
+let sumbool_type = "core.sumbool.type"
+let or_type = "core.or.type"
 
 (** [{ ?X2 = ?X3 :> ?X1 } + { ~ ?X2 = ?X3 :> ?X1 }] *)
-let coq_eqdec_inf_pattern = coq_eqdec ~sum:sumbool_type ~rev:false
+let rocq_eqdec_inf_pattern = rocq_eqdec ~sum:sumbool_type ~rev:false
 
 (** [{ ~ ?X2 = ?X3 :> ?X1 } + { ?X2 = ?X3 :> ?X1 }] *)
-let coq_eqdec_inf_rev_pattern = coq_eqdec ~sum:sumbool_type ~rev:true
+let rocq_eqdec_inf_rev_pattern = rocq_eqdec ~sum:sumbool_type ~rev:true
 
-(** %coq_or_ref (?X2 = ?X3 :> ?X1) (~ ?X2 = ?X3 :> ?X1) *)
-let coq_eqdec_pattern = coq_eqdec ~sum:or_type ~rev:false
+(** %rocq_or_ref (?X2 = ?X3 :> ?X1) (~ ?X2 = ?X3 :> ?X1) *)
+let rocq_eqdec_pattern = rocq_eqdec ~sum:or_type ~rev:false
 
-(** %coq_or_ref (~ ?X2 = ?X3 :> ?X1) (?X2 = ?X3 :> ?X1) *)
-let coq_eqdec_rev_pattern = coq_eqdec ~sum:or_type ~rev:true
+(** %rocq_or_ref (~ ?X2 = ?X3 :> ?X1) (?X2 = ?X3 :> ?X1) *)
+let rocq_eqdec_rev_pattern = rocq_eqdec ~sum:or_type ~rev:true
 
 let match_eqdec env sigma t =
   let eqonleft,op,subst =
-    try true,sumbool_type,matches env sigma (Lazy.force coq_eqdec_inf_pattern) t
+    try true,sumbool_type,matches env sigma (Lazy.force rocq_eqdec_inf_pattern) t
     with PatternMatchingFailure ->
-    try false,sumbool_type,matches env sigma (Lazy.force coq_eqdec_inf_rev_pattern) t
+    try false,sumbool_type,matches env sigma (Lazy.force rocq_eqdec_inf_rev_pattern) t
     with PatternMatchingFailure ->
-    try true,or_type,matches env sigma (Lazy.force coq_eqdec_pattern) t
+    try true,or_type,matches env sigma (Lazy.force rocq_eqdec_pattern) t
     with PatternMatchingFailure ->
-        false,or_type,matches env sigma (Lazy.force coq_eqdec_rev_pattern) t in
+        false,or_type,matches env sigma (Lazy.force rocq_eqdec_rev_pattern) t in
   match Id.Map.bindings subst with
   | [(_,typ);(_,c1);(_,c2)] ->
-      eqonleft, Lazy.force op, c1, c2, typ
+      eqonleft, lib_ref op, c1, c2, typ
   | _ -> anomaly (Pp.str "Unexpected pattern.")
 
 (* Patterns "~ ?" and "? -> False" *)
-let coq_not_pattern = lazy (mkPattern (mkGAppRef (lazy (lib_ref "core.not.type")) [mkGHole]))
-let coq_imp_False_pattern = lazy (mkPattern (mkGArrow mkGHole (mkGRef (lazy (lib_ref "core.False.type")))))
+let rocq_not_pattern = lazy (mkPAppRef "core.not.type" [mkPHole])
+let rocq_imp_False_pattern = lazy (mkPArrow mkPHole (mkPRef "core.False.type"))
 
-let is_matching_not env sigma t = is_matching env sigma (Lazy.force coq_not_pattern) t
-let is_matching_imp_False env sigma t = is_matching env sigma (Lazy.force coq_imp_False_pattern) t
+let is_matching_not env sigma t = is_matching env sigma (Lazy.force rocq_not_pattern) t
+let is_matching_imp_False env sigma t = is_matching env sigma (Lazy.force rocq_imp_False_pattern) t
 
 (* Remark: patterns that have references to the standard library must
    be evaluated lazily (i.e. at the time they are used, not a the time
    coqtop starts) *)
+
+let is_homogeneous_relation ?loc env sigma rel =
+  let relty = Retyping.get_type_of env sigma rel in
+  let error () =
+    user_err ?loc
+      (Printer.pr_econstr_env env sigma rel ++ str " is not a homogeneous binary relation.")
+  in
+  let ctx, ar =
+    try Reductionops.whd_decompose_prod_n env sigma 2 relty
+    with Invalid_argument _ -> error () in
+  match ctx, EConstr.kind sigma ar with
+  | [(_,t); (_,u)], Sort s
+    when Sorts.is_prop (ESorts.kind sigma s) && Reductionops.is_conv env sigma t u -> t
+  | _, _ -> error ()

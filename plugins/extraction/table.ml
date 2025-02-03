@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -35,17 +35,19 @@ let occur_kn_in_ref kn = let open GlobRef in function
   | ConstructRef ((kn',_),_) -> MutInd.CanOrd.equal kn kn'
   | ConstRef _ | VarRef _ -> false
 
+(* Return the "canonical" name used for declaring a name *)
+
 let repr_of_r = let open GlobRef in function
-  | ConstRef kn -> Constant.repr2 kn
+  | ConstRef kn -> Constant.user kn
   | IndRef (kn,_)
-  | ConstructRef ((kn,_),_) -> MutInd.repr2 kn
-  | VarRef v -> KerName.repr (Lib.make_kn v)
+  | ConstructRef ((kn,_),_) -> MutInd.user kn
+  | VarRef v -> Lib.make_kn v
 
 let modpath_of_r r =
-  let mp,_ = repr_of_r r in mp
+  KerName.modpath (repr_of_r r)
 
 let label_of_r r =
-  let _,l = repr_of_r r in l
+  KerName.label (repr_of_r r)
 
 let rec base_mp = function
   | MPdot (mp,l) -> base_mp mp
@@ -59,14 +61,15 @@ let raw_string_of_modfile = function
   | MPfile f -> String.capitalize_ascii (Id.to_string (List.hd (DirPath.repr f)))
   | _ -> assert false
 
-let is_toplevel mp =
-  ModPath.equal mp ModPath.initial || ModPath.equal mp (Lib.current_mp ())
+let extraction_current_mp () = fst (Safe_typing.flatten_env (Global.safe_env ()))
+
+let is_toplevel mp = ModPath.equal mp (extraction_current_mp ())
 
 let at_toplevel mp =
   is_modfile mp || is_toplevel mp
 
 let mp_length mp =
-  let mp0 = Lib.current_mp () in
+  let mp0 = extraction_current_mp () in
   let rec len = function
     | mp when ModPath.equal mp mp0 -> 1
     | MPdot (mp,_) -> 1 + len mp
@@ -88,15 +91,13 @@ let common_prefix_from_list mp0 mpl =
     | mp :: l -> if MPset.mem mp prefixes then Some mp else f l
   in f mpl
 
-let rec parse_labels2 ll mp1 = function
-  | mp when ModPath.equal mp1 mp -> mp,ll
-  | MPdot (mp,l) -> parse_labels2 (l::ll) mp1 mp
+let rec parse_labels2 ll = function
+  | MPdot (mp,l) -> parse_labels2 (l::ll) mp
   | mp -> mp,ll
 
 let labels_of_ref r =
-  let mp_top = Lib.current_mp () in
-  let mp,l = repr_of_r r in
-  parse_labels2 [l] mp_top mp
+  let mp,l = KerName.repr (repr_of_r r) in
+  parse_labels2 [l] mp
 
 
 (*S The main tables: constants, inductives, records, ... *)
@@ -219,10 +220,13 @@ let projection_info r = GlobRef.Map.find r !projs
 
 let info_axioms = ref Refset'.empty
 let log_axioms = ref Refset'.empty
-let init_axioms () = info_axioms := Refset'.empty; log_axioms := Refset'.empty
+let symbols = ref Refmap'.empty
+let init_axioms () = info_axioms := Refset'.empty; log_axioms := Refset'.empty; symbols := Refmap'.empty
 let add_info_axiom r = info_axioms := Refset'.add r !info_axioms
 let remove_info_axiom r = info_axioms := Refset'.remove r !info_axioms
 let add_log_axiom r = log_axioms := Refset'.add r !log_axioms
+let add_symbol r = symbols := Refmap'.update r (function Some l -> Some l | _ -> Some []) !symbols
+let add_symbol_rule r l = symbols := Refmap'.update r (function Some lst -> Some (l :: lst) | _ -> Some [l]) !symbols
 
 let opaques = ref Refset'.empty
 let init_opaques () = opaques := Refset'.empty
@@ -288,7 +292,7 @@ let safe_pr_long_global r =
   try Printer.pr_global r
   with Not_found -> match r with
     | GlobRef.ConstRef kn ->
-        let mp,l = Constant.repr2 kn in
+        let mp,l = KerName.repr (Constant.user kn) in
         str ((ModPath.to_string mp)^"."^(Label.to_string l))
     | _ -> assert false
 
@@ -300,10 +304,10 @@ let pr_long_global ref = pr_path (Nametab.path_of_global ref)
 
 (*S Warning and Error messages. *)
 
-let err ?loc s = user_err ?loc ~hdr:"Extraction" s
+let err ?loc s = user_err ?loc s
 
 let warn_extraction_axiom_to_realize =
-  CWarnings.create ~name:"extraction-axiom-to-realize" ~category:"extraction"
+  CWarnings.create ~name:"extraction-axiom-to-realize" ~category:CWarnings.CoreCategories.extraction
          (fun axioms ->
           let s = if Int.equal (List.length axioms) 1 then "axiom" else "axioms" in
           strbrk ("The following "^s^" must be realized in the extracted code:")
@@ -311,7 +315,7 @@ let warn_extraction_axiom_to_realize =
                    ++ str "." ++ fnl ())
 
 let warn_extraction_logical_axiom =
-  CWarnings.create ~name:"extraction-logical-axiom" ~category:"extraction"
+  CWarnings.create ~name:"extraction-logical-axiom" ~category:CWarnings.CoreCategories.extraction
          (fun axioms ->
           let s =
             if Int.equal (List.length axioms) 1 then "axiom was" else "axioms were"
@@ -322,22 +326,39 @@ let warn_extraction_logical_axiom =
            ++ spc () ++ strbrk "may lead to incorrect or non-terminating ML terms." ++
              fnl ()))
 
+let warn_extraction_symbols =
+  let pp_symb_with_rules (symb, rules) =
+    safe_pr_global symb ++
+    if List.is_empty rules then str " (no rules)" else
+    str ":" ++ spc() ++ prlist_with_sep spc Label.print rules
+  in
+  CWarnings.create ~name:"extraction-symbols" ~category:CWarnings.CoreCategories.extraction
+    (fun symbols ->
+      strbrk ("The following symbols and rules were encountered:") ++ fnl () ++
+      prlist_with_sep fnl pp_symb_with_rules symbols ++ fnl () ++
+      strbrk "The symbols must be realized such that the rewrite rules apply," ++ spc () ++
+      strbrk "or extraction may lead to incorrect or non-terminating ML terms." ++
+      fnl ())
+
 let warning_axioms () =
   let info_axioms = Refset'.elements !info_axioms in
   if not (List.is_empty info_axioms) then
     warn_extraction_axiom_to_realize info_axioms;
   let log_axioms = Refset'.elements !log_axioms in
   if not (List.is_empty log_axioms) then
-    warn_extraction_logical_axiom log_axioms
+    warn_extraction_logical_axiom log_axioms;
+  let symbols = Refmap'.bindings !symbols in
+  if not (List.is_empty symbols) then
+    warn_extraction_symbols symbols
 
 let warn_extraction_opaque_accessed =
-  CWarnings.create ~name:"extraction-opaque-accessed" ~category:"extraction"
+  CWarnings.create ~name:"extraction-opaque-accessed" ~category:CWarnings.CoreCategories.extraction
     (fun lst -> strbrk "The extraction is currently set to bypass opacity, " ++
                   strbrk "the following opaque constant bodies have been accessed :" ++
                   lst ++ str "." ++ fnl ())
 
 let warn_extraction_opaque_as_axiom =
-  CWarnings.create ~name:"extraction-opaque-as-axiom" ~category:"extraction"
+  CWarnings.create ~name:"extraction-opaque-as-axiom" ~category:CWarnings.CoreCategories.extraction
     (fun lst -> strbrk "The extraction now honors the opacity constraints by default, " ++
          strbrk "the following opaque constants have been extracted as axioms :" ++
          lst ++ str "." ++ fnl () ++
@@ -352,7 +373,7 @@ let warning_opaques accessed =
     else warn_extraction_opaque_as_axiom lst
 
 let warning_ambiguous_name =
-  CWarnings.create ~name:"extraction-ambiguous-name" ~category:"extraction"
+  CWarnings.create_with_quickfix ~name:"extraction-ambiguous-name" ~category:CWarnings.CoreCategories.extraction
     (fun (q,mp,r) -> strbrk "The name " ++ pr_qualid q ++ strbrk " is ambiguous, " ++
                        strbrk "do you mean module " ++
                        pr_long_mp mp ++
@@ -360,32 +381,23 @@ let warning_ambiguous_name =
                        pr_long_global r ++ str " ?" ++ fnl () ++
                        strbrk "First choice is assumed, for the second one please use " ++
                        strbrk "fully qualified name." ++ fnl ())
+let warning_ambiguous_name ?loc (_,mp,r as x) =
+  match loc with
+  | None -> warning_ambiguous_name x
+  | Some loc -> warning_ambiguous_name ~loc ~quickfix:(List.map (Quickfix.make ~loc) [pr_long_mp mp;pr_long_global r]) x
 
 let error_axiom_scheme ?loc r i =
   err ?loc (str "The type scheme axiom " ++ spc () ++
        safe_pr_global r ++ spc () ++ str "needs " ++ int i ++
        str " type variable(s).")
 
-let warn_extraction_inside_module =
-  CWarnings.create ~name:"extraction-inside-module" ~category:"extraction"
-      (fun () -> strbrk "Extraction inside an opened module is experimental." ++ spc () ++
-       strbrk "In case of problem, close it first.")
-
-
-let check_inside_module () =
-  if Lib.is_modtype () then
-    err (str "You can't do that within a Module Type." ++ fnl () ++
-         str "Close it and try again.")
-  else if Lib.is_module () then
-    warn_extraction_inside_module ()
-
 let check_inside_section () =
-  if Global.sections_are_opened () then
+  if Lib.sections_are_opened () then
     err (str "You can't do that within a section." ++ fnl () ++
          str "Close it and try again.")
 
 let warn_extraction_reserved_identifier =
-  CWarnings.create ~name:"extraction-reserved-identifier" ~category:"extraction"
+  CWarnings.create ~name:"extraction-reserved-identifier" ~category:CWarnings.CoreCategories.extraction
     (fun s -> strbrk ("The identifier "^s^
                 " contains __ which is reserved for the extraction"))
 
@@ -401,7 +413,7 @@ let error_nb_cons () =
   err (str "Not the right number of constructors.")
 
 let error_module_clash mp1 mp2 =
-  err (str "The Coq modules " ++ pr_long_mp mp1 ++ str " and " ++
+  err (str "The Rocq modules " ++ pr_long_mp mp1 ++ str " and " ++
        pr_long_mp mp2 ++ str " have the same ML name.\n" ++
        str "This is not supported yet. Please do some renaming first.")
 
@@ -411,18 +423,12 @@ let error_no_module_expr mp =
        ++ str "some Declare Module outside any Module Type.\n"
        ++ str "This situation is currently unsupported by the extraction.")
 
-let error_singleton_become_prop id og =
-  let loc =
-    match og with
-    | Some g -> fnl () ++ str "in " ++ safe_pr_global g ++
-                str " (or in its mutual block)"
-    | None -> mt ()
-  in
-  err (str "The informative inductive type " ++ Id.print id ++
-       str " has a Prop instance" ++ loc ++ str "." ++ fnl () ++
+let error_singleton_become_prop ind =
+  err (str "The informative inductive type " ++ safe_pr_global (IndRef ind) ++
+       str " has a Prop instance" ++ str "." ++ fnl () ++
        str "This happens when a sort-polymorphic singleton inductive type\n" ++
        str "has logical parameters, such as (I,I) : (True * True) : Prop.\n" ++
-       str "The Ocaml extraction cannot handle this situation yet.\n" ++
+       str "Extraction cannot handle this situation yet.\n" ++
        str "Instead, use a sort-monomorphic type such as (True /\\ True)\n" ++
        str "or extract to Haskell.")
 
@@ -469,7 +475,7 @@ let error_remaining_implicit k =
        fnl() ++ str "the extraction of unsafe code and review it manually.")
 
 let warn_extraction_remaining_implicit =
-  CWarnings.create ~name:"extraction-remaining-implicit" ~category:"extraction"
+  CWarnings.create ~name:"extraction-remaining-implicit" ~category:CWarnings.CoreCategories.extraction
     (fun s -> strbrk ("At least an implicit occurs after extraction : "^s^".") ++ fnl () ++
      strbrk "Extraction SafeImplicits is unset, extracting nonetheless,"
      ++ strbrk "but this code is potentially unsafe, please review it manually.")
@@ -481,7 +487,7 @@ let warning_remaining_implicit k =
 let check_loaded_modfile mp = match base_mp mp with
   | MPfile dp ->
       if not (Library.library_is_loaded dp) then begin
-        match base_mp (Lib.current_mp ()) with
+        match base_mp (extraction_current_mp ()) with
           | MPfile dp' when not (DirPath.equal dp dp') ->
             err (str "Please load library " ++ DirPath.print dp ++ str " first.")
           | _ -> ()
@@ -499,7 +505,43 @@ let info_file f =
    so we register them to coq save/undo mechanism. *)
 
 let my_bool_option name value =
-  declare_bool_option_and_ref ~depr:false ~key:["Extraction"; name] ~value
+  let { Goptions.get } =
+    declare_bool_option_and_ref
+    ~key:["Extraction"; name]
+    ~value
+    ()
+  in
+  get
+
+(*s Extraction Output Directory *)
+
+let warn_using_current_directory =
+  CWarnings.(create ~name:"extraction-default-directory" ~category:CoreCategories.extraction)
+    (fun s ->
+       Pp.(strbrk
+             "Setting extraction output directory by default to \"" ++ str s ++ strbrk "\". Use \"" ++
+           str "Set Extraction Output Directory" ++
+           strbrk "\" or command line option \"-output-directory\" to " ++
+           strbrk "set a different directory for extracted files to appear in."))
+
+let output_directory_key = ["Extraction"; "Output"; "Directory"]
+
+let { Goptions.get = output_directory } =
+  declare_stringopt_option_and_ref ~stage:Summary.Stage.Interp ~value:None
+    ~key:output_directory_key ()
+
+let output_directory () =
+  match output_directory (), !Flags.output_directory with
+  | Some dir, _ | None, Some dir ->
+      (* Ensure that the directory exists *)
+      System.mkdir dir;
+      dir
+  | None, None ->
+    let pwd = Sys.getcwd () in
+    warn_using_current_directory pwd;
+    (* Note: in case of error in the caller of output_directory, the effect of the setting will be undo *)
+    set_string_option_value ~stage:Summary.Stage.Interp output_directory_key pwd;
+    pwd
 
 (*s Extraction AccessOpaque *)
 
@@ -565,13 +607,15 @@ let chg_flag n = int_flag_ref := n; opt_flag_ref := flag_of_int n
 let optims () = !opt_flag_ref
 
 let () = declare_bool_option
-          {optdepr = false;
+          {optstage = Summary.Stage.Interp;
+           optdepr = None;
            optkey = ["Extraction"; "Optimize"];
            optread = (fun () -> not (Int.equal !int_flag_ref 0));
            optwrite = (fun b -> chg_flag (if b then int_flag_init else 0))}
 
 let () = declare_int_option
-          { optdepr = false;
+          { optstage = Summary.Stage.Interp;
+            optdepr = None;
             optkey = ["Extraction";"Flag"];
             optread = (fun _ -> Some !int_flag_ref);
             optwrite = (function
@@ -580,18 +624,18 @@ let () = declare_int_option
 
 (* This option controls whether "dummy lambda" are removed when a
    toplevel constant is defined. *)
-let conservative_types =
+let { Goptions.get = conservative_types } =
   declare_bool_option_and_ref
-    ~depr:false
     ~key:["Extraction"; "Conservative"; "Types"]
     ~value:false
+    ()
 
 (* Allows to print a comment at the beginning of the output files *)
-let file_comment =
+let { Goptions.get = file_comment } =
   declare_string_option_and_ref
-    ~depr:false
     ~key:["Extraction"; "File"; "Comment"]
     ~value:""
+    ()
 
 (*s Extraction Lang *)
 
@@ -603,10 +647,10 @@ let lang () = !lang_ref
 
 let extr_lang : lang -> obj =
   declare_object @@ superglobal_object_nodischarge "Extraction Lang"
-    ~cache:(fun (_,l) -> lang_ref := l)
+    ~cache:(fun l -> lang_ref := l)
     ~subst:None
 
-let extraction_language x = Lib.add_anonymous_leaf (extr_lang x)
+let extraction_language x = Lib.add_leaf (extr_lang x)
 
 (*s Extraction Inline/NoInline *)
 
@@ -615,6 +659,25 @@ let empty_inline_table = (Refset'.empty,Refset'.empty)
 let inline_table = Summary.ref empty_inline_table ~name:"ExtrInline"
 
 let to_inline r = Refset'.mem r (fst !inline_table)
+
+(* Extension for supporting foreign function call extraction. *)
+
+let empty_foreign_set = Refset'.empty
+
+let foreign_set = Summary.ref empty_foreign_set ~name:"ExtrForeign"
+
+let to_foreign r = Refset'.mem r !foreign_set
+
+(* End of Extension for supporting foreign function call extraction. *)
+
+(* Extension for supporting callback registration extraction. *)
+
+(* A map from qualid to string opt (alias) *)
+let empty_callback_map = Refmap'.empty
+
+let callback_map = Summary.ref empty_callback_map ~name:"ExtrCallback"
+
+(* End of Extension for supporting callback registration extraction. *)
 
 let to_keep r = Refset'.mem r (snd !inline_table)
 
@@ -625,13 +688,34 @@ let add_inline_entries b l =
   (List.fold_right (f b) l i),
   (List.fold_right (f (not b)) l k)
 
+let add_foreign_entries l =
+  foreign_set := List.fold_right (Refset'.add) l !foreign_set
+
+(* Adds the qualid_ref and alias opt to the callback_map. *)
+let add_callback_entry alias_opt qualid_ref =
+  callback_map := Refmap'.add qualid_ref alias_opt !callback_map
+
 (* Registration of operations for rollback. *)
 
 let inline_extraction : bool * GlobRef.t list -> obj =
   declare_object @@ superglobal_object "Extraction Inline"
-    ~cache:(fun (_,(b,l)) -> add_inline_entries b l)
+    ~cache:(fun (b,l) -> add_inline_entries b l)
     ~subst:(Some (fun (s,(b,l)) -> (b,(List.map (fun x -> fst (subst_global s x)) l))))
-    ~discharge:(fun (_,x) -> Some x)
+    ~discharge:(fun x -> Some x)
+
+let foreign_extraction : GlobRef.t list -> obj =
+  declare_object @@ superglobal_object "Extraction Foreign"
+    ~cache:(fun l -> add_foreign_entries l)
+    ~subst:(Some (fun (s,l) -> (List.map (fun x -> fst (subst_global s x)) l)))
+    ~discharge:(fun x -> Some x)
+
+let callback_extraction : string option * GlobRef.t -> obj =
+  declare_object @@ superglobal_object "Extraction Callback"
+    ~cache:(fun (alias, x) -> add_callback_entry alias x)
+    ~subst:(Some (fun (s,(alias, x)) -> (alias, (fst (subst_global s x)))))
+    ~discharge:(fun x -> Some x)
+
+
 
 (* Grammar entries. *)
 
@@ -641,7 +725,7 @@ let extraction_inline b l =
     (fun r -> match r with
        | GlobRef.ConstRef _ -> ()
        | _ -> error_constant r) refs;
-  Lib.add_anonymous_leaf (inline_extraction (b,refs))
+  Lib.add_leaf (inline_extraction (b,refs))
 
 (* Printing part *)
 
@@ -661,10 +745,24 @@ let print_extraction_inline () =
 
 let reset_inline : unit -> obj =
   declare_object @@ superglobal_object_nodischarge "Reset Extraction Inline"
-    ~cache:(fun (_,_)-> inline_table :=  empty_inline_table)
+    ~cache:(fun () -> inline_table := empty_inline_table)
     ~subst:None
 
-let reset_extraction_inline () = Lib.add_anonymous_leaf (reset_inline ())
+let reset_foreign : unit -> obj =
+  declare_object @@ superglobal_object_nodischarge "Reset Extraction Foreign"
+    ~cache:(fun () -> foreign_set := empty_foreign_set)
+    ~subst:None
+
+let reset_callback : unit -> obj =
+  declare_object @@ superglobal_object_nodischarge "Reset Extraction Callback"
+    ~cache:(fun () -> callback_map := empty_callback_map)
+    ~subst:None
+
+let reset_extraction_inline () = Lib.add_leaf (reset_inline ())
+
+let reset_extraction_foreign () = Lib.add_leaf (reset_foreign ())
+
+let reset_extraction_callback () = Lib.add_leaf (reset_callback ())
 
 (*s Extraction Implicit *)
 
@@ -706,14 +804,14 @@ let add_implicits r l =
 
 let implicit_extraction : GlobRef.t * int_or_id list -> obj =
   declare_object @@ superglobal_object_nodischarge "Extraction Implicit"
-    ~cache:(fun (_,(r,l)) -> add_implicits r l)
+    ~cache:(fun (r,l) -> add_implicits r l)
     ~subst:(Some (fun (s,(r,l)) -> (fst (subst_global s r), l)))
 
 (* Grammar entries. *)
 
 let extraction_implicit r l =
   check_inside_section ();
-  Lib.add_anonymous_leaf (implicit_extraction (Smartlocate.global_with_alias r,l))
+  Lib.add_leaf (implicit_extraction (Smartlocate.global_with_alias r,l))
 
 
 (*s Extraction Blacklist of filenames not to use while extracting *)
@@ -755,14 +853,14 @@ let add_blacklist_entries l =
 
 let blacklist_extraction : string list -> obj =
   declare_object @@ superglobal_object_nodischarge "Extraction Blacklist"
-    ~cache:(fun (_,l) -> add_blacklist_entries l)
+    ~cache:add_blacklist_entries
     ~subst:None
 
 (* Grammar entries. *)
 
 let extraction_blacklist l =
   let l = List.rev l in
-  Lib.add_anonymous_leaf (blacklist_extraction l)
+  Lib.add_leaf (blacklist_extraction l)
 
 (* Printing part *)
 
@@ -773,10 +871,10 @@ let print_extraction_blacklist () =
 
 let reset_blacklist : unit -> obj =
   declare_object @@ superglobal_object_nodischarge "Reset Extraction Blacklist"
-    ~cache:(fun (_,_)-> blacklist_table := Id.Set.empty)
+    ~cache:(fun ()-> blacklist_table := Id.Set.empty)
     ~subst:None
 
-let reset_extraction_blacklist () = Lib.add_anonymous_leaf (reset_blacklist ())
+let reset_extraction_blacklist () = Lib.add_leaf (reset_blacklist ())
 
 (*s Extract Constant/Inductive. *)
 
@@ -790,6 +888,10 @@ let add_custom r ids s = customs := Refmap'.add r (ids,s) !customs
 let is_custom r = Refmap'.mem r !customs
 
 let is_inline_custom r = (is_custom r) && (to_inline r)
+
+let is_foreign_custom r = (is_custom r) && (to_foreign r)
+
+let find_callback r = Refmap'.find r !callback_map
 
 let find_custom r = snd (Refmap'.find r !customs)
 
@@ -815,21 +917,51 @@ let is_custom_match pv =
 let find_custom_match pv =
   Refmap'.find (indref_of_match pv) !custom_matchs
 
+(* Printing entries *)
+
+let print_constref_extractions ref_set val_lookup_f section_str =
+  let i'= Refset'.filter (function GlobRef.ConstRef _ -> true | _ -> false) ref_set in
+      (str section_str ++ fnl () ++
+       Refset'.fold
+         (fun r p ->
+            (p ++ str "  " ++ safe_pr_long_global r ++ str " => \"" ++ str (val_lookup_f r) ++ str "\"" ++ fnl ())) i' (mt ())
+       )
+
+let print_extraction_foreign () =
+  print_constref_extractions !foreign_set (find_custom) "Extraction Foreign Constant:"
+
+let print_extraction_callback () =
+  let keys = Refmap'.domain !callback_map in
+  print_constref_extractions keys (fun r ->
+    match find_callback r with
+     | None   -> "no custom alias"
+     | Some s -> s) "Extraction Callbacks for Constants:"
+
 (* Registration of operations for rollback. *)
 
 let in_customs : GlobRef.t * string list * string -> obj =
   declare_object @@ superglobal_object_nodischarge "ML extractions"
-    ~cache:(fun (_,(r,ids,s)) -> add_custom r ids s)
+    ~cache:(fun (r,ids,s) -> add_custom r ids s)
     ~subst:(Some (fun (s,(r,ids,str)) -> (fst (subst_global s r), ids, str)))
 
 let in_custom_matchs : GlobRef.t * string -> obj =
   declare_object @@ superglobal_object_nodischarge "ML extractions custom matches"
-    ~cache:(fun (_,(r,s)) -> add_custom_match r s)
+    ~cache:(fun (r,s) -> add_custom_match r s)
     ~subst:(Some (fun (subs,(r,s)) -> (fst (subst_global subs r), s)))
 
 (* Grammar entries. *)
 
-let extract_constant_inline inline r ids s =
+let extract_callback optstr x =
+  if lang () != Ocaml then
+      CErrors.user_err (Pp.str "Extract Callback is supported only for OCaml extraction.");
+
+  let qualid_ref = Smartlocate.global_with_alias x in
+  match qualid_ref with
+      (* Add the alias and qualid_ref to callback extraction.*)
+    | GlobRef.ConstRef _ -> Lib.add_leaf (callback_extraction (optstr, qualid_ref))
+    | _                  -> error_constant ?loc:x.CAst.loc qualid_ref
+
+let extract_constant_generic r ids s arity_handler (is_redef, redef_msg) extr_type =
   check_inside_section ();
   let g = Smartlocate.global_with_alias r in
   match g with
@@ -837,14 +969,29 @@ let extract_constant_inline inline r ids s =
         let env = Global.env () in
         let typ, _ = Typeops.type_of_global_in_context env (GlobRef.ConstRef kn) in
         let typ = Reduction.whd_all env typ in
-        if Reduction.is_arity env typ
-          then begin
-            let nargs = Hook.get use_type_scheme_nb_args env typ in
-            if not (Int.equal (List.length ids) nargs) then error_axiom_scheme ?loc:r.CAst.loc g nargs
-          end;
-        Lib.add_anonymous_leaf (inline_extraction (inline,[g]));
-        Lib.add_anonymous_leaf (in_customs (g,ids,s))
+        if Reduction.is_arity env typ then arity_handler env typ g;
+        if is_redef g then
+          CErrors.user_err ((str "The term ") ++ safe_pr_long_global g ++ (str " is already defined as ")
+            ++ (str redef_msg) ++ (str " custom constant."));
+        Lib.add_leaf (extr_type g);
+        Lib.add_leaf (in_customs (g,ids,s));
     | _ -> error_constant ?loc:r.CAst.loc g
+
+let extract_constant_inline inline r ids s =
+  let arity_handler env typ g =
+    let nargs = Hook.get use_type_scheme_nb_args env typ in
+    if not (Int.equal (List.length ids) nargs) then error_axiom_scheme ?loc:r.CAst.loc g nargs
+  in
+  extract_constant_generic r ids s (arity_handler) (is_foreign_custom, "foreign") (fun g -> inline_extraction (inline,[g]))
+
+(* const_name : qualid -> replacement : string*)
+let extract_constant_foreign r s =
+  if lang () != Ocaml then
+      CErrors.user_err (Pp.str "Extract Foreign Constant is supported only for OCaml extraction.");
+  let arity_handler env typ g =
+      CErrors.user_err (Pp.str "Extract Foreign Constant is supported only for functions.")
+  in
+  extract_constant_generic r [] s (arity_handler) (is_inline_custom, "inline") (fun g -> foreign_extraction [g])
 
 
 let extract_inductive r s l optstr =
@@ -856,15 +1003,15 @@ let extract_inductive r s l optstr =
         let mib = Global.lookup_mind kn in
         let n = Array.length mib.mind_packets.(i).mind_consnames in
         if not (Int.equal n (List.length l)) then error_nb_cons ();
-        Lib.add_anonymous_leaf (inline_extraction (true,[g]));
-        Lib.add_anonymous_leaf (in_customs (g,[],s));
-        Option.iter (fun s -> Lib.add_anonymous_leaf (in_custom_matchs (g,s)))
+        Lib.add_leaf (inline_extraction (true,[g]));
+        Lib.add_leaf (in_customs (g,[],s));
+        Option.iter (fun s -> Lib.add_leaf (in_custom_matchs (g,s)))
           optstr;
         List.iteri
           (fun j s ->
              let g = GlobRef.ConstructRef (ip,succ j) in
-             Lib.add_anonymous_leaf (inline_extraction (true,[g]));
-             Lib.add_anonymous_leaf (in_customs (g,[],s))) l
+             Lib.add_leaf (inline_extraction (true,[g]));
+             Lib.add_leaf (in_customs (g,[],s))) l
     | _ -> error_inductive ?loc:r.CAst.loc g
 
 

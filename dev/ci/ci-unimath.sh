@@ -7,9 +7,14 @@ ci_dir="$(dirname "$0")"
 
 git_download unimath
 
+if [ "$DOWNLOAD_ONLY" ]; then exit 0; fi
+
 export COQEXTRAFLAGS='-native-compiler no'
 ( cd "${CI_BUILD_DIR}/unimath"
-  # DisplayedInserter consumes too much memory for the shared workers
-  sed -i.bak 's|DisplayedBicats/Examples/DisplayedInserter.v||'  UniMath/Bicategories/.package/files
+  # these files consumes too much memory for the shared workers
+  # (at least with -j 2 when the scheduler runs them in parallel)
+  for p in SubstitutionSystems Bicategories ModelCategories; do
+      sed -i.bak "s|PACKAGES += $p||" Makefile
+  done
   make BUILD_COQ=no
 )

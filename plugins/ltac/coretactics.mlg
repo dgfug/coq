@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -22,7 +22,7 @@ open Logic
 
 }
 
-DECLARE PLUGIN "ltac_plugin"
+DECLARE PLUGIN "rocq-runtime.plugins.ltac"
 
 (** Basic tactics *)
 
@@ -31,7 +31,7 @@ TACTIC EXTEND reflexivity
 END
 
 TACTIC EXTEND exact
-| [ "exact" casted_constr(c) ] -> { Tactics.exact_no_check c }
+| [ "exact" uconstr(c) ] -> { Internals.exact ist c }
 END
 
 TACTIC EXTEND assumption
@@ -58,12 +58,8 @@ TACTIC EXTEND native_cast_no_check
 | [ "native_cast_no_check" constr(c) ] -> { Tactics.native_cast_no_check c }
 END
 
-TACTIC EXTEND casetype
-| [ "casetype" constr(c) ] -> { Tactics.case_type c }
-END
-
-TACTIC EXTEND elimtype
-| [ "elimtype" constr(c) ] -> { Tactics.elim_type c }
+TACTIC EXTEND exfalso
+| [ "exfalso" ] -> { Tactics.exfalso }
 END
 
 TACTIC EXTEND lapply
@@ -86,13 +82,13 @@ END
 
 TACTIC EXTEND left_with
 | [ "left" "with" bindings(bl) ] -> {
-    Tacticals.New.tclDELAYEDWITHHOLES false bl (fun bl -> Tactics.left_with_bindings false bl)
+    Tacticals.tclDELAYEDWITHHOLES false bl (fun bl -> Tactics.left_with_bindings false bl)
   }
 END
 
 TACTIC EXTEND eleft_with
 | [ "eleft" "with" bindings(bl) ] -> {
-    Tacticals.New.tclDELAYEDWITHHOLES true bl (fun bl -> Tactics.left_with_bindings true bl)
+    Tacticals.tclDELAYEDWITHHOLES true bl (fun bl -> Tactics.left_with_bindings true bl)
   }
 END
 
@@ -108,13 +104,13 @@ END
 
 TACTIC EXTEND right_with
 | [ "right" "with" bindings(bl) ] -> {
-    Tacticals.New.tclDELAYEDWITHHOLES false bl (fun bl -> Tactics.right_with_bindings false bl)
+    Tacticals.tclDELAYEDWITHHOLES false bl (fun bl -> Tactics.right_with_bindings false bl)
   }
 END
 
 TACTIC EXTEND eright_with
 | [ "eright" "with" bindings(bl) ] -> {
-    Tacticals.New.tclDELAYEDWITHHOLES true bl (fun bl -> Tactics.right_with_bindings true bl)
+    Tacticals.tclDELAYEDWITHHOLES true bl (fun bl -> Tactics.right_with_bindings true bl)
   }
 END
 
@@ -127,7 +123,7 @@ TACTIC EXTEND constructor
   }
 | [ "constructor" nat_or_var(i) "with" bindings(bl) ] -> {
     let tac bl = Tactics.constructor_tac false None i bl in
-    Tacticals.New.tclDELAYEDWITHHOLES false bl tac
+    Tacticals.tclDELAYEDWITHHOLES false bl tac
   }
 END
 
@@ -138,7 +134,7 @@ TACTIC EXTEND econstructor
   }
 | [ "econstructor" nat_or_var(i) "with" bindings(bl) ] -> {
     let tac bl = Tactics.constructor_tac true None i bl in
-    Tacticals.New.tclDELAYEDWITHHOLES true bl tac
+    Tacticals.tclDELAYEDWITHHOLES true bl tac
   }
 END
 
@@ -146,10 +142,10 @@ END
 
 TACTIC EXTEND specialize
 | [ "specialize" constr_with_bindings(c) ] -> {
-    Tacticals.New.tclDELAYEDWITHHOLES false c (fun c -> Tactics.specialize c None)
+    Tacticals.tclDELAYEDWITHHOLES false c (fun c -> Tactics.specialize c None)
   }
 | [ "specialize" constr_with_bindings(c) "as" simple_intropattern(ipat) ] -> {
-    Tacticals.New.tclDELAYEDWITHHOLES false c (fun c -> Tactics.specialize c (Some ipat))
+    Tacticals.tclDELAYEDWITHHOLES false c (fun c -> Tactics.specialize c (Some ipat))
   }
 END
 
@@ -173,13 +169,13 @@ END
 
 TACTIC EXTEND split_with
 | [ "split" "with" bindings(bl) ] -> {
-    Tacticals.New.tclDELAYEDWITHHOLES false bl (fun bl -> Tactics.split_with_bindings false [bl])
+    Tacticals.tclDELAYEDWITHHOLES false bl (fun bl -> Tactics.split_with_bindings false [bl])
   }
 END
 
 TACTIC EXTEND esplit_with
 | [ "esplit" "with" bindings(bl) ] -> {
-    Tacticals.New.tclDELAYEDWITHHOLES true bl (fun bl -> Tactics.split_with_bindings true [bl])
+    Tacticals.tclDELAYEDWITHHOLES true bl (fun bl -> Tactics.split_with_bindings true [bl])
   }
 END
 
@@ -230,7 +226,7 @@ END
 (** Revert *)
 
 TACTIC EXTEND revert
-| [ "revert" ne_hyp_list(hl) ] -> { Tactics.revert hl }
+| [ "revert" ne_hyp_list(hl) ] -> { Generalize.revert hl }
 END
 
 (** Simple induction / destruct *)
@@ -238,8 +234,8 @@ END
 {
 
 let simple_induct h =
-  Tacticals.New.tclTHEN (Tactics.intros_until h)
-    (Tacticals.New.onLastHyp Tactics.simplest_elim)
+  Tacticals.tclTHEN (Tactics.intros_until h)
+    (Tacticals.onLastHyp Tactics.simplest_elim)
 
 }
 
@@ -250,8 +246,8 @@ END
 {
 
 let simple_destruct h =
-  Tacticals.New.tclTHEN (Tactics.intros_until h)
-    (Tacticals.New.onLastHyp Tactics.simplest_case)
+  Tacticals.tclTHEN (Tactics.intros_until h)
+    (Tacticals.onLastHyp Tactics.simplest_case)
 
 }
 
@@ -296,7 +292,7 @@ END
 (* Generalize dependent *)
 
 TACTIC EXTEND generalize_dependent
-| [ "generalize" "dependent" constr(c) ] -> { Tactics.generalize_dep c }
+| [ "generalize" "dependent" constr(c) ] -> { Generalize.generalize_dep c }
 END
 
 (* Table of "pervasives" macros tactics (e.g. auto, simpl, etc.) *)
@@ -312,7 +308,7 @@ let initial_atomic () =
     Tacenv.register_ltac false false (Names.Id.of_string s) body
   in
   let () = List.iter iter
-      [ "red", TacReduce(Red false,nocl);
+      [ "red", TacReduce (Red, nocl);
         "hnf", TacReduce(Hnf,nocl);
         "simpl", TacReduce(Simpl (Redops.all_flags,None),nocl);
         "compute", TacReduce(Cbv Redops.all_flags,nocl);
@@ -326,18 +322,18 @@ let initial_atomic () =
         "fresh", CAst.make @@ TacArg(TacFreshId [])
       ]
 
-let () = Mltop.declare_cache_obj initial_atomic "ltac_plugin"
+let () = Mltop.declare_cache_obj initial_atomic "rocq-runtime.plugins.ltac"
 
 (* First-class Ltac access to primitive blocks *)
 
-let initial_name s = { mltac_plugin = "ltac_plugin"; mltac_tactic = s; }
+let initial_name s = { mltac_plugin = "rocq-runtime.plugins.ltac"; mltac_tactic = s; }
 let initial_entry s = { mltac_name = initial_name s; mltac_index = 0; }
 
 let register_list_tactical name f =
   let tac args ist = match args with
   | [v] ->
     begin match Tacinterp.Value.to_list v with
-    | None -> Tacticals.New.tclZEROMSG (Pp.str "Expected a list")
+    | None -> Tacticals.tclZEROMSG (Pp.str "Expected a list")
     | Some tacs ->
       let tacs = List.map (fun tac -> Tacinterp.tactic_of_value ist tac) tacs in
       f tacs
@@ -346,8 +342,8 @@ let register_list_tactical name f =
   in
   Tacenv.register_ml_tactic (initial_name name) [|tac|]
 
-let () = register_list_tactical "first" Tacticals.New.tclFIRST
-let () = register_list_tactical "solve" Tacticals.New.tclSOLVE
+let () = register_list_tactical "first" Tacticals.tclFIRST
+let () = register_list_tactical "solve" Tacticals.tclSOLVE
 
 let initial_tacticals () =
   let idn n = Id.of_string (Printf.sprintf "_%i" n) in
@@ -360,6 +356,6 @@ let initial_tacticals () =
         ([Name (idn 0)], CAst.make (TacML (initial_entry "solve", [varn 0]))));
   ]
 
-let () = Mltop.declare_cache_obj initial_tacticals "ltac_plugin"
+let () = Mltop.declare_cache_obj initial_tacticals "rocq-runtime.plugins.ltac"
 
 }

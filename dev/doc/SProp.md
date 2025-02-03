@@ -13,7 +13,7 @@ As a plugin you can generally just use `Relevant` everywhere, the
 kernel will fix it if needed when it checks the terms you produce. The
 only issue is that if you generate `Relevant` when it should have been
 `Irrelevant` you won't be able to use proof irrelevance on that
-variable until the kernel fixes it. See refman for examples as Coq
+variable until the kernel fixes it. See refman for examples as Rocq
 also uses `Relevant` incorrectly in some places.
 
 This annotation is done by transforming the binder name `'a` into a
@@ -30,9 +30,6 @@ When making `Relevant` annotations you can use some convenience
 functions from `Context` (eg `annotR x = make_annot x Relevant`), also
 `mkArrowR` from `Constr`/`EConstr` which has the signature of the old
 `mkArrow`.
-
-You can enable the debug warning `bad-relevance` to help find places
-where you generate incorrect annotations.
 
 Relevance can be inferred from a well-typed term using functions in
 `Retypeops` (for `Constr`) and `Retyping` (for `EConstr`). For `x` a

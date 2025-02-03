@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -36,8 +36,7 @@ module type MainLoopModel = sig
   val add_watch : callback:(condition list -> bool) -> async_chan -> watch_id
   val remove_watch : watch_id -> unit
   val read_all : async_chan -> string
-  val async_chan_of_file : Unix.file_descr -> async_chan
-  val async_chan_of_socket : Unix.file_descr -> async_chan
+  val async_chan_of_file_or_socket : Unix.file_descr -> async_chan
 end
 
 (* Common code *)
@@ -77,11 +76,12 @@ let accept (sr,sw) =
 
 let spawn_sock env prog args =
   let main_sock, main_sock_name = mk_socket_channel () in
-  let extra = [| prog; "-main-channel"; main_sock_name |] in
-  let args = Array.append extra args in
+  let extra = [| "-main-channel"; main_sock_name |] in
+  let args = Array.append [| prog |] (Array.append args extra) in
   prerr_endline ("EXEC: " ^ String.concat " " (Array.to_list args));
   let pid =
     Unix.create_process_env prog args env Unix.stdin Unix.stdout Unix.stderr in
+  prerr_endline ("PID " ^ string_of_int pid);
   if pid = 0 then begin
     Unix.sleep 1; (* to avoid respawning like crazy *)
     raise (Failure "create_process failed")
@@ -92,8 +92,8 @@ let spawn_sock env prog args =
 let spawn_pipe env prog args =
   let master2worker_r,master2worker_w = Unix.pipe () in
   let worker2master_r,worker2master_w = Unix.pipe () in
-  let extra = [| prog; "-main-channel"; "stdfds" |] in
-  let args = Array.append extra args in
+  let extra = [| "-main-channel"; "stdfds" |] in
+  let args = Array.append [|prog|] (Array.append args extra) in
   Unix.set_close_on_exec master2worker_w;
   Unix.set_close_on_exec worker2master_r;
   prerr_endline ("EXEC: " ^ String.concat " " (Array.to_list args));
@@ -129,7 +129,7 @@ let spawn_with_control prefer_sock env prog args =
     if not_Unix then
       let control_sock, control_sock_name = mk_socket_channel () in
       let extra = [| "-control-channel"; control_sock_name |] in
-      Array.append extra args, Some control_sock
+      Array.append args extra, Some control_sock
     else
       args, None in
   let (pid, cin, cout, s), is_sock =
@@ -147,7 +147,7 @@ let spawn_with_control prefer_sock env prog args =
 let output_death_sentence pid oob_req =
   prerr_endline ("death sentence for " ^ pid);
   try output_value oob_req ReqDie; flush oob_req
-  with e -> prerr_endline ("death sentence: " ^ Printexc.to_string e)
+  with e when CErrors.noncritical e -> prerr_endline ("death sentence: " ^ Printexc.to_string e)
 
 (* spawn a process and read its output asynchronously *)
 module Async(ML : MainLoopModel) = struct
@@ -180,9 +180,9 @@ let kill ({ pid = unixpid; oob_resp; oob_req; cin; cout; alive; watch } as p) =
     close_out_noerr cout;
     Option.iter close_in_noerr oob_resp;
     Option.iter close_out_noerr oob_req;
-    if Sys.os_type = "Unix" then Unix.kill unixpid 9;
+    if Sys.os_type = "Unix" then Unix.kill unixpid Sys.sigkill;
     p.watch <- None
-  with e -> prerr_endline ("kill: "^Printexc.to_string e) end
+  with e when CErrors.noncritical e -> prerr_endline ("kill: "^Printexc.to_string e) end
 
 let spawn ?(prefer_sock=prefer_sock) ?(env=Unix.environment ())
     prog args callback
@@ -190,9 +190,7 @@ let spawn ?(prefer_sock=prefer_sock) ?(env=Unix.environment ())
   let pid, oob_resp, oob_req, cin, cout, main, is_sock =
     spawn_with_control prefer_sock env prog args in
   Unix.set_nonblock (fst main);
-  let gchan =
-    if is_sock then ML.async_chan_of_socket (fst main)
-    else ML.async_chan_of_file (fst main) in
+  let gchan = ML.async_chan_of_file_or_socket (fst main) in
   let alive, watch = true, None in
   let p = { cin; cout; gchan; pid; oob_resp; oob_req; alive; watch } in
   p.watch <- Some (
@@ -250,8 +248,8 @@ let kill ({ pid = unixpid; oob_req; oob_resp; cin; cout; alive } as p) =
     close_out_noerr cout;
     Option.iter close_in_noerr oob_resp;
     Option.iter close_out_noerr oob_req;
-    if Sys.os_type = "Unix" then Unix.kill unixpid 9;
-  with e -> prerr_endline ("kill: "^Printexc.to_string e) end
+    if Sys.os_type = "Unix" then Unix.kill unixpid Sys.sigkill;
+  with e when CErrors.noncritical e -> prerr_endline ("kill: "^Printexc.to_string e) end
 
 let rec wait p =
   (* On windows kill is not reliable, so wait may never return. *)

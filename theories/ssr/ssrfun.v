@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -39,6 +39,7 @@ Require Import ssreflect.
       odflt d ox == if ox is Some x returns x,          d otherwise
       obind f ox == if ox is Some x returns f x,        None otherwise
        omap f ox == if ox is Some x returns Some (f x), None otherwise
+         olift f := Some \o f
 
  - Singleton types:
   all_equal_to x0 == x0 is the only value in its type, so any such value
@@ -49,7 +50,7 @@ Require Import ssreflect.
         unwrap w == the projection of w : wrapped T on T.
           wrap x == the canonical injection of x : T into wrapped T; it is
                     equivalent to Wrap x, but is declared as a (default)
-                    Canonical Structure, which lets the Coq HO unification
+                    Canonical Structure, which lets the Rocq HO unification
                     automatically expand x into unwrap (wrap x). The delta
                     reduction of wrap x to Wrap can be exploited to
                     introduce controlled nondeterminism in Canonical
@@ -98,7 +99,7 @@ Require Import ssreflect.
  if we need to build an r from a given y0 while inferring some x0, such
  that y0 : T(x0), we pose
     Definition mk_r .. y .. (x := ...) y' & phant_id y y' := R x y'.
- Calling @mk_r .. y0 .. id will cause Coq to use y' := y0, while checking
+ Calling @mk_r .. y0 .. id will cause Rocq to use y' := y0, while checking
  the dependent type constraint y0 : T(x0).
 
  - Extensional equality for functions and relations (i.e. functions of two
@@ -224,8 +225,6 @@ Unset Strict Implicit.
 Unset Printing Implicit Defensive.
 
 (** Parsing / printing declarations. *)
-Reserved Notation "p .1" (at level 2, left associativity, format "p .1").
-Reserved Notation "p .2" (at level 2, left associativity, format "p .2").
 Reserved Notation "f ^~ y" (at level 10, y at level 8, no associativity,
   format "f ^~  y").
 Reserved Notation "@^~ x" (at level 10, x at level 8, no associativity,
@@ -288,6 +287,7 @@ Reserved Notation "{ 'mono' f : x y /~ a }" (at level 0, f at level 99,
   x name, y name, format "{ 'mono'  f  :  x  y  /~  a }").
 
 Reserved Notation "@ 'id' T" (at level 10, T at level 8, format "@ 'id'  T").
+#[warning="-closed-notation-not-level-0"]
 Reserved Notation "@ 'sval'" (at level 10, format "@ 'sval'").
 
 (**
@@ -350,12 +350,15 @@ Definition bind aT rT (f : aT -> option rT) := apply f None.
 
 Definition map aT rT (f : aT -> rT) := bind (fun x => Some (f x)).
 
+Definition lift aT rT (f : aT -> rT) := fun x => Some (f x).
+
 End Option.
 
 Notation oapp := Option.apply.
 Notation odflt := Option.default.
 Notation obind := Option.bind.
 Notation omap := Option.map.
+Notation olift := Option.lift.
 Notation some := (@Some _) (only parsing).
 
 (**  Shorthand for some basic equality lemmas.  **)
@@ -383,13 +386,17 @@ Canonical wrap T x := @Wrap T x.
 
 Prenex Implicits unwrap wrap Wrap.
 
+(**
+ fun_scope below is deprecated and should eventually be
+ removed. Use function_scope instead.                    **)
 Declare Scope fun_scope.
 Delimit Scope fun_scope with FUN.
 Open Scope fun_scope.
+Open Scope function_scope.
 
 (**  Notations for argument transpose  **)
-Notation "f ^~ y" := (fun x => f x y) : fun_scope.
-Notation "@^~ x" := (fun f => f x) : fun_scope.
+Notation "f ^~ y" := (fun x => f x y) : function_scope.
+Notation "@^~ x" := (fun f => f x) : function_scope.
 
 (**
  Definitions and notation for explicit functions with simplification,
@@ -408,19 +415,19 @@ End SimplFun.
 
 Coercion fun_of_simpl : simpl_fun >-> Funclass.
 
-Notation "[ 'fun' : T => E ]" := (SimplFun (fun _ : T => E)) : fun_scope.
-Notation "[ 'fun' x => E ]" := (SimplFun (fun x => E)) : fun_scope.
-Notation "[ 'fun' x y => E ]" := (fun x => [fun y => E]) : fun_scope.
+Notation "[ 'fun' : T => E ]" := (SimplFun (fun _ : T => E)) : function_scope.
+Notation "[ 'fun' x => E ]" := (SimplFun (fun x => E)) : function_scope.
+Notation "[ 'fun' x y => E ]" := (fun x => [fun y => E]) : function_scope.
 Notation "[ 'fun' x : T => E ]" := (SimplFun (fun x : T => E))
-  (only parsing) : fun_scope.
+  (only parsing) : function_scope.
 Notation "[ 'fun' x y : T => E ]" := (fun x : T => [fun y : T => E])
-  (only parsing) : fun_scope.
+  (only parsing) : function_scope.
 Notation "[ 'fun' ( x : T ) y => E ]" := (fun x : T => [fun y => E])
-  (only parsing) : fun_scope.
+  (only parsing) : function_scope.
 Notation "[ 'fun' x ( y : T ) => E ]" := (fun x => [fun y : T => E])
-  (only parsing) : fun_scope.
+  (only parsing) : function_scope.
 Notation "[ 'fun' ( x : T ) ( y : U ) => E ]" := (fun x : T => [fun y : U => E])
-  (only parsing) : fun_scope.
+  (only parsing) : function_scope.
 
 (**  For delta functions in eqtype.v.  **)
 Definition SimplFunDelta aT rT (f : aT -> aT -> rT) := [fun z => f z z].
@@ -447,16 +454,15 @@ Lemma rrefl r : eqrel r r. Proof. by []. Qed.
 
 End ExtensionalEquality.
 
-Typeclasses Opaque eqfun.
-Typeclasses Opaque eqrel.
+Global Typeclasses Opaque eqfun eqrel.
 
 #[global]
 Hint Resolve frefl rrefl : core.
 
-Notation "f1 =1 f2" := (eqfun f1 f2) : fun_scope.
-Notation "f1 =1 f2 :> A" := (f1 =1 (f2 : A)) : fun_scope.
-Notation "f1 =2 f2" := (eqrel f1 f2) : fun_scope.
-Notation "f1 =2 f2 :> A" := (f1 =2 (f2 : A)) : fun_scope.
+Notation "f1 =1 f2" := (eqfun f1 f2) : type_scope.
+Notation "f1 =1 f2 :> A" := (f1 =1 (f2 : A)) : type_scope.
+Notation "f1 =2 f2" := (eqrel f1 f2) : type_scope.
+Notation "f1 =2 f2 :> A" := (f1 =2 (f2 : A)) : type_scope.
 
 Section Composition.
 
@@ -473,20 +479,55 @@ End Composition.
 
 Arguments comp {A B C} f g x /.
 Arguments catcomp {A B C} g f x /.
-Notation "f1 \o f2" := (comp f1 f2) : fun_scope.
-Notation "f1 \; f2" := (catcomp f1 f2) : fun_scope.
+Notation "f1 \o f2" := (comp f1 f2) : function_scope.
+Notation "f1 \; f2" := (catcomp f1 f2) : function_scope.
 
-Notation "[ 'eta' f ]" := (fun x => f x) : fun_scope.
+Lemma compA {A B C D : Type} (f : B -> A) (g : C -> B) (h : D -> C) :
+  f \o (g \o h) = (f \o g) \o h.
+Proof. by []. Qed.
 
-Notation "'fun' => E" := (fun _ => E) : fun_scope.
+Notation "[ 'eta' f ]" := (fun x => f x) : function_scope.
+
+Notation "'fun' => E" := (fun _ => E) : function_scope.
 
 Notation id := (fun x => x).
-Notation "@ 'id' T" := (fun x : T => x) (only parsing) : fun_scope.
+
+Notation "@ 'id' T" := (fun x : T => x) (only parsing) : function_scope.
 
 Definition idfun T x : T := x.
 Arguments idfun {T} x /.
 
 Definition phant_id T1 T2 v1 v2 := phantom T1 v1 -> phantom T2 v2.
+
+Section OptionTheory.
+
+Variables (aT rT sT : Type) (f : aT -> rT) (g : rT -> sT).
+
+Lemma obindEapp (fo : aT -> option rT) : obind fo = oapp fo None.
+Proof. by []. Qed.
+
+Lemma omapEbind : omap f = obind (olift f).
+Proof. by []. Qed.
+
+Lemma omapEapp : omap f = oapp (olift f) None.
+Proof. by []. Qed.
+
+Lemma oappEmap (y0 : rT) x : oapp f y0 x = odflt y0 (omap f x).
+Proof. by case: x. Qed.
+
+Lemma omap_comp : omap (g \o f) =1 omap g \o omap f.
+Proof. by case. Qed.
+
+Lemma oapp_comp x : oapp (g \o f) x =1 (@oapp _ _)^~ x g \o omap f.
+Proof. by case. Qed.
+
+Lemma oapp_comp_f (x : rT) : oapp (g \o f) (g x) =1 g \o oapp f x.
+Proof. by case. Qed.
+
+Lemma olift_comp : olift (g \o f) = olift g \o f.
+Proof. by []. Qed.
+
+End OptionTheory.
 
 (** The empty type. **)
 
@@ -532,7 +573,7 @@ Proof. by case/all_tag=> f /all_pair[]; exists f. Qed.
 
 (**  Prenex Implicits and renaming.  **)
 Notation sval := (@proj1_sig _ _).
-Notation "@ 'sval'" := (@proj1_sig) (at level 10, format "@ 'sval'").
+Notation "@ 'sval'" := (@proj1_sig) (only parsing) : function_scope.
 
 Section Sig.
 
@@ -685,6 +726,14 @@ Proof. by move=> fK hK x; rewrite /= fK hK. Qed.
 Lemma pcan_pcomp f' h' :
   pcancel f f' -> pcancel h h' -> pcancel (f \o h) (pcomp h' f').
 Proof. by move=> fK hK x; rewrite /pcomp fK /= hK. Qed.
+
+Lemma ocan_comp [fo : B -> option A] [ho : C -> option B]
+    [f' : A -> B] [h' : B -> C] :
+  ocancel fo f' -> ocancel ho h' -> ocancel (obind fo \o ho) (h' \o f').
+Proof.
+move=> fK hK c /=; rewrite -[RHS]hK/=; case hcE : (ho c) => [b|]//=.
+by rewrite -[b in RHS]fK; case: (fo b) => //=; have := hK c; rewrite hcE.
+Qed.
 
 Lemma eq_inj : injective f -> f =1 g -> injective g.
 Proof. by move=> injf eqfg x y; rewrite -2!eqfg; apply: injf. Qed.

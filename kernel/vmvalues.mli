@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -15,7 +15,6 @@ open Names
 type values
 type structured_values
 type vm_env
-type vm_global
 type vprod
 type vfun
 type vfix
@@ -38,11 +37,13 @@ val cofix_evaluated_tag : tag
 type structured_constant =
   | Const_sort of Sorts.t
   | Const_ind of inductive
+  | Const_evar of Evar.t
   | Const_b0 of tag
-  | Const_univ_level of Univ.Level.t
+  | Const_univ_instance of UVars.Instance.t
   | Const_val of structured_values
   | Const_uint of Uint63.t
   | Const_float of Float64.t
+  | Const_string of Pstring.t
 
 val pp_struct_const : structured_constant -> Pp.t
 
@@ -61,12 +62,11 @@ val fun_val : vfun -> values
 val fix_val : vfix -> values
 val cofix_upd_val : to_update -> values
 
+val inj_env : values array -> vm_env
 val fun_env : vfun -> vm_env
 val fix_env : vfix -> vm_env
 val cofix_env : vcofix -> vm_env
 val cofix_upd_env : to_update -> vm_env
-
-val vm_global : values array -> vm_global
 
 (** Cast a value known to be a function, unsafe in general *)
 val fun_of_val : values -> vfun
@@ -85,7 +85,7 @@ type vswitch = {
     sw_env : vm_env
   }
 
-external mkAccuCode : int -> tcode = "coq_makeaccu"
+external mkAccuCode : int -> tcode = "rocq_makeaccu"
 
 val fun_code : vfun -> tcode
 val fix_code : vfix -> tcode
@@ -113,27 +113,18 @@ type zipper =
   | Zapp of arguments
   | Zfix of vfix * arguments  (** might be empty *)
   | Zswitch of vswitch
-  | Zproj of Projection.Repr.t (* name of the projection *)
+  | Zproj of int (* index of the projection as in Projection.Repr *)
 
 type stack = zipper list
 
-type whd =
-  | Vprod of vprod
-  | Vfun of vfun
-  | Vfix of vfix * arguments option
-  | Vcofix of vcofix * to_update * arguments option
-  | Vconstr_const of int
-  | Vconstr_block of vblock
-  | Vint64 of int64
-  | Vfloat64 of float
-  | Varray of values Parray.t
-  | Vatom_stk of atom * stack
-  | Vuniv_level of Univ.Level.t
+type accumulator = atom * stack
+
+type kind = (values, accumulator, vfun, vprod, vfix * arguments option, vcofix * to_update * arguments option, vblock) Values.kind
 
 (** For debugging purposes only *)
 
 val pr_atom : atom -> Pp.t
-val pr_whd : whd -> Pp.t
+val pr_kind : kind -> Pp.t
 val pr_stack : stack -> Pp.t
 
 (** Constructors *)
@@ -143,19 +134,20 @@ val val_of_rel : int -> values
 val val_of_named : Id.t -> values
 val val_of_constant : Constant.t -> values
 val val_of_evar : Evar.t -> values
-val val_of_proj : Projection.Repr.t -> values -> values
+val val_of_proj : int -> values -> values
 val val_of_atom : atom -> values
 val val_of_int : int -> structured_values
 val val_of_block : tag -> structured_values array -> structured_values
 val val_of_uint : Uint63.t -> structured_values
+val val_of_float : Float64.t -> structured_values
+val val_of_string : Pstring.t -> structured_values
 
 external val_of_annot_switch : annot_switch -> values = "%identity"
-external val_of_proj_name : Projection.Repr.t -> values = "%identity"
 
 (** Destructors *)
 
-val whd_val : values -> whd
-val uni_lvl_val : values -> Univ.Level.t
+val whd_val : values -> kind
+val uni_instance : values -> UVars.Instance.t
 
 (** Arguments *)
 
@@ -168,7 +160,7 @@ val dom : vprod -> values
 val codom : vprod -> vfun
 
 (** Fun *)
-external closure_arity : vfun -> int = "coq_closure_arity"
+external closure_arity : vfun -> int = "rocq_closure_arity"
 
 (** Fix *)
 
@@ -204,3 +196,10 @@ val parray_get_default : values
 val parray_set : values
 val parray_copy : values
 val parray_length : values
+
+val pstring_make : values
+val pstring_length : values
+val pstring_get : values
+val pstring_sub : values
+val pstring_cat : values
+val pstring_compare : values

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -26,7 +26,7 @@ let extract_prefix env info =
   share ctx1 ctx2 []
 
 let typecheck_evar ev env sigma =
-  let info = Evd.find sigma ev in
+  let info = Evd.find_undefined sigma ev in
   (* Typecheck the hypotheses. *)
   let type_hyp (sigma, env) decl =
     let t = NamedDecl.get_type decl in
@@ -54,9 +54,9 @@ let generic_refine ~typecheck f gl =
   let sigma = Evd.push_future_goals sigma in
   (* Create the refinement term *)
   Proofview.Unsafe.tclEVARS sigma >>= fun () ->
-  f >>= fun (v, c) ->
+  f >>= fun (v, c, principal) ->
   Proofview.tclEVARMAP >>= fun sigma' ->
-  Proofview.V82.wrap_exceptions begin fun () ->
+  Proofview.wrap_exceptions begin fun () ->
   (* Redo the effects in sigma in the monad's env *)
   let privates_csts = Evd.eval_side_effects sigma' in
   let env = Safe_typing.push_private_constants env privates_csts.Evd.seff_private in
@@ -83,7 +83,7 @@ let generic_refine ~typecheck f gl =
     (* Nothing to do, the goal has been solved by side-effect *)
     sigma
   | Some self ->
-    match future_goals.Evd.FutureGoals.principal with
+    match principal with
     | None -> Evd.define self c sigma
     | Some evk ->
         let id = Evd.evar_ident self sigma in
@@ -93,9 +93,9 @@ let generic_refine ~typecheck f gl =
         | Some id -> Evd.rename evk id sigma
   in
   (* Mark goals *)
-  let sigma = Proofview.Unsafe.mark_as_goals sigma future_goals.Evd.FutureGoals.comb in
-  let comb = CList.rev_map (fun x -> Proofview.goal_with_state x state) future_goals.Evd.FutureGoals.comb in
-  let trace env sigma = Pp.(hov 2 (str"simple refine"++spc()++
+  let sigma = Proofview.Unsafe.mark_as_goals sigma (Evd.FutureGoals.comb future_goals) in
+  let comb = CList.rev_map (fun x -> Proofview.goal_with_state x state) (Evd.FutureGoals.comb future_goals) in
+  let trace () = Pp.(hov 2 (str"simple refine"++spc()++
                                    Termops.Internal.print_constr_env env sigma c)) in
   Proofview.Trace.name_tactic trace (Proofview.tclUNIT v) >>= fun v ->
   Proofview.Unsafe.tclSETENV (Environ.reset_context env) <*>
@@ -106,7 +106,7 @@ let generic_refine ~typecheck f gl =
 
 let lift c =
   Proofview.tclEVARMAP >>= fun sigma ->
-  Proofview.V82.wrap_exceptions begin fun () ->
+  Proofview.wrap_exceptions begin fun () ->
   let (sigma, c) = c sigma in
   Proofview.Unsafe.tclEVARS sigma >>= fun () ->
   Proofview.tclUNIT c
@@ -116,7 +116,13 @@ let make_refine_enter ~typecheck f gl = generic_refine ~typecheck (lift f) gl
 
 let refine ~typecheck f =
   let f evd =
-    let (evd,c) = f evd in (evd,((), c))
+    let (evd,c) = f evd in (evd,((), c, None))
+  in
+  Proofview.Goal.enter (make_refine_enter ~typecheck f)
+
+let refine_with_principal ~typecheck f =
+  let f evd =
+    let (evd,c, principal) = f evd in (evd,((), c, principal))
   in
   Proofview.Goal.enter (make_refine_enter ~typecheck f)
 
@@ -130,5 +136,5 @@ let solve_constraints =
    try let sigma = Evarconv.solve_unif_constraints_with_heuristics env sigma in
        Unsafe.tclEVARSADVANCE sigma
    with e when CErrors.noncritical e ->
-     let info = Exninfo.reify () in
+     let e, info = Exninfo.capture e in
      tclZERO ~info e

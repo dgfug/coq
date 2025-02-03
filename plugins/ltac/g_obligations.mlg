@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,13 +12,12 @@
   Syntax for the subtac terms and types.
   Elaborated from correctness/psyntax.ml4 by Jean-Christophe Filliâtre *)
 
+DECLARE PLUGIN "rocq-runtime.plugins.ltac"
+
 {
 
-open Constrexpr
-open Constrexpr_ops
 open Stdarg
 open Tacarg
-open Extraargs
 
 let (set_default_tactic, get_default_tactic, print_default_tactic) =
   Tactic_option.declare_tactic_option "Program tactic"
@@ -26,12 +25,13 @@ let (set_default_tactic, get_default_tactic, print_default_tactic) =
 let () =
   (* Delay to recover the tactic imperatively *)
   let tac = Proofview.tclBIND (Proofview.tclUNIT ()) begin fun () ->
-    snd (get_default_tactic ())
-  end in
+      get_default_tactic ()
+    end
+  in
   Declare.Obls.default_tactic := tac
 
 let with_tac f tac =
-  let env = Genintern.empty_glob_sign (Global.env ()) in
+  let env = Genintern.empty_glob_sign ~strict:true (Global.env ()) in
   let tac = match tac with
   | None -> None
   | Some tac ->
@@ -45,67 +45,41 @@ let with_tac f tac =
  * Subtac. These entries are named Subtac.<foo>
  *)
 
-module Tactic = Pltac
+let pr_withtac env sigma = function
+  | None -> Pp.mt ()
+  | Some tac -> Pp.(str "with" ++ spc () ++ Pptactic.pr_raw_tactic env sigma tac)
 
-open Pcoq
-
-let sigref loc = mkRefC (Libnames.qualid_of_string ~loc "Coq.Init.Specif.sig")
-
-type 'a withtac_argtype = (Tacexpr.raw_tactic_expr option, 'a) Genarg.abstract_argument_type
-
-let wit_withtac : Tacexpr.raw_tactic_expr option Genarg.uniform_genarg_type =
-  Genarg.create_arg "withtac"
-
-let withtac = Pcoq.create_generic_entry2 "withtac" (Genarg.rawwit wit_withtac)
+let tactic = Pltac.tactic
 
 }
 
-GRAMMAR EXTEND Gram
-  GLOBAL: withtac;
-
-  withtac:
-    [ [ "with"; t = Tactic.tactic -> { Some t }
-      | -> { None } ] ]
-  ;
-
-  Constr.closed_binder: TOP
-    [[ "("; id=Prim.name; ":"; t=Constr.lconstr; "|"; c=Constr.lconstr; ")" -> {
-          let typ = mkAppC (sigref loc, [mkLambdaC ([id], default_binder_kind, t, c)]) in
-          [CLocalAssum ([id], default_binder_kind, typ)] }
-    ] ];
-
-  END
+VERNAC ARGUMENT EXTEND withtac PRINTED BY { pr_withtac env sigma }
+| [ ] -> { None }
+| [ "with" tactic(tac) ] -> { Some tac }
+END
 
 {
 
 open Declare.Obls
 
 let obligation ~pm obl tac = with_tac (fun t -> obligation ~pm obl t) tac
-let next_obligation ~pm obl tac = with_tac (fun t -> next_obligation ~pm obl t) tac
+let next_obligation ~pm ?final obl tac = with_tac (fun t -> next_obligation ~pm ?final obl t) tac
 
 let classify_obbl _ = Vernacextend.(VtStartProof (Doesn'tGuaranteeOpacity,[]))
 
 }
 
 VERNAC COMMAND EXTEND Obligations CLASSIFIED BY { classify_obbl } STATE declare_program
-| [ "Obligation" natural(num) "of" identref(name) ":" lglob(t) withtac(tac) ] ->
-    { obligation (num, Some name.CAst.v, Some t) tac }
 | [ "Obligation" natural(num) "of" identref(name) withtac(tac) ] ->
-    { obligation (num, Some name.CAst.v, None) tac }
-| [ "Obligation" natural(num) ":" lglob(t) withtac(tac) ] ->
-    { obligation (num, None, Some t) tac }
+    { obligation (num, Some name.CAst.v) tac }
 | [ "Obligation" natural(num) withtac(tac) ] ->
-    { obligation (num, None, None) tac }
+    { obligation (num, None) tac }
 | [ "Next" "Obligation" "of" identref(name) withtac(tac) ] ->
     { next_obligation (Some name.CAst.v) tac }
 | [ "Next" "Obligation" withtac(tac) ] -> { next_obligation None tac }
-END
-
-VERNAC COMMAND EXTEND Solve_Obligation CLASSIFIED AS SIDEFF STATE program
-| [ "Solve" "Obligation" natural(num) "of" identref(name) "with" tactic(t) ] ->
-    { try_solve_obligation num (Some name.CAst.v) (Some (Tacinterp.interp t)) }
-| [ "Solve" "Obligation" natural(num) "with" tactic(t) ] ->
-    { try_solve_obligation num None (Some (Tacinterp.interp t)) }
+| [ "Final" "Obligation" "of" identref(name) withtac(tac) ] ->
+    { next_obligation ~final:true (Some name.CAst.v) tac }
+| [ "Final" "Obligation" withtac(tac) ] -> { next_obligation ~final:true None tac }
 END
 
 VERNAC COMMAND EXTEND Solve_Obligations CLASSIFIED AS SIDEFF STATE program
@@ -132,9 +106,9 @@ VERNAC COMMAND EXTEND Admit_Obligations CLASSIFIED AS SIDEFF STATE program
 END
 
 VERNAC COMMAND EXTEND Set_Solver CLASSIFIED AS SIDEFF
-| #[ locality = Attributes.locality; ] [ "Obligation" "Tactic" ":=" tactic(t) ] -> {
+| #[ locality = Tactic_option.tac_option_locality; ] [ "Obligation" "Tactic" ":=" tactic(t) ] -> {
         set_default_tactic
-          (Locality.make_section_locality locality)
+          locality
           (Tacintern.glob_tactic t);
   }
 END
@@ -159,15 +133,3 @@ VERNAC COMMAND EXTEND Show_Preterm CLASSIFIED AS QUERY STATE read_program
 | [ "Preterm" "of" identref(name) ] -> { fun ~pm -> Feedback.msg_notice (show_term ~pm (Some name.CAst.v)) }
 | [ "Preterm" ] -> { fun ~pm -> Feedback.msg_notice (show_term ~pm None) }
 END
-
-{
-
-(* Declare a printer for the content of Program tactics *)
-let () =
-  let printer env sigma _ _ _ = function
-  | None -> mt ()
-  | Some tac -> str "with" ++ spc () ++ Pptactic.pr_raw_tactic env sigma tac
-  in
-  Pptactic.declare_extra_vernac_genarg_pprule wit_withtac printer
-
-}

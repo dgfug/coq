@@ -1,13 +1,13 @@
-;;; coqdev.el --- Emacs helpers for Coq development  -*- lexical-binding:t -*-
+;;; coqdev.el --- Emacs helpers for Rocq development  -*- lexical-binding:t -*-
 
-;; Copyright (C) 2018 The Coq Development Team
+;; Copyright (C) 2018 The Rocq Development Team
 
 ;; Maintainer: coqdev@inria.fr
 
 ;;; Commentary:
 
 ;; Helpers to set compilation commands, proof general variables, etc
-;; for Coq development
+;; for Rocq development
 
 ;; You can disable individual features without editing this file by
 ;; using `remove-hook', for instance
@@ -27,26 +27,37 @@
 ;; check out a malicious commit Emacs startup would allow it to run
 ;; arbitrary code, to avoid this you can copy coqdev.el to any
 ;; location and adjust the load path accordingly (of course if you run
-;; ./configure to compile Coq it is already too late).
+;; ./configure to compile Rocq it is already too late).
 
 ;;; Code:
+(require 'ocamldebug nil 'noerror)
 
+(require 'seq)
+(require 'subr-x)
+
+;; locate-dominating-file would call tramp handlers which call
+;; hack-local-variables-hook which call this recursively
+;; a proper fix would use some hook other than hack-local-variables
+;; for now just return nil for remote files
 (defun coqdev-default-directory ()
-  "Return the Coq repository containing `default-directory'."
-  (let ((dir (locate-dominating-file default-directory "coq-core.opam")))
-    (when dir (expand-file-name dir))))
+  "Return the Rocq repository containing `default-directory'."
+  (unless (file-remote-p default-directory)
+    (let ((dir (seq-some
+                (lambda (f) (locate-dominating-file default-directory f))
+                '("META.coq" "META.coq.in" "META.coq-core.in" "coqpp"))))
+      (when dir (expand-file-name dir)))))
 
 (defun coqdev-setup-compile-command ()
-  "Setup `compile-command' for Coq development."
+  "Setup `compile-command' for Rocq development."
   (let ((dir (coqdev-default-directory)))
-    ;; we add a space at the end to make it easy to add arguments (eg -j or target)
-    (when dir (setq-local compile-command (concat "make -C " (shell-quote-argument dir) " ")))))
+    (when dir (setq-local compile-command (concat "cd " (shell-quote-argument dir) "
+dune build @check # rocq-runtime.install dev/shim/rocq")))))
 (add-hook 'hack-local-variables-hook #'coqdev-setup-compile-command)
 
 (defvar camldebug-command-name) ; from camldebug.el (caml package)
 (defvar ocamldebug-command-name) ; from ocamldebug.el (tuareg package)
 (defun coqdev-setup-camldebug ()
-  "Setup ocamldebug for Coq development.
+  "Setup ocamldebug for Rocq development.
 
 Specifically `camldebug-command-name' and `ocamldebug-command-name'."
   (let ((dir (coqdev-default-directory)))
@@ -58,7 +69,7 @@ Specifically `camldebug-command-name' and `ocamldebug-command-name'."
 (add-hook 'hack-local-variables-hook #'coqdev-setup-camldebug)
 
 (defun coqdev-setup-tags ()
-  "Setup `tags-file-name' for Coq development."
+  "Setup `tags-file-name' for Rocq development."
   (let ((dir (coqdev-default-directory)))
     (when dir (setq-local tags-file-name (concat dir "TAGS")))))
 (add-hook 'hack-local-variables-hook #'coqdev-setup-tags)
@@ -73,20 +84,29 @@ Specifically `camldebug-command-name' and `ocamldebug-command-name'."
 (setq-default coq-prog-args nil)
 
 (defun coqdev-setup-proofgeneral ()
-  "Setup Proofgeneral variables for Coq development.
+  "Setup Proofgeneral variables for Rocq development.
 
 Note that this function is executed before _Coqproject is read if it exists."
   (let ((dir (coqdev-default-directory)))
     (when dir
-      (setq-local coq-prog-name (concat dir "_build/default/dev/shim/coqtop-prelude")))))
+      (if (string-prefix-p (concat dir "_build_ci") default-directory)
+          (setq-local coq-prog-name (concat dir "_build/install/default/bin/coqtop"))
+        (setq-local coq-prog-name (concat dir "_build/default/dev/shim/coqtop"))))))
 (add-hook 'hack-local-variables-hook #'coqdev-setup-proofgeneral)
 
-(defvar coqdev-ocamldebug-command "dune exec dev/dune-dbg"
+(defvar coqdev-ocamldebug-command "dune exec -- dev/dune-dbg -emacs coqc /tmp/foo.v"
   "Command run by `coqdev-ocamldebug'")
 
+(declare-function comint-check-proc "comint")
+(declare-function tuareg--split-args "tuareg")
+(declare-function ocamldebug-filter "ocamldebug")
+(declare-function ocamldebug-sentinel "ocamldebug")
+(declare-function ocamldebug-mode "ocamldebug")
+(declare-function ocamldebug-set-buffer "ocamldebug")
 (defun coqdev-ocamldebug ()
   "Runs a command in an ocamldebug buffer."
   (interactive)
+  (require 'ocamldebug)
   (let* ((dir (read-directory-name "Run from directory: "
                                    (coqdev-default-directory)))
          (name "ocamldebug-coq")
@@ -108,7 +128,56 @@ Note that this function is executed before _Coqproject is read if it exists."
         (set-process-sentinel (get-buffer-process (current-buffer))
                               #'ocamldebug-sentinel)
         (ocamldebug-mode)))
-  (ocamldebug-set-buffer)))
+    (ocamldebug-set-buffer)
+    (insert "source db")))
+
+;; Provide correct breakpoint setting in dune wrapped libraries
+;; (assuming only 1 library/dune file)
+(defun coqdev--read-from-file (file)
+  "Read FILE as a list of sexps. If invalid syntax, return nil and message the error."
+  (with-temp-buffer
+    (save-excursion
+      (insert "(\n")
+      (insert-file-contents file)
+      (goto-char (point-max))
+      (insert "\n)\n"))
+    (condition-case err
+        (read (current-buffer))
+      ((error err) (progn (message "Error reading file %S: %S" file err) nil)))))
+
+(defun coqdev--find-single-library (sexps)
+  "If list SEXPS has an element whose `car' is \"library\", return the first one.
+Otherwise return `nil'."
+  (let ((libs (seq-filter (lambda (elt) (equal (car elt) 'library)) sexps)))
+    (and libs (car libs))))
+
+(defun coqdev--dune-library-name (lib)
+  "With LIB a dune-syntax library stanza, get its name as a string."
+  (let ((field (or (seq-find (lambda (field) (and (consp field) (equal (car field) 'name))) lib)
+                   (seq-find (lambda (field) (and (consp field) (equal (car field) 'public\_name))) lib))))
+    (symbol-name (car (cdr field)))))
+
+(defun coqdev--upcase-first-char (arg)
+  "Set the first character of ARG to uppercase."
+  (concat (upcase (substring arg 0 1)) (substring arg 1 (length arg))))
+
+(defun coqdev--real-module-name (filename)
+  "Return module name for ocamldebug, taking into account dune wrapping.
+(for now only understands dune files with a single library stanza)"
+  (let ((mod (substring filename (string-match "\\([^/]*\\)\\.ml$" filename) (match-end 1)))
+        (dune (concat (file-name-directory filename) "dune")))
+    (if (file-exists-p dune)
+        (if-let* ((contents (coqdev--read-from-file dune))
+                  (lib (coqdev--find-single-library contents))
+                  (is-wrapped (null (seq-contains-p lib '(wrapped false))))
+                  (libname (coqdev--dune-library-name lib)))
+            (concat libname "__" (coqdev--upcase-first-char mod))
+          mod)
+      mod)))
+
+(with-eval-after-load 'ocamldebug
+  (defun ocamldebug-module-name (arg)
+    (coqdev--real-module-name arg)))
 
 ;; This Elisp snippet adds a regexp parser for the format of Anomaly
 ;; backtraces (coqc -bt ...), to the error parser of the Compilation
@@ -130,13 +199,14 @@ Note that this function is executed before _Coqproject is read if it exists."
 (defvar bug-reference-bug-regexp)
 (defvar bug-reference-url-format)
 (defun coqdev-setup-bug-reference-mode ()
-  "Setup `bug-reference-bug-regexp' and `bug-reference-url-format' for Coq.
+  "Setup `bug-reference-bug-regexp' and `bug-reference-url-format' for Rocq.
 
 This does not enable `bug-reference-mode'."
   (let ((dir (coqdev-default-directory)))
     (when dir
-      (setq-local bug-reference-bug-regexp "#\\(?2:[0-9]+\\)")
-      (setq-local bug-reference-url-format "https://github.com/coq/coq/issues/%s"))))
+      (setq-local bug-reference-bug-regexp "\\(#\\(?2:[0-9]+\\)\\)")
+      (setq-local bug-reference-url-format "https://github.com/coq/coq/issues/%s")
+      (when (derived-mode-p 'prog-mode) (bug-reference-prog-mode 1)))))
 (add-hook 'hack-local-variables-hook #'coqdev-setup-bug-reference-mode)
 
 (defun coqdev-sphinx-quote-coq-refman-region (left right &optional offset beg end)

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -55,15 +55,15 @@ type internalization_env = var_internalization_data Id.Map.t
 
 val empty_internalization_env : internalization_env
 
-val compute_internalization_data : env -> evar_map -> Id.t -> var_internalization_type ->
+val compute_internalization_data : env -> evar_map -> ?silent:bool -> Id.t -> var_internalization_type ->
   types -> Impargs.manual_implicits -> var_internalization_data
 
-val compute_internalization_env : env -> evar_map -> ?impls:internalization_env -> var_internalization_type ->
+val compute_internalization_env : env -> evar_map -> ?impls:internalization_env -> ?force:Id.Set.t list -> var_internalization_type ->
   Id.t list -> types list -> Impargs.manual_implicits list ->
   internalization_env
 
-val extend_internalization_data :
-  var_internalization_data -> Impargs.implicit_status -> scope_name option -> var_internalization_data
+val implicits_of_decl_in_internalization_env :
+  Id.t -> internalization_env -> Impargs.implicit_status list
 
 type ltac_sign = {
   ltac_vars : Id.Set.t;
@@ -82,8 +82,10 @@ val intern_constr : env -> evar_map -> constr_expr -> glob_constr
 val intern_type : env -> evar_map -> constr_expr -> glob_constr
 
 val intern_gen : typing_constraint -> env -> evar_map ->
-  ?impls:internalization_env -> ?pattern_mode:bool -> ?ltacvars:ltac_sign ->
+  ?impls:internalization_env -> ?strict_check:bool -> ?pattern_mode:bool -> ?ltacvars:ltac_sign ->
   constr_expr -> glob_constr
+
+val intern_unknown_if_term_or_type : env -> evar_map -> constr_expr -> glob_constr
 
 val intern_pattern : env -> cases_pattern_expr ->
   lident list * (Id.t Id.Map.t * cases_pattern) list
@@ -96,14 +98,14 @@ val intern_context : env -> bound_univs:UnivNames.universe_binders ->
 (** Main interpretation functions, using type class inference,
     expecting evars and pending problems to be all resolved *)
 
-val interp_constr : ?expected_type:typing_constraint -> env -> evar_map -> ?impls:internalization_env ->
-  constr_expr -> constr Evd.in_evar_universe_context
+val interp_constr : ?flags:inference_flags -> ?expected_type:typing_constraint -> env -> evar_map -> ?impls:internalization_env ->
+  constr_expr -> constr Evd.in_ustate
 
-val interp_casted_constr : env -> evar_map -> ?impls:internalization_env ->
-  constr_expr -> types -> constr Evd.in_evar_universe_context
+val interp_casted_constr : ?flags:inference_flags -> env -> evar_map -> ?impls:internalization_env ->
+  constr_expr -> types -> constr Evd.in_ustate
 
-val interp_type : env -> evar_map -> ?impls:internalization_env ->
-  constr_expr -> types Evd.in_evar_universe_context
+val interp_type : ?flags:inference_flags -> env -> evar_map -> ?impls:internalization_env ->
+  constr_expr -> types Evd.in_ustate
 
 (** Main interpretation function expecting all postponed problems to
     be resolved, but possibly leaving evars. *)
@@ -139,43 +141,42 @@ val interp_type_evars_impls : ?flags:inference_flags -> env -> evar_map ->
 
 (** Without typing *)
 val intern_constr_pattern :
-  env -> evar_map -> ?as_type:bool -> ?ltacvars:ltac_sign ->
-    constr_pattern_expr -> patvar list * constr_pattern
+  env -> evar_map -> ?as_type:bool -> ?strict_check:bool -> ?ltacvars:ltac_sign ->
+    constr_pattern_expr -> Id.Set.t * constr_pattern
 
-(** With typing *)
-val interp_constr_pattern :
-  env -> evar_map -> ?expected_type:typing_constraint ->
-    constr_pattern_expr -> constr_pattern
+val intern_uninstantiated_constr_pattern :
+  env -> evar_map -> ?as_type:bool -> ?strict_check:bool -> ?ltacvars:ltac_sign ->
+    constr_pattern_expr -> Id.Set.t * [`uninstantiated] constr_pattern_r
 
-(** Returns None if it's a syndef not bound to a name, raises an error
+(** Returns None if it's an abbreviation not bound to a name, raises an error
     if not existing *)
 val intern_reference : qualid -> GlobRef.t option
 
-(** Returns None if not a reference or a syndef not bound to a name *)
+(** Returns None if not a reference or a abbrev not bound to a name *)
 val intern_name_alias :
-  constr_expr -> (GlobRef.t * Glob_term.glob_level list option) option
+  constr_expr -> (GlobRef.t * Glob_term.glob_instance option) option
 
-(** Expands abbreviations (syndef); raise an error if not existing *)
+(** Expands abbreviations; raise an error if not existing *)
 val interp_reference : ltac_sign -> qualid -> glob_constr
 
 (** Interpret binders *)
 
 val interp_binder  : env -> evar_map -> Name.t -> constr_expr ->
-  types Evd.in_evar_universe_context
+  types Evd.in_ustate
 
 val interp_binder_evars : env -> evar_map -> Name.t -> constr_expr -> evar_map * types
 
-(** Interpret contexts: returns extended env and context *)
+(** Interpret contexts: returns extended env and context. *)
 
 val interp_context_evars :
-  ?program_mode:bool -> ?impl_env:internalization_env ->
+  ?program_mode:bool -> ?unconstrained_sorts:bool -> ?impl_env:internalization_env ->
   env -> evar_map -> local_binder_expr list ->
   evar_map * (internalization_env * ((env * rel_context) * Impargs.manual_implicits))
 
-(** Interpret named contexts: returns context *)
+(** Interpret named contexts *)
 
 val interp_named_context_evars :
-  ?program_mode:bool -> ?impl_env:internalization_env ->
+  ?program_mode:bool -> ?unconstrained_sorts:bool -> ?impl_env:internalization_env -> ?autoimp_enable:bool ->
   env -> evar_map -> local_binder_expr list ->
   evar_map * (internalization_env * ((env * named_context) * Impargs.manual_implicits))
 
@@ -189,20 +190,17 @@ val is_global : Id.t -> bool
     guaranteed to have the same domain as the input one. *)
 val interp_notation_constr : env -> ?impls:internalization_env ->
   notation_interp_env -> constr_expr ->
-  (bool * subscopes) Id.Map.t * notation_constr * reversibility_status
+  (bool * subscopes * Id.Set.t) Id.Map.t * notation_constr * reversibility_status
 
 (** Idem but to glob_constr (weaker check of binders) *)
 
 val intern_core : typing_constraint ->
-  env -> evar_map -> ?pattern_mode:bool -> ?ltacvars:ltac_sign ->
+  env -> evar_map -> ?strict_check:bool -> ?pattern_mode:bool -> ?ltacvars:ltac_sign ->
   Genintern.intern_variable_status -> constr_expr ->
   glob_constr
 
 (** Globalization options *)
 val parsing_explicit : bool ref
-
-(** Globalization leak for Grammar *)
-val for_grammar : ('a -> 'b) -> 'a -> 'b
 
 (** Placeholder for global option, should be moved to a parameter *)
 val get_asymmetric_patterns : unit -> bool
@@ -211,7 +209,10 @@ val check_duplicate : ?loc:Loc.t -> (qualid * constr_expr) list -> unit
 (** Check that a list of record field definitions doesn't contain
     duplicates. *)
 
-val interp_known_level : Evd.evar_map -> sort_name_expr -> Univ.Level.t
+val interp_univ_constraint
+  : Evd.evar_map
+  -> sort_name_expr * Univ.constraint_type * sort_name_expr
+  -> Univ.univ_constraint
 
 (** Local universe and constraint declarations. *)
 val interp_univ_decl : Environ.env -> universe_decl_expr ->
@@ -224,3 +225,8 @@ val interp_cumul_univ_decl_opt : Environ.env -> cumul_univ_decl_expr option ->
   Evd.evar_map * UState.universe_decl * Entries.variance_entry
 (** BEWARE the variance entry needs to be adjusted by
    [ComInductive.variance_of_entry] if the instance is extensible. *)
+
+val interp_mutual_univ_decl_opt : Environ.env -> universe_decl_expr option list ->
+  Evd.evar_map * UState.universe_decl
+(** Check that all defined udecls of a list of udecls associated to a mutual definition
+    are the same and interpret this common udecl *)

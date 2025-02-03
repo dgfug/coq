@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -22,8 +22,8 @@ open Namegen
 open Inductiveops
 open Printer
 open Retyping
-open Tacmach.New
-open Tacticals.New
+open Tacmach
+open Tacticals
 open Tactics
 open Elim
 open Equality
@@ -85,12 +85,11 @@ let make_inv_predicate env evd indf realargs id status concl =
     match status with
       | NoDep ->
           (* We push the arity and leave concl unchanged *)
-          let hyps_arity,_ = get_arity env indf in
-          let hyps_arity = List.map (fun d -> map_rel_decl EConstr.of_constr d) hyps_arity in
+          let hyps_arity = get_arity env indf in
             (hyps_arity,concl)
       | Dep dflt_concl ->
           if not (occur_var env !evd id concl) then
-            user_err ~hdr:"make_inv_predicate"
+            user_err
               (str "Current goal does not depend on " ++ Id.print id ++ str".");
           (* We abstract the conclusion of goal with respect to
              realargs and c to * be concl in order to rewrite and have
@@ -105,7 +104,8 @@ let make_inv_predicate env evd indf realargs id status concl =
                 let evd',(p,ptyp) = Unification.abstract_list_all env
                   !evd p concl (realargs@[mkVar id])
                 in evd := evd'; p in
-          let hyps,bodypred = decompose_lam_n_assum !evd (nrealargs+1) pred in
+          (* abstract_list_all returns only lambda *)
+          let hyps,bodypred = decompose_lambda_n_assum !evd (nrealargs+1) pred in
           (* We lift to make room for the equations *)
           (hyps,lift nrealargs bodypred)
   in
@@ -116,11 +116,16 @@ let make_inv_predicate env evd indf realargs id status concl =
   (* Now, we can recurse down this list, for each ai,(mkRel k) whether to
      push <Ai>(mkRel k)=ai (when   Ai is closed).
    In any case, we carry along the rest of pairs *)
-  let eqdata =
-    try Coqlib.build_coq_eq_data ()
-    with UserError _ ->
-    try Coqlib.build_coq_identity_data ()
-    with UserError _ -> user_err (str "No registered equality.") in
+  let eq_term, refl_term =
+    try Rocqlib.lib_ref "core.eq.type", Rocqlib.lib_ref "core.eq.refl"
+    with Rocqlib.NotFoundRef _ ->
+    try Rocqlib.lib_ref "core.identity.type", Rocqlib.lib_ref "core.identity.refl"
+    with Rocqlib.NotFoundRef _ ->
+      user_err (str "No registered equality" ++ spc() ++
+                hov 1
+                  (str "(needs \"core.eq.type\" and \"core.eq.refl\"" ++ spc() ++
+                   str "or \"core.identity.type\" and \"core.identy.refl\")."))
+  in
   let rec build_concl eqns args n = function
     | [] -> it_mkProd concl eqns, Array.rev_of_list args
     | ai :: restlist ->
@@ -128,18 +133,22 @@ let make_inv_predicate env evd indf realargs id status concl =
         let (xi, ti) = compute_eqn env' !evd nhyps n ai in
         let (lhs,eqnty,rhs) =
           if closed0 !evd ti then
+            (* shortcut *)
             (xi,ti,ai)
           else
-            let sigma, res = make_iterated_tuple env' !evd ai (xi,ti) in
-              evd := sigma; res
+            let open Combinators in
+            let sigma, {telescope_value; telescope_type}, default_value = make_iterated_tuple env' !evd ~default:ai xi ti in
+              evd := sigma; telescope_value, telescope_type, default_value
         in
-        let eq_term = eqdata.Coqlib.eq in
         let eq = evd_comb1 (Evd.fresh_global env) evd eq_term in
         let eqn = applist (eq,[eqnty;lhs;rhs]) in
-        let eqns = (make_annot Anonymous Sorts.Relevant, lift n eqn) :: eqns in
-        let refl_term = eqdata.Coqlib.refl in
-        let refl_term = evd_comb1 (Evd.fresh_global env) evd refl_term in
+        let refl_term =
+          let _, u = destRef !evd eq in
+          mkRef (refl_term, u)
+        in
         let refl = mkApp (refl_term, [|eqnty; rhs|]) in
+        let r = Retyping.relevance_of_term env !evd refl in
+        let eqns = (make_annot Anonymous r, lift n eqn) :: eqns in
         let _ = evd_comb1 (Typing.type_of env) evd refl in
         let args = refl :: args in
         build_concl eqns args (succ n) restlist
@@ -290,7 +299,7 @@ let generalizeRewriteIntros as_mode tac depids id =
   let dids = dependent_hyps env id depids gl in
   let reintros = if as_mode then intros_replacing else intros_possibly_replacing in
   (tclTHENLIST
-    [bring_hyps dids; tac;
+    [Generalize.bring_hyps dids; tac;
      (* may actually fail to replace if dependent in a previous eq *)
      reintros (ids_of_named_context dids)])
   end
@@ -355,8 +364,9 @@ let remember_first_eq id x = if !x == Logic.MoveLast then x := Logic.MoveAfter i
 let dest_nf_eq env sigma t = match EConstr.kind sigma t with
 | App (r, [| t; x; y |]) ->
   let open Reductionops in
-  let is_global_exists gr c =
-    Coqlib.has_ref gr && isRefX sigma (Coqlib.lib_ref gr) c
+  let is_global_exists gr c = match Rocqlib.lib_ref_opt gr with
+    | Some gr -> isRefX env sigma gr c
+    | None -> false
   in
   let is_eq = is_global_exists "core.eq.type" r in
   let is_identity = is_global_exists "core.identity.type" r in
@@ -383,8 +393,7 @@ let projectAndApply as_mode thin avoid id eqname names depids =
     | _ -> tac id
     end
   in
-  let deq_trailer id clear_flag _ neqns =
-    assert (clear_flag == None);
+  let deq_trailer id neqns =
     tclTHENLIST
       [if as_mode then clear [id] else tclIDTAC;
        (tclMAP_i (false,false) neqns (function (idopt,_) ->
@@ -424,9 +433,9 @@ let rewrite_equations as_mode othin neqns names ba =
     | Some thin ->
         tclTHENLIST
             [tclDO neqns intro;
-             bring_hyps nodepids;
+             Generalize.bring_hyps nodepids;
              clear (ids_of_named_context nodepids);
-             (nLastDecls neqns (fun ctx -> bring_hyps (List.rev ctx)));
+             (nLastDecls neqns (fun ctx -> Generalize.bring_hyps (List.rev ctx)));
              (nLastDecls neqns (fun ctx -> clear (ids_of_named_context ctx)));
              tclMAP_i (true,false) neqns (fun (idopt,names) ->
                (tclTHEN
@@ -447,7 +456,7 @@ let rewrite_equations as_mode othin neqns names ba =
         else
           (tclTHENLIST
              [tclDO neqns intro;
-              bring_hyps nodepids;
+              Generalize.bring_hyps nodepids;
               clear (ids_of_named_context nodepids)])
   end
 
@@ -485,9 +494,9 @@ let raw_inversion inv_kind id status names =
     let dep = status != NoDep && (local_occur_var sigma id concl) in
     let cut_concl =
       if dep then
-        Reductionops.beta_applist sigma (elim_predicate, realargs@[c])
+        applist (elim_predicate, realargs@[c])
       else
-        Reductionops.beta_applist sigma (elim_predicate, realargs)
+        applist (elim_predicate, realargs)
     in
     let refined id =
       let prf = mkApp (mkVar id, args) in
@@ -495,12 +504,16 @@ let raw_inversion inv_kind id status names =
     in
     let neqns = List.length realargs in
     let as_mode = names != None in
-    let (_, args) = decompose_app_vect sigma t in
+    let (_, args) = decompose_app sigma t in
+    let solve_tac =
+      (* We have to change again because assert_before performs βι-reduction *)
+      change_concl cut_concl <*>
+      case_tac dep names (rewrite_equations_tac as_mode inv_kind id neqns) (ind, u, args) id
+    in
     tclTHEN (Proofview.Unsafe.tclEVARS sigma)
       (tclTHENS
         (assert_before Anonymous cut_concl)
-        [case_tac dep names (rewrite_equations_tac as_mode inv_kind id neqns) elim_predicate (ind, u, args) id;
-        onLastHypId (fun id -> tclTHEN (refined id) reflexivity)])
+        [solve_tac; onLastHypId (fun id -> tclTHEN (refined id) reflexivity)])
   end
 
 (* Error messages of the inversion tactics *)
@@ -529,13 +542,13 @@ let inv_gen thin status names =
 
 let inv k = inv_gen k NoDep
 
-let inv_tac id       = inv FullInversion None (NamedHyp id)
-let inv_clear_tac id = inv FullInversionClear None (NamedHyp id)
+let inv_tac id       = inv FullInversion None (NamedHyp (CAst.make id))
+let inv_clear_tac id = inv FullInversionClear None (NamedHyp (CAst.make id))
 
 let dinv k c = inv_gen k (Dep c)
 
-let dinv_tac id       = dinv FullInversion None None (NamedHyp id)
-let dinv_clear_tac id = dinv FullInversionClear None None (NamedHyp id)
+let dinv_tac id       = dinv FullInversion None None (NamedHyp (CAst.make id))
+let dinv_clear_tac id = dinv FullInversionClear None None (NamedHyp (CAst.make id))
 
 (* InvIn will bring the specified clauses into the conclusion, and then
  * perform inversion on the named hypothesis.  After, it will intro them
@@ -562,7 +575,7 @@ let invIn k names ids id =
     in
     Proofview.tclORELSE
       (tclTHENLIST
-         [bring_hyps hyps;
+         [Generalize.bring_hyps hyps;
           inversion k NoDep names id;
           intros_replace_ids])
       (wrap_inv_error id)

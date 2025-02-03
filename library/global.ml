@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -9,7 +9,6 @@
 (************************************************************************)
 
 open Names
-open Environ
 
 (** We introduce here the global environment of the system,
     and we declare it as a synchronized table. *)
@@ -20,34 +19,27 @@ module GlobalSafeEnv : sig
 
   val safe_env : unit -> Safe_typing.safe_environment
   val set_safe_env : Safe_typing.safe_environment -> unit
-  val join_safe_environment : ?except:Future.UUIDSet.t -> unit -> unit
   val is_joined_environment : unit -> bool
+  val is_curmod_library : unit -> bool
   val global_env_summary_tag : Safe_typing.safe_environment Summary.Dyn.tag
 
 end = struct
 
-let global_env = ref Safe_typing.empty_environment
-
-let join_safe_environment ?except () =
-  global_env := Safe_typing.join_safe_environment ?except !global_env
+let global_env, global_env_summary_tag =
+  Summary.ref_tag ~name:global_env_summary_name Safe_typing.empty_environment
 
 let is_joined_environment () =
   Safe_typing.is_joined_environment !global_env
 
-let global_env_summary_tag =
-  Summary.declare_summary_tag global_env_summary_name
-    { Summary.freeze_function = (fun ~marshallable -> if marshallable then
-        (join_safe_environment (); !global_env)
-        else !global_env);
-      unfreeze_function = (fun fr -> global_env := fr);
-      init_function = (fun () -> global_env := Safe_typing.empty_environment) }
+let is_curmod_library () =
+  Safe_typing.is_curmod_library !global_env
 
-let assert_not_parsing () =
-  if !Flags.we_are_parsing then
+let assert_not_synterp () =
+  if !Flags.in_synterp_phase then
     CErrors.anomaly (
-      Pp.strbrk"The global environment cannot be accessed during parsing.")
+      Pp.strbrk"The global environment cannot be accessed during the syntactic interpretation phase.")
 
-let safe_env () = assert_not_parsing(); !global_env
+let safe_env () = assert_not_synterp(); !global_env
 
 let set_safe_env e = global_env := e
 
@@ -56,29 +48,31 @@ end
 let global_env_summary_tag = GlobalSafeEnv.global_env_summary_tag
 
 let safe_env = GlobalSafeEnv.safe_env
-let join_safe_environment ?except () =
-  GlobalSafeEnv.join_safe_environment ?except ()
 let is_joined_environment = GlobalSafeEnv.is_joined_environment
+let is_curmod_library = GlobalSafeEnv.is_curmod_library
 
 let env () = Safe_typing.env_of_safe_env (safe_env ())
 
-let env_is_initial () = Safe_typing.is_initial (safe_env ())
-
 (** Turn ops over the safe_environment state monad to ops on the global env *)
 
-let globalize0 f = GlobalSafeEnv.set_safe_env (f (safe_env ()))
+let prof f () =
+  NewProfile.profile "kernel" f ()
+
+let globalize0 f = prof (fun () -> GlobalSafeEnv.set_safe_env (f (safe_env ()))) ()
 
 let globalize f =
-  let res,env = f (safe_env ()) in GlobalSafeEnv.set_safe_env env; res
+  prof (fun () ->
+      let res,env = f (safe_env ()) in GlobalSafeEnv.set_safe_env env; res)
+    ()
 
 let globalize0_with_summary fs f =
-  let env = f (safe_env ()) in
-  Summary.unfreeze_summaries fs;
+  let env = prof (fun () -> f (safe_env ())) () in
+  Summary.Interp.unfreeze_summaries fs;
   GlobalSafeEnv.set_safe_env env
 
 let globalize_with_summary fs f =
-  let res,env = f (safe_env ()) in
-  Summary.unfreeze_summaries fs;
+  let res,env = prof (fun () -> f (safe_env ())) () in
+  Summary.Interp.unfreeze_summaries fs;
   GlobalSafeEnv.set_safe_env env;
   res
 
@@ -90,7 +84,7 @@ let push_named_assum a = globalize0 (Safe_typing.push_named_assum a)
 let push_named_def d = globalize0 (Safe_typing.push_named_def d)
 let push_section_context c = globalize0 (Safe_typing.push_section_context c)
 let add_constraints c = globalize0 (Safe_typing.add_constraints c)
-let push_context_set ~strict c = globalize0 (Safe_typing.push_context_set ~strict c)
+let push_context_set c = globalize0 (Safe_typing.push_context_set ~strict:true c)
 
 let set_impredicative_set c = globalize0 (Safe_typing.set_impredicative_set c)
 let set_indices_matter b = globalize0 (Safe_typing.set_indices_matter b)
@@ -99,14 +93,15 @@ let set_check_guarded c = globalize0 (Safe_typing.set_check_guarded c)
 let set_check_positive c = globalize0 (Safe_typing.set_check_positive c)
 let set_check_universes c = globalize0 (Safe_typing.set_check_universes c)
 let typing_flags () = Environ.typing_flags (env ())
-let set_cumulative_sprop b =
-  set_typing_flags {(typing_flags()) with Declarations.cumulative_sprop = b}
-let is_cumulative_sprop () = (typing_flags()).Declarations.cumulative_sprop
 let set_allow_sprop b = globalize0 (Safe_typing.set_allow_sprop b)
 let sprop_allowed () = Environ.sprop_allowed (env())
+let set_rewrite_rules_allowed b = globalize0 (Safe_typing.set_rewrite_rules_allowed b)
+let rewrite_rules_allowed () = Environ.rewrite_rules_allowed (env())
 let export_private_constants cd = globalize (Safe_typing.export_private_constants cd)
 let add_constant ?typing_flags id d = globalize (Safe_typing.add_constant ?typing_flags (i2l id) d)
-let add_private_constant id d = globalize (Safe_typing.add_private_constant (i2l id) d)
+let add_private_constant id u d = globalize (Safe_typing.add_private_constant (i2l id) u d)
+let fill_opaque c = globalize0 (Safe_typing.fill_opaque c)
+let add_rewrite_rules id c = globalize0 (Safe_typing.add_rewrite_rules (i2l id) c)
 let add_mind ?typing_flags id mie = globalize (Safe_typing.add_mind ?typing_flags (i2l id) mie)
 let add_modtype id me inl = globalize (Safe_typing.add_modtype (i2l id) me inl)
 let add_module id me inl = globalize (Safe_typing.add_module (i2l id) me inl)
@@ -130,41 +125,43 @@ let add_module_parameter mbid mte inl =
 
 (** Queries on the global environment *)
 
-let universes () = universes (env())
-let universes_lbound () = universes_lbound (env())
-let named_context () = named_context (env())
-let named_context_val () = named_context_val (env())
+let universes () = Environ.universes (env())
+let named_context () = Environ.named_context (env())
+let named_context_val () = Environ.named_context_val (env())
 
-let lookup_named id = lookup_named id (env())
-let lookup_constant kn = lookup_constant kn (env())
+let lookup_named id = Environ.lookup_named id (env())
+let lookup_constant kn = Environ.lookup_constant kn (env())
 let lookup_inductive ind = Inductive.lookup_mind_specif (env()) ind
 let lookup_pinductive (ind,_) = Inductive.lookup_mind_specif (env()) ind
-let lookup_mind kn = lookup_mind kn (env())
+let lookup_mind kn = Environ.lookup_mind kn (env())
 
-let lookup_module mp = lookup_module mp (env())
-let lookup_modtype kn = lookup_modtype kn (env())
+let lookup_module mp = Environ.lookup_module mp (env())
+let lookup_modtype kn = Environ.lookup_modtype kn (env())
 
 let exists_objlabel id = Safe_typing.exists_objlabel id (safe_env ())
 
-let opaque_tables () = Environ.opaque_tables (env ())
+type indirect_accessor = {
+  access_proof : Opaqueproof.opaque -> Opaqueproof.opaque_proofterm option;
+}
 
-let body_of_constant_body access env cb =
+let force_proof access o = match access.access_proof o with
+| None -> CErrors.user_err Pp.(str "Cannot access opaque delayed proof")
+| Some (c, u) -> (c, u)
+
+let body_of_constant_body access cb =
   let open Declarations in
-  let otab = Environ.opaque_tables env in
   match cb.const_body with
-  | Undef _ | Primitive _ ->
+  | Undef _ | Primitive _ | Symbol _ ->
      None
   | Def c ->
     let u = match cb.const_universes with
-    | Monomorphic _ -> Opaqueproof.PrivateMonomorphic ()
-    | Polymorphic auctx -> Opaqueproof.PrivatePolymorphic (Univ.AbstractContext.size auctx, Univ.ContextSet.empty)
+    | Monomorphic -> Opaqueproof.PrivateMonomorphic ()
+    | Polymorphic auctx -> Opaqueproof.PrivatePolymorphic Univ.ContextSet.empty
     in
     Some (c, u, Declareops.constant_polymorphic_context cb)
   | OpaqueDef o ->
-    let c, u = Opaqueproof.force_proof access otab o in
+    let c, u = force_proof access o in
     Some (c, u, Declareops.constant_polymorphic_context cb)
-
-let body_of_constant_body access ce = body_of_constant_body access (env ()) ce
 
 let body_of_constant access cst = body_of_constant_body access (lookup_constant cst)
 
@@ -179,24 +176,24 @@ let mind_of_delta_kn kn =
 (** Operations on libraries *)
 
 let start_library dir = globalize (Safe_typing.start_library dir)
-let export ?except ~output_native_objects s =
-  Safe_typing.export ?except ~output_native_objects (safe_env ()) s
-let import c u d = globalize (Safe_typing.import c u d)
-
+let export ~output_native_objects s =
+  Safe_typing.export ~output_native_objects (safe_env ()) s
+let import c t d = globalize (Safe_typing.import c t d)
 
 (** Function to get an environment from the constants part of the global
     environment and a given context. *)
 
 let env_of_context hyps =
-  reset_with_named_context hyps (env())
+  Environ.reset_with_named_context hyps (env())
 
-let is_polymorphic r = Environ.is_polymorphic (env()) r
+let is_polymorphic r =
+  Environ.is_polymorphic (env()) r
 
-let is_template_polymorphic r = is_template_polymorphic (env ()) r
+let is_template_polymorphic r =
+  Environ.is_template_polymorphic (env ()) r
 
-let get_template_polymorphic_variables r = get_template_polymorphic_variables (env ()) r
-
-let is_type_in_type r = is_type_in_type (env ()) r
+let is_type_in_type r =
+  Environ.is_type_in_type (env ()) r
 
 let current_modpath () =
   Safe_typing.current_modpath (safe_env ())
@@ -206,7 +203,7 @@ let current_dirpath () =
 
 let with_global f =
   let (a, ctx) = f (env ()) (current_dirpath ()) in
-  push_context_set ~strict:true ctx; a
+  push_context_set ctx; a
 
 let register_inline c = globalize0 (Safe_typing.register_inline c)
 let register_inductive c r = globalize0 (Safe_typing.register_inductive c r)

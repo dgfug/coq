@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -23,6 +23,42 @@ open Patternops
 open Context.Rel.Declaration
 open Ltac_pretype
 (*i*)
+
+let error_instantiate_pattern id l =
+  let is = match l with
+  | [_] -> "is"
+  | _ -> "are"
+  in
+  user_err  (str "Cannot substitute the term bound to " ++ Id.print id
+    ++ strbrk " in pattern because the term refers to " ++ pr_enum Id.print l
+    ++ strbrk " which " ++ str is ++ strbrk " not bound in the pattern.")
+
+type instantiated_pattern = constr_pattern
+
+let instantiate_pattern env sigma lvar c =
+  let open EConstr in
+  let open Vars in
+  let rec aux vars = function
+  | PVar id as x ->
+      (try
+        let ctx,c = Id.Map.find id lvar in
+        try
+          let inst =
+            List.map
+              (fun id -> mkRel (List.index Name.equal (Name id) vars))
+              ctx
+          in
+          let c = substl inst c in
+          pattern_of_constr env sigma c
+        with Not_found (* List.index failed *) ->
+          let vars =
+            List.map_filter (function Name id -> Some id | _ -> None) vars in
+          error_instantiate_pattern id (List.subtract Id.equal ctx vars)
+       with Not_found (* Map.find failed *) ->
+         x)
+  | c ->
+      map_pattern_with_binders (fun id vars -> id::vars) aux vars c in
+  if Id.Map.is_empty lvar then c else aux [] c
 
 (* Given a term with second-order variables in it,
    represented by Meta's, and possibly applied using [SOAPP] to
@@ -52,7 +88,7 @@ type bound_ident_map = Id.t Id.Map.t
 exception PatternMatchingFailure
 
 let warn_meta_collision =
-  CWarnings.create ~name:"meta-collision" ~category:"ltac"
+  CWarnings.create ~name:"meta-collision" ~category:CWarnings.CoreCategories.ltac
          (fun name ->
           strbrk "Collision between bound variable " ++ Id.print name ++
             strbrk " and a metavariable of same name.")
@@ -245,11 +281,11 @@ let matches_core env sigma allow_bound_rels
     match ref, EConstr.kind sigma c with
     | VarRef id, Var id' -> Names.Id.equal id id'
     | ConstRef c, Const (c',_) -> Environ.QConstant.equal env c c'
-    | IndRef i, Ind (i', _) -> Names.Ind.CanOrd.equal i i'
-    | ConstructRef c, Construct (c',u) -> Names.Construct.CanOrd.equal c c'
+    | IndRef i, Ind (i', _) -> Environ.QInd.equal env i i'
+    | ConstructRef c, Construct (c',u) -> Environ.QConstruct.equal env c c'
     | _, _ -> false
   in
-  let rec sorec ctx env subst p t =
+  let rec sorec ctx env subst (p:constr_pattern) t =
     let cT = strip_outer_cast sigma t in
     match p, EConstr.kind sigma cT with
       | PSoApp (n,args),m ->
@@ -279,7 +315,7 @@ let matches_core env sigma allow_bound_rels
       | PRel n1, Rel n2 when Int.equal n1 n2 -> subst
 
       | PSort ps, Sort s ->
-        if Sorts.family_equal ps (Sorts.family (ESorts.kind sigma s))
+        if Sorts.family_equal ps (ESorts.family sigma s)
         then subst else raise PatternMatchingFailure
 
       | PApp (p, [||]), _ -> sorec ctx env subst p t
@@ -299,7 +335,7 @@ let matches_core env sigma allow_bound_rels
             Array.fold_left2 (sorec ctx env) subst args1 args22
           else (* Might be a projection on the right *)
             match EConstr.kind sigma c2 with
-            | Proj (pr, c) when not (Projection.unfolded pr) ->
+            | Proj (pr, _, c) ->
               (try let term = Retyping.expand_projection env sigma pr c (Array.to_list args2) in
                      sorec ctx env subst p term
                with Retyping.RetypeError _ -> raise PatternMatchingFailure)
@@ -307,15 +343,15 @@ let matches_core env sigma allow_bound_rels
 
       | PApp (c1,arg1), App (c2,arg2) ->
         (match c1, EConstr.kind sigma c2 with
-        | PRef (GlobRef.ConstRef r), Proj (pr,c) when not (Environ.QConstant.equal env r (Projection.constant pr))
-            || Projection.unfolded pr ->
-          raise PatternMatchingFailure
-        | PProj (pr1,c1), Proj (pr,c) ->
+         | PRef (GlobRef.ConstRef r), Proj (pr,_,c)
+           when not (Environ.QConstant.equal env r (Projection.constant pr)) ->
+           raise PatternMatchingFailure
+        | PProj (pr1,c1), Proj (pr,_,c) ->
           if Environ.QProjection.equal env pr1 pr then
             try Array.fold_left2 (sorec ctx env) (sorec ctx env subst c1 c) arg1 arg2
             with Invalid_argument _ -> raise PatternMatchingFailure
           else raise PatternMatchingFailure
-        | _, Proj (pr,c) when not (Projection.unfolded pr) ->
+        | _, Proj (pr,_,c) ->
           (try let term = Retyping.expand_projection env sigma pr c (Array.to_list arg2) in
                  sorec ctx env subst p term
            with Retyping.RetypeError _ -> raise PatternMatchingFailure)
@@ -323,16 +359,16 @@ let matches_core env sigma allow_bound_rels
           try Array.fold_left2 (sorec ctx env) (sorec ctx env subst c1 c2) arg1 arg2
           with Invalid_argument _ -> raise PatternMatchingFailure)
 
-      | PApp (PRef (GlobRef.ConstRef c1), _), Proj (pr, c2)
-        when Projection.unfolded pr || not (Environ.QConstant.equal env c1 (Projection.constant pr)) ->
+      | PApp (PRef (GlobRef.ConstRef c1), _), Proj (pr, _, c2)
+        when not (Environ.QConstant.equal env c1 (Projection.constant pr)) ->
         raise PatternMatchingFailure
 
-      | PApp (c, args), Proj (pr, c2) ->
+      | PApp (c, args), Proj (pr, _, c2) ->
         (try let term = Retyping.expand_projection env sigma pr c2 [] in
                sorec ctx env subst p term
          with Retyping.RetypeError _ -> raise PatternMatchingFailure)
 
-      | PProj (p1,c1), Proj (p2,c2) when Environ.QProjection.equal env p1 p2 ->
+      | PProj (p1,c1), Proj (p2,_,c2) when Environ.QProjection.equal env p1 p2 ->
           sorec ctx env subst c1 c2
 
       | PProd (na1,c1,d1), Prod(na2,c2,d2) ->
@@ -369,14 +405,14 @@ let matches_core env sigma allow_bound_rels
             raise PatternMatchingFailure
 
       | PCase (ci1, p1, a1, br1), Case (ci2, u2, pms2, p2, iv, a2, br2) ->
-          let (_, _, _, p2, _, _, br2) = EConstr.annotate_case env sigma (ci2, u2, pms2, p2, iv, a2, br2) in
+          let (_, _, _, (p2,_), _, _, br2) = EConstr.annotate_case env sigma (ci2, u2, pms2, p2, iv, a2, br2) in
           let n2 = Array.length br2 in
           let () = match ci1.cip_ind with
           | None -> ()
           | Some ind1 ->
             (* ppedrot: Something spooky going here. The comparison used to be
                the generic one, so I may have broken something. *)
-            if not (Ind.CanOrd.equal ind1 ci2.ci_ind) then raise PatternMatchingFailure
+            if not (Environ.QInd.equal env ind1 ci2.ci_ind) then raise PatternMatchingFailure
           in
           let () =
             if not ci1.cip_extensible && not (Int.equal (List.length br1) n2)
@@ -429,10 +465,13 @@ let matches_core env sigma allow_bound_rels
           Array.fold_left2 (fun subst na1 na2 -> add_binders na1 na2 binding_vars subst) subst lna1 lna2
 
       | PEvar (c1,args1), Evar (c2,args2) when Evar.equal c1 c2 ->
+        let args2 = Evd.expand_existential sigma (c2, args2) in
          List.fold_left2 (sorec ctx env) subst args1 args2
       | PInt i1, Int i2 when Uint63.equal i1 i2 -> subst
 
       | PFloat f1, Float f2 when Float64.equal f1 f2 -> subst
+
+      | PString s1, String s2 when Pstring.equal s1 s2 -> subst
 
       | PArray(pt,pdef,pty), Array(_u,t,def,ty)
              when Array.length pt = Array.length t ->
@@ -440,7 +479,10 @@ let matches_core env sigma allow_bound_rels
 
       | (PRef _ | PVar _ | PRel _ | PApp _ | PProj _ | PLambda _
          | PProd _ | PLetIn _ | PSort _ | PIf _ | PCase _
-         | PFix _ | PCoFix _| PEvar _ | PInt _ | PFloat _ | PArray _), _ -> raise PatternMatchingFailure
+         | PFix _ | PCoFix _| PEvar _ | PInt _ | PFloat _
+         | PString _ | PArray _), _ -> raise PatternMatchingFailure
+
+      | PUninstantiated _, _ -> .
 
   in
   sorec [] env ((Id.Map.empty,Id.Set.empty), Id.Map.empty) pat c
@@ -456,11 +498,20 @@ let extended_matches env sigma pat c =
 let matches env sigma pat c =
   snd (matches_core_closed env sigma (Id.Set.empty,pat) c)
 
+type context = constr Lazy.t
+
 let special_meta = (-1)
+
+let empty_context = Lazy.from_val (mkMeta special_meta)
+let repr_context c = Lazy.force c
+let instantiate_context ctxt c =
+  let ctxt = EConstr.Unsafe.to_constr (Lazy.force ctxt) in
+  let c = EConstr.Unsafe.to_constr c in
+  EConstr.of_constr (subst_meta [special_meta, c] ctxt)
 
 type matching_result =
     { m_sub : bound_ident_map * patvar_map;
-      m_ctx : constr Lazy.t; }
+      m_ctx : context; }
 
 let mkresult s c n = IStream.Cons ( { m_sub=s; m_ctx=c; } , (IStream.thunk n) )
 
@@ -531,14 +582,14 @@ let sub_match ?(closed=true) env sigma pat c =
      try_aux [(env, app); (env, Array.last lc)] mk_ctx next
   | Case (ci,u,pms,hd0,iv,c1,lc0) ->
       let (mib, mip) = Inductive.lookup_mind_specif env ci.ci_ind in
-      let (_, hd, _, _, br) = expand_case env sigma (ci, u, pms, hd0, iv, c1, lc0) in
+      let (_, (hd,hdr), _, _, br) = expand_case env sigma (ci, u, pms, hd0, iv, c1, lc0) in
       let hd =
-        let (ctx, hd) = decompose_lam_assum sigma hd in
+        let (ctx, hd) = decompose_lambda_decls sigma hd in
         (push_rel_context ctx env, hd)
       in
       let map i br =
         let decls = mip.Declarations.mind_consnrealdecls.(i) in
-        let (ctx, c) = decompose_lam_n_decls sigma decls br in
+        let (ctx, c) = decompose_lambda_n_decls sigma decls br in
         (push_rel_context ctx env, c)
       in
       let lc = Array.to_list (Array.mapi map br) in
@@ -547,9 +598,9 @@ let sub_match ?(closed=true) env sigma pat c =
         let pms, rem = List.chop (Array.length pms) rem in
         let pms = Array.of_list pms in
         let hd, lc = match rem with [] -> assert false | x :: l -> (x, l) in
-        let hd = (fst hd0, hd) in
+        let hd = (fst (fst hd0), hd) in
         let map_br (nas, _) br = (nas, br) in
-        mk_ctx (mkCase (ci,u,pms,hd,iv,c1,Array.map2 map_br lc0 (Array.of_list lc)))
+        mk_ctx (mkCase (ci,u,pms,(hd,hdr),iv,c1,Array.map2 map_br lc0 (Array.of_list lc)))
       | _ -> assert false
       in
       let sub = (env, c1) :: Array.fold_right (fun c accu -> (env, c) :: accu) pms (hd :: lc) in
@@ -570,7 +621,7 @@ let sub_match ?(closed=true) env sigma pat c =
     let env' = push_rec_types recdefs env in
     let sub = subargs env types @ subargs env' bodies in
     try_aux sub next_mk_ctx next
-  | Proj (p,c') ->
+  | Proj (p,_,c') ->
     begin match Retyping.expand_projection env sigma p c' [] with
     | term -> aux env term mk_ctx next
     | exception Retyping.RetypeError _ -> next ()
@@ -582,7 +633,7 @@ let sub_match ?(closed=true) env sigma pat c =
     in
     let sub = (env,def) :: (env,ty) :: subargs env t in
     try_aux sub next_mk_ctx next
-  | Construct _|Ind _|Evar _|Const _|Rel _|Meta _|Var _|Sort _|Int _|Float _ ->
+  | Construct _|Ind _|Evar _|Const _|Rel _|Meta _|Var _|Sort _|Int _|Float _|String _ ->
     next ()
   in
   here next

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -14,24 +14,45 @@ open Values
 
 let max_string_length = 1024
 
+type command =
+| CmdParent
+| CmdChild of int
+| CmdSort
+| CmdList
+| CmdHelp
+| CmdExit
+
+let help () =
+  Printf.printf "Help\n\
+  <n>\tenter the <n>-th child\n\
+  u\tgo up 1 level\n\
+  s\tsort\n\
+  l\ttreat current node as a list\n\
+  x\texit\n\n%!"
+
+let quit () =
+  Printf.printf "\nGoodbye!\n%!";
+  exit 0
+
 let rec read_num max =
-  let quit () =
-    Printf.printf "\nGoodbye!\n%!";
-    exit 0 in
   Printf.printf "# %!";
   let l = try read_line () with End_of_file -> quit () in
-  if l = "u" then None
-  else if l = "x" then quit ()
-  else
+  match l with
+  | "u" -> CmdParent
+  | "s" -> CmdSort
+  | "x" -> CmdExit
+  | "h" -> CmdHelp
+  | "l" -> CmdList
+  | _ ->
     match int_of_string l with
     | v ->
       if v < 0 || v >= max then
         let () =
           Printf.printf "Out-of-range input! (only %d children)\n%!" max in
         read_num max
-      else Some v
+      else CmdChild v
     | exception Failure _ ->
-      Printf.printf "Unrecognized input! <n> enters the <n>-th child, u goes up 1 level, x exits\n%!";
+      Printf.printf "Unrecognized input! Input h for help\n%!";
       read_num max
 
 type 'a repr =
@@ -144,7 +165,7 @@ struct
 
 (** Name of a value *)
 
-let rec get_name ?(extra=false) = function
+let rec get_name ?(extra=false) v = match kind v with
   |Any -> "?"
   |Fail s -> "Invalid node: "^s
   |Tuple (name,_) -> name
@@ -155,8 +176,6 @@ let rec get_name ?(extra=false) = function
   |Int -> "int"
   |String -> "string"
   |Annot (s,v) -> s^"/"^get_name ~extra v
-  |Dyn -> "<dynamic>"
-  | Proxy v -> get_name ~extra !v
   | Int64 -> "Int64"
   | Float64 -> "Float64"
 
@@ -178,7 +197,7 @@ let get_string_in_tuple o =
 
 (** Some details : tags, integer value for non-block, etc etc *)
 
-let rec get_details v o = match v, Repr.repr o with
+let rec get_details v o = match kind v, Repr.repr o with
   | (String | Any), STRING s ->
     let len = min max_string_length (String.length s) in
     Printf.sprintf " [%s]" (String.escaped (String.sub s 0 len))
@@ -205,24 +224,24 @@ let node_info (v,o,p) =
 let access_children vs os pos =
   if Array.length os = Array.length vs then
     Array.mapi (fun i v -> v, os.(i), i::pos) vs
-  else raise Exit
+  else raise_notrace Exit
 
 let access_list v o pos =
   let rec loop o pos accu = match Repr.repr o with
   | INT 0 -> List.rev accu
   | BLOCK (0, [|hd; tl|]) ->
     loop tl (1 :: pos) ((v, hd, 0 :: pos) :: accu)
-  | _ -> raise Exit
+  | _ -> raise_notrace Exit
   in
   Array.of_list (loop o pos [])
 
 let access_block o = match Repr.repr o with
 | BLOCK (tag, os) -> (tag, os)
-| _ -> raise Exit
+| _ -> raise_notrace Exit
 
 (** raises Exit if the object has not the expected structure *)
 exception Forbidden
-let rec get_children v o pos = match v with
+let rec get_children v o pos = match kind v with
   |Tuple (_, v) ->
     let (_, os) = access_block o in
     access_children v os pos
@@ -230,7 +249,7 @@ let rec get_children v o pos = match v with
     begin match Repr.repr o with
     | BLOCK (tag, os) -> access_children vv.(tag) os pos
     | INT _ -> [||]
-    | _ -> raise Exit
+    | _ -> raise_notrace Exit
     end
   |Array v ->
     let (_, os) = access_block o in
@@ -240,36 +259,28 @@ let rec get_children v o pos = match v with
     begin match Repr.repr o with
     | INT 0 -> [||]
     | BLOCK (0, [|x|]) -> [|(v, x, 0 :: pos)|]
-    | _ -> raise Exit
+    | _ -> raise_notrace Exit
     end
   | String ->
     begin match Repr.repr o with
     | STRING _ -> [||]
-    | _ -> raise Exit
+    | _ -> raise_notrace Exit
     end
   | Int ->
     begin match Repr.repr o with
     | INT _ -> [||]
-    | _ -> raise Exit
+    | _ -> raise_notrace Exit
     end
   |Annot (s,v) -> get_children v o pos
-  |Any -> raise Exit
-  |Dyn ->
-    begin match Repr.repr o with
-    | BLOCK (0, [|id; o|]) ->
-      let tpe = Any in
-      [|(Int, id, 0 :: pos); (tpe, o, 1 :: pos)|]
-    | _ -> raise Exit
-    end
-  |Fail s -> raise Forbidden
-  | Proxy v -> get_children !v o pos
-  | Int64 -> raise Exit
-  | Float64 -> raise Exit
+  |Any -> raise_notrace Exit
+  | Fail s -> raise Forbidden
+  | Int64 -> raise_notrace Exit
+  | Float64 -> raise_notrace Exit
 
 let get_children v o pos =
   try get_children v o pos
   with Exit -> match Repr.repr o with
-  | BLOCK (_, os) -> Array.mapi (fun i o -> Any, o, i :: pos) os
+  | BLOCK (_, os) -> Array.mapi (fun i o -> v_any, o, i :: pos) os
   | _ -> [||]
 
 type info = {
@@ -290,27 +301,49 @@ let pop () = match !stk with
   | i::s -> stk := s; i
   | _ -> raise EmptyStack
 
-let rec visit v o pos =
+let print_state v o pos children =
   Printf.printf "\nDepth %d Pos %s Context %s\n"
     (List.length !stk)
     (String.concat "." (List.rev_map string_of_int pos))
     (String.concat "/" (List.rev_map (fun i -> i.nam) !stk));
   Printf.printf "-------------\n";
-  let children = get_children v o pos in
   let nchild = Array.length children in
   Printf.printf "Here: %s, %d child%s\n"
     (node_info (v,o,pos)) nchild (if nchild = 0 then "" else "ren:");
-  Array.iteri
-    (fun i vop -> Printf.printf "  %d: %s\n" i (node_info vop))
+  Array.iter
+    (fun (i, vop) -> Printf.printf "  %d: %s\n" i (node_info vop))
     children;
-  Printf.printf "-------------\n";
+  Printf.printf "-------------\n"
+
+let rec visit v o pos =
+  let children = get_children v o pos in
+  let children = Array.mapi (fun i vop -> (i, vop)) children in
+  let () = print_state v o pos children in
+  read_command v o pos children
+
+and read_command v o pos children =
   try
     match read_num (Array.length children) with
-    | None -> let info = pop () in visit info.typ info.obj info.pos
-    | Some child ->
-       let v',o',pos' = children.(child) in
+    | CmdParent -> let info = pop () in visit info.typ info.obj info.pos
+    | CmdChild child ->
+       let _, (v',o',pos') = children.(child) in
        push (get_name v) v o pos;
        visit v' o' pos'
+    | CmdSort ->
+      let children = get_children v o pos in
+      let children = Array.mapi (fun i vop -> (i, vop)) children in
+      let sort (_, (_, o, _)) (_, (_, o', _)) =
+        Int.compare (Repr.size o) (Repr.size o')
+      in
+      let sorted = Array.copy children in
+      let () = Array.sort sort sorted in
+      let () = print_state v o pos sorted in
+      read_command v o pos children
+    | CmdList -> visit (v_list v_any) o pos
+    | CmdHelp ->
+      let () = help () in
+      read_command v o pos children
+    | CmdExit -> quit ()
   with
   | EmptyStack -> ()
   | Forbidden -> let info = pop () in visit info.typ info.obj info.pos
@@ -409,16 +442,14 @@ end
 
 let visit_vo f =
   Printf.printf "\nWelcome to votour !\n";
-  Printf.printf "Enjoy your guided tour of a Coq .vo or .vi file\n";
+  Printf.printf "Enjoy your guided tour of a Rocq .vo or .vi file\n";
   Printf.printf "Object sizes are in words (%d bits)\n" Sys.word_size;
-  Printf.printf
-    "At prompt, <n> enters the <n>-th child, u goes up 1 level, x exits\n\n%!";
+  Printf.printf "Input h for help\n\n%!";
   let known_segments = [
     "summary", Values.v_libsum;
     "library", Values.v_lib;
-    "universes", Values.v_univopaques;
-    "tasks", (Opt Values.v_stm_seg);
     "opaques", Values.v_opaquetable;
+    "vmlibrary", Values.v_vmlib;
   ] in
   let repr =
     if Sys.word_size = 64 then (module ReprMem : S) else (module ReprObj : S)
@@ -437,19 +468,23 @@ let visit_vo f =
       Printf.printf "  %d: %s, starting at byte %Ld (size %iw)\n" i name pos size)
       segments;
     match read_num (Array.length segments) with
-    | Some seg ->
+    | CmdChild seg ->
        let seg = segments.(seg) in
        let open ObjFile in
        LargeFile.seek_in ch seg.pos;
        let o = Repr.input ch in
        let () = Visit.init () in
-       let typ = try List.assoc seg.name known_segments with Not_found -> Any in
+       let typ = try List.assoc seg.name known_segments with Not_found -> v_any in
        Visit.visit typ o []
-    | None -> ()
+    | CmdParent | CmdSort | CmdList -> ()
+    | CmdHelp ->
+      help ()
+    | CmdExit ->
+      quit ()
   done
 
 let () =
   if not !Sys.interactive then
     Arg.parse [] visit_vo
-      ("votour: guided tour of a Coq .vo or .vi file\n"^
+      ("votour: guided tour of a Rocq .vo or .vi file\n"^
        "Usage: votour file.v[oi]")

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -31,25 +31,20 @@
 
 open Util
 
-type _focus_kind = int
-type 'a focus_kind = _focus_kind
-type focus_info = Obj.t
+module FocusKind = Dyn.Make()
+
+type 'a focus_kind = 'a FocusKind.tag
 type reason = NotThisWay | AlreadyNoFocus
 type unfocusable =
   | Cannot of reason
   | Loose
   | Strict
-type _focus_condition =
-  | CondNo       of bool * _focus_kind
-  | CondDone     of bool * _focus_kind
-  | CondEndStack of        _focus_kind (* loose_end is false here *)
-type 'a focus_condition = _focus_condition
+type 'a focus_condition =
+  | CondNo       of bool * 'a focus_kind
+  | CondDone     of bool * 'a focus_kind
+  | CondEndStack of        'a focus_kind (* loose_end is false here *)
 
-let next_kind = ref 0
-let new_focus_kind () =
-  let r = !next_kind in
-  incr next_kind;
-  r
+let new_focus_kind = FocusKind.create
 
 (* To be authorized to unfocus one must meet the condition prescribed by
     the action which focused.*)
@@ -84,21 +79,27 @@ end
 let check_cond_kind c k =
   let kind_of_cond = function
     | CondNo (_,k) | CondDone(_,k) | CondEndStack k -> k in
-  Int.equal (kind_of_cond c) k
+  FocusKind.eq (kind_of_cond c) k
+
+let equal_kind c k = match FocusKind.eq c k with
+| None -> false
+| Some _ -> true
 
 let test_cond c k1 pw =
   match c with
-  | CondNo(_,     k) when Int.equal k k1 -> Strict
+  | CondNo(_,     k) when equal_kind k k1 -> Strict
   | CondNo(true,  _)             -> Loose
   | CondNo(false, _)             -> Cannot NotThisWay
-  | CondDone(_,     k) when Int.equal k k1 && Proofview.finished pw -> Strict
+  | CondDone(_,     k) when equal_kind k k1 && Proofview.finished pw -> Strict
   | CondDone(true,  _)                                      -> Loose
   | CondDone(false, _)                                      -> Cannot NotThisWay
-  | CondEndStack k when Int.equal k k1 -> Strict
+  | CondEndStack k when equal_kind k k1 -> Strict
   | CondEndStack _             -> Cannot AlreadyNoFocus
 
 let no_cond ?(loose_end=false) k = CondNo (loose_end, k)
 let done_cond ?(loose_end=false) k = CondDone (loose_end,k)
+
+type focus_element = FocusElt : 'a focus_condition * 'a * Proofview.focus_context -> focus_element
 
 (* Subpart of the type of proofs. It contains the parts of the proof which
    are under control of the undo mechanism *)
@@ -107,7 +108,7 @@ type t =
   (** Current focused proofview *)
   ; entry : Proofview.entry
   (** Entry for the proofview *)
-  ; focus_stack: (_focus_condition*focus_info*Proofview.focus_context) list
+  ; focus_stack: focus_element list
   (** History of the focusings, provides information on how to unfocus
      the proof and the extra information stored while focusing.  The
      list is empty when the proof is fully unfocused. *)
@@ -129,13 +130,12 @@ let proof p =
     | [_] -> []
     | a::l -> f a :: (map_minus_one f l)
   in
-  let stack =
-    map_minus_one (fun (_,_,c) -> Proofview.focus_context c) p.focus_stack
-  in
+  let map (FocusElt (_, _, c)) = Proofview.focus_context c in
+  let stack = map_minus_one map p.focus_stack in
   (goals,stack,sigma)
 
 let rec unroll_focus pv = function
-  | (_,_,ctx)::stk -> unroll_focus (Proofview.unfocus ctx pv) stk
+  | FocusElt (_,_,ctx)::stk -> unroll_focus (Proofview.unfocus ctx pv) stk
   | [] -> pv
 
 (* spiwack: a proof is considered completed even if its still focused, if the focus
@@ -145,20 +145,6 @@ let is_done p =
   Proofview.finished p.proofview &&
   Proofview.finished (unroll_focus p.proofview p.focus_stack)
 
-(* spiwack: for compatibility with <= 8.2 proof engine *)
-let has_unresolved_evar p =
-  Proofview.V82.has_unresolved_evar p.proofview
-let has_shelved_goals p =
-  let (_goals,sigma) = Proofview.proofview p.proofview in
-  Evd.has_shelved sigma
-let has_given_up_goals p =
-  let (_goals,sigma) = Proofview.proofview p.proofview in
-  Evd.has_given_up sigma
-
-let is_complete p =
-  is_done p && not (has_unresolved_evar p) &&
-  not (has_shelved_goals p) && not (has_given_up_goals p)
-
 (* Returns the list of partial proofs to initial goals *)
 let partial_proof p = Proofview.partial_proof p.entry p.proofview
 
@@ -167,12 +153,14 @@ let partial_proof p = Proofview.partial_proof p.entry p.proofview
 
 (* An auxiliary function to push a {!focus_context} on the focus stack. *)
 let push_focus cond inf context pr =
-  { pr with focus_stack = (cond,inf,context)::pr.focus_stack }
+  { pr with focus_stack = FocusElt(cond,inf,context)::pr.focus_stack }
+
+type any_focus_condition = AnyFocusCond : 'a focus_condition -> any_focus_condition
 
 (* An auxiliary function to read the kind of the next focusing step *)
 let cond_of_focus pr =
   match pr.focus_stack with
-  | (cond,_,_)::_ -> cond
+  | FocusElt (cond,_,_)::_ -> AnyFocusCond cond
   | _ -> raise FullyUnfocused
 
 (* An auxiliary function to pop and read the last {!Proofview.focus_context}
@@ -194,14 +182,14 @@ let _focus cond inf i j pr =
    if the proof is already fully unfocused.
    This function does not care about the condition of the current focus. *)
 let _unfocus pr =
-  let pr, (_,_,fc) = pop_focus pr in
+  let pr, FocusElt (_,_,fc) = pop_focus pr in
    { pr with proofview = Proofview.unfocus fc pr.proofview }
 
 (* Focus command (focuses on the [i]th subgoal) *)
 (* spiwack: there could also, easily be a focus-on-a-range tactic, is there
    a need for it? *)
 let focus cond inf i pr =
-  try _focus cond (Obj.repr inf) i i pr
+  try _focus cond inf i i pr
   with CList.IndexOutOfRange -> raise (NoSuchGoals (i,i))
 
 (* Focus on the goal named id *)
@@ -209,10 +197,10 @@ let focus_id cond inf id pr =
   let (focused_goals, evar_map) = Proofview.proofview pr.proofview in
   begin match try Some (Evd.evar_key id evar_map) with Not_found -> None with
   | Some ev ->
-     begin match CList.safe_index Evar.equal ev focused_goals with
+     begin match CList.index_opt Evar.equal ev focused_goals with
      | Some i ->
         (* goal is already under focus *)
-        _focus cond (Obj.repr inf) i i pr
+        _focus cond inf i i pr
      | None ->
         if CList.mem_f Evar.equal ev (Evd.shelf evar_map) then
           (* goal is on the shelf, put it in focus *)
@@ -224,7 +212,7 @@ let focus_id cond inf id pr =
             try CList.index Evar.equal ev focused_goals
             with Not_found -> assert false
           in
-          _focus cond (Obj.repr inf) i i pr
+          _focus cond inf i i pr
         else
           raise CannotUnfocusThisWay
      end
@@ -233,7 +221,7 @@ let focus_id cond inf id pr =
   end
 
 let rec unfocus kind pr () =
-  let cond = cond_of_focus pr in
+  let AnyFocusCond cond = cond_of_focus pr in
   match test_cond cond kind pr.proofview with
   | Cannot NotThisWay -> raise CannotUnfocusThisWay
   | Cannot AlreadyNoFocus -> raise FullyUnfocused
@@ -249,18 +237,20 @@ let rec unfocus kind pr () =
 
 exception NoSuchFocus
 (* no handler: should not be allowed to reach toplevel. *)
-let rec get_in_focus_stack kind stack =
+let rec get_in_focus_stack : type a. a focus_kind -> _ -> a = fun kind stack ->
   match stack with
-  | (cond,inf,_)::stack ->
-      if check_cond_kind cond kind then inf
-      else get_in_focus_stack kind stack
+  | FocusElt (cond,inf,_)::stack ->
+    begin match check_cond_kind cond kind with
+    | Some Refl -> inf
+    | None -> get_in_focus_stack kind stack
+    end
   | [] -> raise NoSuchFocus
 let get_at_focus kind pr =
-  Obj.magic (get_in_focus_stack kind pr.focus_stack)
+  get_in_focus_stack kind pr.focus_stack
 
 let is_last_focus kind pr =
-  let (cond,_,_) = List.hd pr.focus_stack in
-  check_cond_kind cond kind
+  let FocusElt (cond,_,_) = List.hd pr.focus_stack in
+  Option.has_some (check_cond_kind cond kind)
 
 let no_focused_goal p =
   Proofview.finished p.proofview
@@ -274,10 +264,12 @@ let rec maximal_unfocus k p =
 (*** Proof Creation/Termination ***)
 
 (* [end_of_stack] is unfocused by return to close every loose focus. *)
-let end_of_stack_kind = new_focus_kind ()
+let end_of_stack_kind = new_focus_kind "end_of_stack"
 let end_of_stack = CondEndStack end_of_stack_kind
 
 let unfocused = is_last_focus end_of_stack_kind
+
+let unfocus_all p = unfocus end_of_stack_kind p ()
 
 let start ~name ~poly ?typing_flags sigma goals =
   let entry, proofview = Proofview.init sigma goals in
@@ -289,7 +281,7 @@ let start ~name ~poly ?typing_flags sigma goals =
     ; poly
     ; typing_flags
   } in
-  _focus end_of_stack (Obj.repr ()) 1 (List.length goals) pr
+  _focus end_of_stack () 1 (List.length goals) pr
 
 let dependent_start ~name ~poly ?typing_flags goals =
   let entry, proofview = Proofview.dependent_init goals in
@@ -302,47 +294,7 @@ let dependent_start ~name ~poly ?typing_flags goals =
     ; typing_flags
   } in
   let number_of_goals = List.length (Proofview.initial_goals pr.entry) in
-  _focus end_of_stack (Obj.repr ()) 1 number_of_goals pr
-
-type open_error_reason =
-  | UnfinishedProof
-  | HasGivenUpGoals
-
-let print_open_error_reason er = let open Pp in match er with
-  | UnfinishedProof ->
-    str "Attempt to save an incomplete proof"
-  | HasGivenUpGoals ->
-    strbrk "Attempt to save a proof with given up goals. If this is really what you want to do, use Admitted in place of Qed."
-
-exception OpenProof of Names.Id.t option * open_error_reason
-
-let _ = CErrors.register_handler begin function
-    | OpenProof (pid, reason) ->
-      let open Pp in
-      Some (Option.cata (fun pid ->
-          str " (in proof " ++ Names.Id.print pid ++ str "): ") (mt()) pid ++ print_open_error_reason reason)
-    | _ -> None
-  end
-
-let warn_remaining_shelved_goals =
-  CWarnings.create ~name:"remaining-shelved-goals" ~category:"tactics"
-    (fun () -> Pp.str"The proof has remaining shelved goals")
-
-let warn_remaining_unresolved_evars =
-  CWarnings.create ~name:"remaining-unresolved-evars" ~category:"tactics"
-    (fun () -> Pp.str"The proof has unresolved variables")
-
-let return ?pid (p : t) =
-  if not (is_done p) then
-    raise (OpenProof(pid, UnfinishedProof))
-  else if has_given_up_goals p then
-    raise (OpenProof(pid, HasGivenUpGoals))
-  else begin
-    if has_shelved_goals p then warn_remaining_shelved_goals ()
-    else if has_unresolved_evar p then warn_remaining_unresolved_evars ();
-    let p = unfocus end_of_stack_kind p () in
-    Proofview.return p.proofview
-  end
+  _focus end_of_stack () 1 number_of_goals pr
 
 let compact p =
   let entry, proofview = Proofview.compact p.entry p.proofview in
@@ -358,31 +310,21 @@ let update_sigma_univs ugraph p =
 
 let run_tactic env tac pr =
   let open Proofview.Notations in
-  let undef sigma l = List.filter (fun g -> Evd.is_undefined sigma g) l in
   let tac =
-    Proofview.tclEVARMAP >>= fun sigma ->
-    Proofview.Unsafe.tclEVARS (Evd.push_shelf sigma) >>= fun () ->
-    tac >>= fun result ->
-    Proofview.tclEVARMAP >>= fun sigma ->
-    (* Already solved goals are not to be counted as shelved. Nor are
-      they to be marked as unresolvable. *)
-    let retrieved, sigma = Evd.pop_future_goals sigma in
-    let retrieved = Evd.FutureGoals.filter (Evd.is_undefined sigma) retrieved in
-    let retrieved = List.rev retrieved.Evd.FutureGoals.comb in
-    let sigma = Proofview.Unsafe.mark_as_goals sigma retrieved in
-    let to_shelve, sigma = Evd.pop_shelf sigma in
-    Proofview.Unsafe.tclEVARS sigma >>= fun () ->
-    Proofview.Unsafe.tclNEWSHELVED (retrieved@to_shelve) <*>
-    Proofview.tclUNIT (result,retrieved,to_shelve)
+    (* include the future goals in the shelf *)
+    Proofview.with_shelf tac >>= fun (shelf, v) ->
+    Proofview.Unsafe.tclNEWSHELVED shelf <*>
+    Proofview.tclUNIT v
   in
   let { name; poly; proofview } = pr in
-  let proofview = Proofview.Unsafe.push_future_goals proofview in
-  let ((result,retrieved,to_shelve),proofview,status,info_trace) =
+  let (result,proofview,status,info_trace) =
     Proofview.apply ~name ~poly env tac proofview
   in
   let sigma = Proofview.return proofview in
-  let to_shelve = undef sigma to_shelve in
-  let proofview = Proofview.Unsafe.mark_as_unresolvables proofview to_shelve in
+  (* cleanup any shelved goals that got defined
+     (this is only useful for goals that were already in the shelf,
+     tclNEWSHELVED filters out defined goals instead of adding them)
+     XXX should we be doing something advance-aware like tclNEWSHELVED? *)
   let proofview = Proofview.filter_shelf (Evd.is_undefined sigma) proofview in
   { pr with proofview },(status,info_trace),result
 
@@ -396,82 +338,19 @@ let unshelve p =
   let proofview = Proofview.unshelve shelf p.proofview in
   { p with proofview }
 
-(*** Compatibility layer with <=v8.2 ***)
-module V82 = struct
-
-  let background_subgoals p =
-    let it, sigma = Proofview.proofview (unroll_focus p.proofview p.focus_stack) in
-    Evd.{ it; sigma }
-
-  let top_goal p =
-    let { Evd.it=gls ; sigma=sigma; } =
-        Proofview.V82.top_goals p.entry p.proofview
-    in
-    { Evd.it=List.hd gls ; sigma=sigma; }
-
-  let top_evars p =
-    Proofview.V82.top_evars p.entry p.proofview
-
-  let warn_deprecated_grab_existentials =
-    CWarnings.create ~name:"deprecated-grab-existentials" ~category:"deprecated"
-       Pp.(fun () -> str "The Grab Existential Variables command is " ++
-         str"deprecated. Please use the Unshelve command or the unshelve tactical " ++
-         str"instead.")
-
-  let grab_evars p =
-    warn_deprecated_grab_existentials ();
-    if not (is_done p) then
-      raise (OpenProof(None, UnfinishedProof))
-    else
-      { p with proofview = Proofview.V82.grab p.proofview }
-
-  let warn_deprecated_existential =
-    CWarnings.create ~name:"deprecated-existential" ~category:"deprecated"
-       Pp.(fun () -> str "The Existential command is " ++
-         str"deprecated. Please use the Unshelve command or the unshelve " ++
-         str"tactical, and the instantiate tactic instead.")
-
-  (* Main component of vernac command Existential *)
-  let instantiate_evar env n intern pr =
-    warn_deprecated_existential ();
-    let tac =
-      Proofview.tclBIND Proofview.tclEVARMAP begin fun sigma ->
-      let (evk, evi) =
-        let evl = Evarutil.non_instantiated sigma in
-        let evl = Evar.Map.bindings evl in
-        if (n <= 0) then
-          CErrors.user_err Pp.(str "incorrect existential variable index")
-        else if CList.length evl < n then
-          CErrors.user_err Pp.(str "not so many uninstantiated existential variables")
-        else
-          CList.nth evl (n-1)
-      in
-      let env = Evd.evar_filtered_env env evi in
-      let rawc = intern env sigma in
-      let ltac_vars = Glob_ops.empty_lvar in
-      let sigma = Evar_refiner.w_refine (evk, evi) (ltac_vars, rawc) env sigma in
-      Proofview.Unsafe.tclEVARS sigma
-    end in
-    let { name; poly } = pr in
-    let ((), proofview, _, _) = Proofview.apply ~name ~poly env tac pr.proofview in
-    let proofview = Proofview.filter_shelf
-      begin fun g ->
-        Evd.is_undefined (Proofview.return proofview) g
-      end proofview
-    in
-    { pr with proofview }
-
-end
+let background_subgoals p =
+  let it, _ = Proofview.proofview (unroll_focus p.proofview p.focus_stack) in
+  it
 
 let all_goals p =
   let add gs set =
-    List.fold_left (fun s g -> Goal.Set.add g s) set gs in
+    List.fold_left (fun s g -> Evar.Set.add g s) set gs in
   let (goals,stack,sigma) = proof p in
-    let set = add goals Goal.Set.empty in
+    let set = add goals Evar.Set.empty in
     let set = List.fold_left (fun s gs -> let (g1, g2) = gs in add g1 (add g2 set)) set stack in
     let set = add (Evd.shelf sigma) set in
-    let set = Goal.Set.union (Evd.given_up sigma) set in
-    let { Evd.it = bgoals ; sigma = bsigma } = V82.background_subgoals p in
+    let set = Evar.Set.union (Evd.given_up sigma) set in
+    let bgoals = background_subgoals p in
     add bgoals set
 
 type data =
@@ -498,14 +377,18 @@ let data { proofview; focus_stack; entry; name; poly } =
     | [_] -> []
     | a::l -> f a :: (map_minus_one f l)
   in
-  let stack =
-    map_minus_one (fun (_,_,c) -> Proofview.focus_context c) focus_stack in
+  let map (FocusElt (_, _, c)) = Proofview.focus_context c in
+  let stack = map_minus_one map focus_stack in
   { sigma; goals; entry; stack; name; poly }
+
+let pr_goal e = Pp.(str "GOAL:" ++ int (Evar.repr e))
+
+let goal_uid e = string_of_int (Evar.repr e)
 
 let pr_proof p =
   let { goals=fg_goals; stack=bg_goals; sigma } = data p in
   Pp.(
-    let pr_goal_list = prlist_with_sep spc Goal.pr_goal in
+    let pr_goal_list = prlist_with_sep spc pr_goal in
     let rec aux acc = function
       | [] -> acc
       | (before,after)::stack ->
@@ -518,13 +401,27 @@ let pr_proof p =
     str "]"
   )
 
-let use_unification_heuristics =
+let { Goptions.get = use_unification_heuristics } =
   Goptions.declare_bool_option_and_ref
-    ~depr:false
     ~key:["Solve";"Unification";"Constraints"]
     ~value:true
+    ()
 
 exception SuggestNoSuchGoals of int * t
+
+exception FailedConstraints of exn
+
+let () = CErrors.register_handler (function
+    | FailedConstraints e ->
+      Some Pp.(CErrors.print e ++ spc() ++
+               hov 1
+                 (str "(while solving unification constraints," ++ spc() ++
+                  str "see flag \"Solve Unification Constraints\")"))
+    | _ -> None)
+
+let solve_constraints =
+  Proofview.tclOR Refine.solve_constraints
+    (fun (e,info) -> Proofview.tclZERO ~info (FailedConstraints e))
 
 let solve ?with_end_tac gi info_lvl tac pr =
     let tac = match with_end_tac with
@@ -541,7 +438,7 @@ let solve ?with_end_tac gi info_lvl tac pr =
     let tac = Goal_select.tclSELECT ~nosuchgoal gi tac in
     let tac =
       if use_unification_heuristics () then
-        Proofview.tclTHEN tac Refine.solve_constraints
+        Proofview.tclTHEN tac solve_constraints
       else tac
     in
     let env = Global.env () in
@@ -580,7 +477,7 @@ let refine_by_tactic ~name ~poly env sigma ty tac =
   let { goals; stack; sigma; entry } = data prf in
   assert (stack = []);
   let ans = match Proofview.initial_goals entry with
-  | [c, _] -> c
+  | [_, c, _] -> c
   | _ -> assert false
   in
   let ans = EConstr.to_constr ~abort_on_undefined_evars:false sigma ans in
@@ -602,16 +499,13 @@ let refine_by_tactic ~name ~poly env sigma ty tac =
      this hack will work in most cases. *)
   let neff = neff.Evd.seff_private in
   let (ans, _) = Safe_typing.inline_private_constants env ((ans, Univ.ContextSet.empty), neff) in
-  ans, sigma
-
-let get_nth_V82_goal p i =
-  let { sigma; goals } = data p in
-  try { Evd.it = List.nth goals (i-1) ; sigma }
-  with Failure _ -> raise (NoSuchGoal None)
+  EConstr.of_constr ans, sigma
 
 let get_goal_context_gen pf i =
-  let { Evd.it=goal ; sigma=sigma; } = get_nth_V82_goal pf i in
-  (sigma, Global.env_of_context (Goal.V82.hyps sigma goal))
+  let { sigma; goals } = data pf in
+  let goal = try List.nth goals (i-1) with Failure _ -> raise (NoSuchGoal None) in
+  let env = Evd.evar_filtered_env (Global.env ()) (Evd.find_undefined sigma goal) in
+  (sigma, env)
 
 let get_proof_context p =
   try get_goal_context_gen p 1

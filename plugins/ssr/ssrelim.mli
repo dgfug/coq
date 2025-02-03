@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,23 +12,24 @@
 
 open Ssrmatching_plugin
 
+type elim_what =
+| EConstr of
+        Ssrast.ssrhyp list * Ssrmatching.occ *
+          EConstr.constr
+| EGen of
+    ((Ssrast.ssrhyp list option *
+      Ssrmatching.occ) *
+      Ssrmatching.cpattern)
+
 val ssrelim :
   ?is_case:bool ->
   ((Ssrast.ssrhyps option * Ssrast.ssrocc) *
      Ssrmatching.cpattern)
     list ->
-  ([< `EConstr of
-        Ssrast.ssrhyp list * Ssrmatching.occ *
-          EConstr.constr &
-          'b
-   | `EGen of
-       (Ssrast.ssrhyp list option *
-          Ssrmatching.occ) *
-         Ssrmatching.cpattern ]
-   as 'a) ->
+  elim_what ->
   ?elim:EConstr.constr ->
   Ssrast.ssripat option ->
-  (?seed:Names.Name.t list array -> 'a ->
+  (?seed:Names.Name.t list array -> elim_what ->
    Ssrast.ssripat option ->
    unit Proofview.tactic ->
    bool -> Ssrast.ssrhyp list -> unit Proofview.tactic) ->

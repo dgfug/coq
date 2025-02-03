@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -21,7 +21,7 @@ let load_rcfile ~rcfile ~state =
       match rcfile with
       | Some rcfile ->
         if CUnix.file_readable_p rcfile then
-          Vernac.load_vernac ~echo:false ~interactive:false ~check:true ~state rcfile
+          Vernac.load_vernac ~echo:false ~check:true ~state rcfile
         else raise (Sys_error ("Cannot read rcfile: "^ rcfile))
       | None ->
         try
@@ -32,7 +32,7 @@ let load_rcfile ~rcfile ~state =
             Envars.home ~warn / "."^rcdefaultname^"."^Coq_config.version;
             Envars.home ~warn / "."^rcdefaultname
           ] in
-          Vernac.load_vernac ~echo:false ~interactive:false ~check:true ~state inferedrc
+          Vernac.load_vernac ~echo:false ~check:true ~state inferedrc
         with Not_found -> state
         (*
         Flags.if_verbose

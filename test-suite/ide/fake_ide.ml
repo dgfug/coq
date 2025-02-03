@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,7 +8,7 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
-(** Fake_ide : Simulate a [coqide] talking to a [coqidetop]. *)
+(** Fake_ide : Simulate a [rocqide] talking to a [coqidetop]. *)
 
 let error s =
   prerr_endline ("fake_ide: error: "^s);
@@ -191,9 +191,9 @@ module GUILogic = struct
 
   let after_add = function
     | Interface.Fail (_,_,s) -> print_error s; exit 1
-    | Interface.Good (id, (Util.Inl (), _)) ->
+    | Interface.Good (id, Util.Inl ()) ->
         Document.assign_tip_id doc id
-    | Interface.Good (id, (Util.Inr tip, _)) ->
+    | Interface.Good (id, Util.Inr tip) ->
         Document.assign_tip_id doc id;
         Document.unfocus doc;
         ignore(Document.cut_at doc tip);
@@ -240,13 +240,13 @@ let eval_print l coq =
   match l with
   | [ Tok(_,"ADD"); Top []; Tok(_,phrase) ] ->
       let eid, tip = add_sentence phrase in
-      after_add (base_eval_call (add ((phrase,eid),(tip,true))) coq)
+      after_add (base_eval_call (add ((((phrase,eid),(tip,true)),0),(0,0))) coq)
   | [ Tok(_,"ADD"); Top [Tok(_,name)]; Tok(_,phrase) ] ->
       let eid, tip = add_sentence ~name phrase in
-      after_add (base_eval_call (add ((phrase,eid),(tip,true))) coq)
+      after_add (base_eval_call (add ((((phrase,eid),(tip,true)),0),(0,0))) coq)
   | [ Tok(_,"FAILADD"); Tok(_,phrase) ] ->
       let eid, tip = add_sentence phrase in
-      after_fail coq (base_eval_call ~fail:false (add ((phrase,eid),(tip,true))) coq)
+      after_fail coq (base_eval_call ~fail:false (add ((((phrase,eid),(tip,true)),0),(0,0))) coq)
   | [ Tok(_,"GOALS"); ] ->
       eval_call (goals ()) coq
   | [ Tok(_,"FAILGOALS"); ] ->
@@ -308,7 +308,7 @@ let usage () =
     (Parser.print grammar));
   exit 1
 
-module Coqide = Spawn.Sync ()
+module Rocqide = Spawn.Sync ()
 
 let main =
   if Sys.os_type = "Unix" then Sys.set_signal Sys.sigpipe
@@ -326,7 +326,7 @@ let main =
   prerr_endline ("Running: "^idetop_name^" "^
                    (String.concat " " (Array.to_list coqtop_args)));
   let coq =
-    let _p, cin, cout = Coqide.spawn idetop_name coqtop_args in
+    let _p, cin, cout = Rocqide.spawn idetop_name coqtop_args in
     let ip = Xml_parser.make (Xml_parser.SChannel cin) in
     let op = Xml_printer.make (Xml_printer.TChannel cout) in
     Xml_parser.check_eof ip false;

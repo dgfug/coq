@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -27,6 +27,20 @@ module Label =
     let reset_label_counter () = counter := no
   end
 
+type caml_prim =
+| CAML_Arraymake
+| CAML_Arrayget
+| CAML_Arraydefault
+| CAML_Arrayset
+| CAML_Arraycopy
+| CAML_Arraylength
+| CAML_Stringmake
+| CAML_Stringlength
+| CAML_Stringget
+| CAML_Stringsub
+| CAML_Stringcat
+| CAML_Stringcompare
+
 type instruction =
   | Klabel of Label.t
   | Kacc of int
@@ -48,6 +62,7 @@ type instruction =
   | Kclosurecofix of int * int * Label.t array * Label.t array
                    (* nb fv, init, lbl types, lbl bodies *)
   | Kgetglobal of Constant.t
+  | Ksubstinstance of UVars.Instance.t
   | Kconst of structured_constant
   | Kmakeblock of int * tag
   | Kmakeswitchblock of Label.t * Label.t * annot_switch * int
@@ -57,19 +72,17 @@ type instruction =
   | Ksetfield of int
   | Kstop
   | Ksequence of bytecodes
-  | Kproj of Projection.Repr.t
+  | Kproj of int
   | Kensurestackcapacity of int
   | Kbranch of Label.t                  (* jump to label *)
   | Kprim of CPrimitives.t * pconstant
-  | Kcamlprim of CPrimitives.t * Label.t
+  | Kcamlprim of caml_prim * Label.t
 
 and bytecodes = instruction list
 
 type fv_elem =
   | FVnamed of Id.t
   | FVrel of int
-  | FVuniv_var of int
-  | FVevar of Evar.t
 
 type fv = fv_elem array
 
@@ -77,13 +90,25 @@ type fv = fv_elem array
 open Pp
 open Util
 
+let caml_prim_to_prim = function
+| CAML_Arraymake -> CPrimitives.Arraymake
+| CAML_Arrayget -> CPrimitives.Arrayget
+| CAML_Arraydefault -> CPrimitives.Arraydefault
+| CAML_Arrayset -> CPrimitives.Arrayset
+| CAML_Arraycopy -> CPrimitives.Arraycopy
+| CAML_Arraylength -> CPrimitives.Arraylength
+| CAML_Stringmake -> CPrimitives.Stringmake
+| CAML_Stringlength -> CPrimitives.Stringlength
+| CAML_Stringget -> CPrimitives.Stringget
+| CAML_Stringsub -> CPrimitives.Stringsub
+| CAML_Stringcat -> CPrimitives.Stringcat
+| CAML_Stringcompare -> CPrimitives.Stringcompare
+
 let pp_lbl lbl = str "L" ++ int lbl
 
 let pp_fv_elem = function
   | FVnamed id -> str "FVnamed(" ++ Id.print id ++ str ")"
   | FVrel i -> str "Rel(" ++ int i ++ str ")"
-  | FVuniv_var v -> str "FVuniv(" ++ int v ++ str ")"
-  | FVevar e -> str "FVevar(" ++ int (Evar.repr e) ++ str ")"
 
 let rec pp_instr i =
   match i with
@@ -120,6 +145,9 @@ let rec pp_instr i =
              str " bodies = " ++
              prlist_with_sep spc pp_lbl (Array.to_list lblb))
   | Kgetglobal idu -> str "getglobal " ++ Constant.print idu
+  | Ksubstinstance u ->
+    str "subst_instance " ++
+    UVars.Instance.pr Sorts.QVar.raw_pr Univ.Level.raw_pr u
   | Kconst sc ->
       str "const " ++ pp_struct_const sc
   | Kmakeblock(n, m) ->
@@ -140,7 +168,7 @@ let rec pp_instr i =
 
   | Kbranch lbl -> str "branch " ++ pp_lbl lbl
 
-  | Kproj p -> str "proj " ++ Projection.Repr.print p
+  | Kproj p -> str "proj " ++ int p
 
   | Kensurestackcapacity size -> str "growstack " ++ int size
 
@@ -148,7 +176,7 @@ let rec pp_instr i =
         (Constant.print (fst id))
 
   | Kcamlprim (op, lbl) ->
-    str "camlcall " ++ str (CPrimitives.to_string op) ++ str ", branch " ++
+    str "camlcall " ++ str (CPrimitives.to_string (caml_prim_to_prim op)) ++ str ", branch " ++
     pp_lbl lbl ++ str " on accu"
 
 and pp_bytecodes c =

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,7 +12,6 @@ open Names
 open Environ
 open Constrexpr
 open Typeclasses
-open Libnames
 
 (** Instance declaration *)
 
@@ -22,7 +21,7 @@ val declare_instance : ?warn:bool -> env -> Evd.evar_map ->
     Does nothing — or emit a “not-a-class” warning if the [warn] argument is set —
     when said type is not a registered type class. *)
 
-val existing_instance : Hints.hint_locality -> qualid -> Vernacexpr.hint_info_expr option -> unit
+val existing_instance : ?loc:Loc.t -> Hints.hint_locality -> GlobRef.t -> Vernacexpr.hint_info_expr option -> unit
 (** globality, reference, optional priority and pattern information *)
 
 val new_instance_interactive
@@ -31,7 +30,6 @@ val new_instance_interactive
   -> name_decl
   -> local_binder_expr list
   -> constr_expr
-  -> ?generalize:bool
   -> ?tac:unit Proofview.tactic
   -> ?hook:(GlobRef.t -> unit)
   -> Vernacexpr.hint_info_expr
@@ -45,7 +43,6 @@ val new_instance
   -> local_binder_expr list
   -> constr_expr
   -> (bool * constr_expr)
-  -> ?generalize:bool
   -> ?hook:(GlobRef.t -> unit)
   -> Vernacexpr.hint_info_expr
   -> Id.t
@@ -58,7 +55,6 @@ val new_instance_program
   -> local_binder_expr list
   -> constr_expr
   -> (bool * constr_expr) option
-  -> ?generalize:bool
   -> ?hook:(GlobRef.t -> unit)
   -> Vernacexpr.hint_info_expr
   -> Declare.OblState.t * Id.t
@@ -73,22 +69,68 @@ val declare_new_instance
   -> Vernacexpr.hint_info_expr
   -> unit
 
-val add_class : env -> Evd.evar_map -> typeclass -> unit
+val add_class : typeclass -> unit
+
+type instance = {
+  class_name : GlobRef.t;
+  instance : GlobRef.t;
+  info : Typeclasses.hint_info;
+  locality : Hints.hint_locality;
+}
+
+module Event : sig
+  type t =
+    | NewClass of typeclass
+    | NewInstance of instance
+end
+
+(** Activated observers are called whenever a class or an instance are declared.
+
+    [register_observer] is to be called once per process for a given
+    string, unless [override] is [true]. The registered observer is not activated.
+
+    Activation state is part of the summary. It is up to the caller to
+    use libobject for persistence if desired.
+*)
+
+type observer
+
+val register_observer : name:string -> ?override:bool -> (Event.t -> unit) -> observer
+
+val activate_observer : observer -> unit
+
+val deactivate_observer : observer -> unit
 
 (** Setting opacity *)
 
-val set_typeclass_transparency : Tacred.evaluable_global_reference -> bool -> bool -> unit
+val set_typeclass_transparency
+  :  locality:Hints.hint_locality
+  -> Evaluable.t list
+  -> bool
+  -> unit
+
+val set_typeclass_transparency_com
+  :  locality:Hints.hint_locality
+  -> Libnames.qualid list
+  -> bool
+  -> unit
+
+val set_typeclass_mode
+  :  locality:Hints.hint_locality
+  -> GlobRef.t
+  -> Hints.hint_mode list
+  -> unit
 
 (** For generation on names based on classes only *)
 
-val id_of_class : typeclass -> Id.t
-
 val refine_att : bool Attributes.attribute
-
-val instance_locality : Hints.hint_locality Attributes.attribute
 
 (** {6 Low level interface used by Add Morphism, do not use } *)
 module Internal :
 sig
-val add_instance : typeclass -> hint_info -> bool -> GlobRef.t -> unit
+val add_instance : typeclass -> hint_info -> Hints.hint_locality -> GlobRef.t -> unit
 end
+
+
+(** A configurable warning to output if a default mode is used for a class declaration. *)
+val warn_default_mode : ?loc:Loc.t -> (GlobRef.t * Hints.hint_mode list) -> unit

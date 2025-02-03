@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -17,11 +17,11 @@
     {!Tacexpr.glob_tactic_expr} representing the left-hand side of the
     corresponding matching rule, a matching substitution to be
     applied, a context substitution mapping identifier to context like
-    those of {!Matching.matching_result}), and a {!Term.constr}
+    those of {!Constr_matching.matching_result}), and a {!Constr.t}
     substitution mapping corresponding to matched hypotheses. *)
 type 'a t = {
   subst : Constr_matching.bound_ident_map * Ltac_pretype.extended_patvar_map ;
-  context : EConstr.constr Names.Id.Map.t;
+  context : Constr_matching.context Names.Id.Map.t;
   terms : EConstr.constr Names.Id.Map.t;
   lhs : 'a;
 }
@@ -35,7 +35,7 @@ val match_term :
   Environ.env ->
   Evd.evar_map ->
   EConstr.constr ->
-  (Constr_matching.binding_bound_vars * Pattern.constr_pattern, Tacexpr.glob_tactic_expr) Tacexpr.match_rule list ->
+  (Constr_matching.binding_bound_vars * Constr_matching.instantiated_pattern, Tacexpr.glob_tactic_expr) Tacexpr.match_rule list ->
   Tacexpr.glob_tactic_expr t Proofview.tactic
 
 (** [match_goal env sigma hyps concl rules] matches the goal
@@ -48,5 +48,5 @@ val match_goal:
   Evd.evar_map ->
   EConstr.named_context ->
   EConstr.constr ->
-  (Constr_matching.binding_bound_vars * Pattern.constr_pattern, Tacexpr.glob_tactic_expr) Tacexpr.match_rule list ->
+  (Constr_matching.binding_bound_vars * Constr_matching.instantiated_pattern, Tacexpr.glob_tactic_expr) Tacexpr.match_rule list ->
   Tacexpr.glob_tactic_expr t Proofview.tactic

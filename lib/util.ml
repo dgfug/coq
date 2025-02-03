@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,18 +8,20 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
-type 'a pervasives_ref = 'a ref
-let pervasives_ref = ref
-let pervasives_compare = compare
-let (!) = (!)
-let (+) = (+)
-let (-) = (-)
-
 (* Mapping under pairs *)
 
 let on_fst f (a,b) = (f a,b)
 let on_snd f (a,b) = (a,f b)
 let map_pair f (a,b) = (f a,f b)
+
+(* Folding under pairs *)
+
+let fold_fst f acc (a,b) = let acc, a = f acc a in acc, (a, b)
+let fold_snd f acc (a,b) = let acc, b = f acc b in acc, (a, b)
+
+(* Equality on pairs *)
+
+let eq_pair eq1 eq2 (a,b) (a',b') = eq1 a a' && eq2 b b'
 
 (* Mapping under triplets *)
 
@@ -51,7 +53,7 @@ end
 
 (* Strings *)
 
-module String : CString.ExtS = CString
+module String = CString
 
 let subst_command_placeholder s t =
   let buff = Buffer.create (String.length s + String.length t) in
@@ -66,7 +68,7 @@ let subst_command_placeholder s t =
 
 (* Lists *)
 
-module List : CList.ExtS = CList
+module List = CList
 
 let (@) = CList.append
 
@@ -120,27 +122,22 @@ let app_opt f x =
   | Some f -> f x
   | None -> x
 
-(* Stream *)
-
-let stream_nth n st =
-  try List.nth (Stream.npeek (n+1) st) n
-  with Failure _ -> raise Stream.Failure
-
-let stream_njunk n st =
-  repeat n Stream.junk st
-
 (* Delayed computations *)
 
 type 'a delayed = unit -> 'a
 
 let delayed_force f = f ()
 
-(* finalize - Credit X.Leroy, D.Remy. *)
+(* finalize - Credit X.Leroy, D.Remy. , adapted to Coq's exn handling *)
 let try_finally f x finally y =
-  let res = try f x with exn -> finally y; raise exn in
+  let res = try f x
+    with exn ->
+      let exn, info = Exninfo.capture exn in
+      finally y;
+      Exninfo.iraise (exn, info)
+  in
   finally y;
   res
-
 
 (* Misc *)
 
@@ -165,6 +162,18 @@ struct
   let fold_left f g a = function
     | Inl y -> f a y
     | Inr y -> g a y
+end
+
+module Compare = struct
+  type list = [] | (::) : (('a -> 'a -> int) * 'a * 'a) * list -> list
+
+  let rec compare = function
+    | [] -> 0
+    | (cmp,x,y) :: rest ->
+      let c = cmp x y in
+      if c <> 0 then c
+      else compare rest
+
 end
 
 let map_union = Union.map

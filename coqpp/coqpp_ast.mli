@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -13,7 +13,7 @@ type loc = {
   loc_end : Lexing.position;
 }
 
-type code = { code : string; loc : loc; }
+type code = { code : string; loc : loc option; }
 
 type user_symbol =
 | Ulist1 of user_symbol
@@ -106,12 +106,13 @@ type classification =
 | ClassifName of string
 
 type vernac_rule = {
-  vernac_atts : (string * string) list option;
+  vernac_atts : (string * code) list option;
   vernac_state : string option;
   vernac_toks : ext_token list;
   vernac_class : code option;
   vernac_depr : bool;
   vernac_body : code;
+  vernac_synterp : (string * code) option;
 }
 
 type vernac_ext = {
@@ -138,7 +139,7 @@ type argument_ext = {
   argext_name : string;
   argext_rules : tactic_rule list;
   argext_type : argument_type option;
-  argext_interp : code option;
+  argext_interp : (string option * code) option;
   argext_glob : code option;
   argext_subst : code option;
   argext_rprinter : code option;
@@ -149,7 +150,7 @@ type argument_ext = {
 type node =
 | Code of code
 | Comment of string
-| DeclarePlugin of string
+| DeclarePlugin of string option
 | GramExt of grammar_ext
 | VernacExt of vernac_ext
 | VernacArgumentExt of vernac_argument_ext

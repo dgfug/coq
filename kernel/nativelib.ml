@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -43,22 +43,31 @@ let () = at_exit (fun () ->
         let d = Lazy.force my_temp_dir in
         Array.iter (fun f -> Sys.remove (Filename.concat d f)) (Sys.readdir d);
         Unix.rmdir d
-      with e ->
+      with (Unix.Unix_error _ | Sys_error _) as e ->
         Feedback.msg_warning
           Pp.(str "Native compile: failed to cleanup: " ++
               str(Printexc.to_string e) ++ fnl()))
+
+let delay_cleanup_file =
+  let toclean = ref [] in
+  let () = at_exit (fun () -> List.iter (fun f -> if Sys.file_exists f then Sys.remove f) !toclean) in
+  fun f -> if not (keep_debug_files()) then toclean := f :: !toclean
 
 (* We have to delay evaluation of include_dirs because coqlib cannot
    be guessed until flags have been properly initialized. It also lets
    us avoid forcing [my_temp_dir] if we don't need it (eg stdlib file
    without native compute or native conv uses). *)
 let include_dirs = ref []
+
 let get_include_dirs () =
   let base = match !include_dirs with
   | [] ->
-    let coqcorelib = Envars.coqcorelib () in
-    [ coqcorelib / "kernel" ; coqcorelib / "kernel/.kernel.objs/byte/"
-    ; coqcorelib / "library"; coqcorelib / "library/.library.objs/byte/"
+    (* EJGA: Should this case go away in favor of always requiring
+       explicit -nI flags once we remove the make-based system? I think
+       so. *)
+    let env = Boot.Env.init () in
+    [ Boot.Env.(Path.to_string (native_cmi env "kernel"))
+    ; Boot.Env.(Path.to_string (native_cmi env "library"))
     ]
   | _::_ as l -> l
   in
@@ -66,7 +75,7 @@ let get_include_dirs () =
   then (Lazy.force my_temp_dir) :: base
   else base
 
-(* Pointer to the function linking an ML object into coq's toplevel *)
+(* Pointer to the function linking an ML object into Rocq's toplevel *)
 let load_obj = ref (fun _x -> () : string -> unit)
 
 let rt1 = ref (dummy_value ())
@@ -90,7 +99,7 @@ let error_native_compiler_failed e =
   | Inl (Unix.WEXITED 127) -> Pp.(strbrk "The OCaml compiler was not found. Make sure it is installed, together with findlib.")
   | Inl (Unix.WEXITED n) ->
      Pp.(strbrk "Native compiler exited with status" ++ str" " ++ int n
-         ++ strbrk (if n = 2 then " (in case of stack overflow, increasing stack size (typicaly with \"ulimit -s\") often helps)" else ""))
+         ++ strbrk (if n = 2 then " (in case of stack overflow, increasing stack size (typically with \"ulimit -s\") often helps)" else ""))
   | Inl (Unix.WSIGNALED n) -> Pp.(strbrk "Native compiler killed by signal" ++ str" " ++ int n)
   | Inl (Unix.WSTOPPED n) -> Pp.(strbrk "Native compiler stopped by signal" ++ str" " ++ int n)
   | Inr e -> Pp.(strbrk "Native compiler failed with error: " ++ strbrk (Unix.error_message e))
@@ -104,7 +113,8 @@ let call_compiler ?profile:(profile=false) ml_filename =
      own library *)
   let require_load_path = !get_load_paths () in
   (* We assume that installed files always go in .coq-native for now *)
-  let install_load_path = List.map (fun dn -> dn / dft_output_dir) require_load_path in
+  (* To ease the build we also consider the current dir, but at some point the build system should manage both *)
+  let install_load_path = List.map (fun dn -> dn / dft_output_dir) require_load_path @ require_load_path in
   let include_dirs = List.flatten (List.map (fun x -> ["-I"; x]) (get_include_dirs () @ install_load_path)) in
   let f = Filename.chop_extension ml_filename in
   let link_filename = f ^ ".cmo" in
@@ -147,7 +157,9 @@ let call_compiler ?profile:(profile=false) ml_filename =
 let compile fn code ~profile:profile =
   write_ml_code fn code;
   let r = call_compiler ~profile fn in
-  if (not (keep_debug_files ())) && Sys.file_exists fn then Sys.remove fn;
+  (* NB: to prevent reusing the same filename we MUST NOT remove the file until exit
+     cf #15263 *)
+  delay_cleanup_file fn;
   r
 
 type native_library = Nativecode.global list * Nativevalues.symbols
@@ -156,8 +168,8 @@ let compile_library (code, symb) fn =
   let header = mk_library_header symb in
   let fn = fn ^ source_ext in
   let basename = Filename.basename fn in
-  let dirname = Filename.dirname fn in
-  let dirname = dirname / !output_dir in
+  let dirname =
+    if Filename.is_relative !output_dir then Filename.dirname fn / !output_dir else !output_dir in
   let () =
     try Unix.mkdir dirname 0o755
     with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
@@ -165,7 +177,7 @@ let compile_library (code, symb) fn =
   let fn = dirname / basename in
   write_ml_code fn ~header code;
   let _ = call_compiler fn in
-  if (not (keep_debug_files ())) && Sys.file_exists fn then Sys.remove fn
+  delay_cleanup_file fn
 
 let execute_library ~prefix f upds =
   rt1 := dummy_value ();

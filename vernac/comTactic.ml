@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -36,8 +36,11 @@ type parallel_solver =
   with_end_tac:bool ->
   Declare.Proof.t
 
-let print_info_trace =
-  declare_intopt_option_and_ref ~depr:false ~key:["Info" ; "Level"]
+let { Goptions.get = print_info_trace } =
+  declare_intopt_option_and_ref
+    ~key:["Info" ; "Level"]
+    ~value:None
+    ()
 
 let solve_core ~pstate n ~info t ~with_end_tac:b =
   let pstate, status = Declare.Proof.map_fold_endline ~f:(fun etac p ->
@@ -60,7 +63,7 @@ let check_par_applicable pstate =
     (Proof.data p).Proof.goals |> List.iter (fun goal ->
     let is_ground =
       let { Proof.sigma = sigma0 } = Declare.Proof.fold pstate ~f:Proof.data in
-      let g = Evd.find sigma0 goal in
+      let g = Evd.find_undefined sigma0 goal in
       let concl, hyps = Evd.evar_concl g, Evd.evar_context g in
       Evarutil.is_ground_term sigma0 concl &&
       List.for_all (Context.Named.Declaration.for_all (Evarutil.is_ground_term sigma0)) hyps in

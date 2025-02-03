@@ -2,15 +2,15 @@
 Reasoning with equalities
 =========================
 
-There are multiple notions of :gdef:`equality` in Coq:
+There are multiple notions of :gdef:`equality` in Rocq:
 
 - :gdef:`Leibniz equality` is the standard
-  way to define equality in Coq and the Calculus of Inductive Constructions,
+  way to define equality in Rocq and the Calculus of Inductive Constructions,
   which is in terms of a binary relation, i.e. a binary function that returns
   a `Prop`.  The standard library
   defines `eq` similar to this:
 
-   .. coqdoc::
+   .. rocqdoc::
 
       Inductive eq {A : Type} (x : A) : A -> Prop := eq_refl : eq x x.
 
@@ -21,15 +21,29 @@ There are multiple notions of :gdef:`equality` in Coq:
   relation.  A :gdef:`setoid` is a set that is equipped with an equivalence relation
   (see https://en.wikipedia.org/wiki/Setoid).  These are needed to form a :gdef:`quotient set`
   or :gdef:`quotient`
-  (see https://en.wikipedia.org/wiki/Equivalence_Class).  In Coq, users generally work
+  (see https://en.wikipedia.org/wiki/Equivalence_class).  In Rocq, users generally work
   with setoids rather than constructing quotients, for which there is no specific support.
 
 - :gdef:`Definitional equality <definitional equality>` is equality based on the
-  :ref:`conversion rules <Conversion-rules>`, which Coq can determine automatically.
-  When two terms are definitionally equal, Coq knows it can
+  :ref:`conversion rules <Conversion-rules>`, which Rocq can determine automatically.
+  Two terms are definitionally equal when they reduce to syntactically identical terms
+  using the conversion rules.  When two terms are definitionally equal, Rocq knows it can
   replace one with the other, such as with :tacn:`change` `X with Y`, among many
   other advantages.  ":term:`Convertible <convertible>`" is another way of saying that
   two terms are definitionally equal.
+
+  Among other reductions, the conversion rules can do computation to simplify
+  expressions.  The behavior depends on the function associated with an
+  operator, such as `+` (through the :ref:`Notation <syntax-extensions-and-notation-scopes>`
+  mechanism).  `+` refers to different functions depending on the data type of its
+  operands.
+  Using the standard library definitions of `+` for `nat` and `Z`, `1 + 2` will be reduced to `3`.
+  But the conversion rules don't do all the reductions that a person might.  For example,
+  for the mentioned definitions, `n + 0` is not reducible due to how the add function is defined
+  (see the aside :ref:`here <reversed_add_example>`).  `n + 1 + 2` isn't reducible because it's
+  represented as `(n + 1) + 2` and convertibility doesn't consider associativity.
+
+  In contrast, for type `R`, `1 + 2` is not reduced at all.
 
 Tactics for dealing with equality of inductive types such as :tacn:`injection`
 and :tacn:`inversion` are described :ref:`here <equality-inductive_types>`.
@@ -39,17 +53,16 @@ Tactics for simple equalities
 
 .. tacn:: reflexivity
 
-   For a goal with the form :n:`{? forall @open_binders , } t = u`,
-   verifies that `t` and `u` are
-   :term:`definitionally equal <definitional equality>`, and if so,
-   solves the goal (by applying `eq_refl`).  If not, it fails.
+   After doing an :tacn:`intros`,
+   if the resulting goal is in the form `t = u` in which `t` and `u` are
+   :term:`definitionally equal <definitional equality>`, the tactic
+   proves the goal (by applying `eq_refl`).  If not, it fails.
 
-   The tactic may also be applied to goals with the form
-   :n:`{? forall @open_binders , } R @term__1 @term__2` where
-   `R` is a reflexive relation registered with the `Equivalence` or `Reflexive`
-   typeclasses.  See :cmd:`Class` and :cmd:`Instance`.
+   The tactic also works if the resulting goal (after the :tacn:`intros`) has the
+   form `R t u` where `R` is a reflexive relation registered with the `Equivalence`
+   or `Reflexive` typeclasses.  See :cmd:`Class` and :cmd:`Instance`.
 
-   .. exn:: The relation @ident is not a declared reflexive relation. Maybe you need to require the Coq.Classes.RelationClasses library
+   .. exn:: The relation @ident is not a declared reflexive relation. Maybe you need to require the Stdlib.Classes.RelationClasses library
       :undocumented:
 
 .. tacn:: symmetry {? @simple_occurrences }
@@ -63,7 +76,7 @@ Tactics for simple equalities
    `R` is a symmetric relation registered with the `Equivalence` or `Symmetric`
    typeclasses.  See :cmd:`Class` and :cmd:`Instance`.
 
-   .. exn:: The relation @ident is not a declared symmetric relation. Maybe you need to require the Coq.Classes.RelationClasses library
+   .. exn:: The relation @ident is not a declared symmetric relation. Maybe you need to require the Stdlib.Classes.RelationClasses library
       :undocumented:
 
 .. tacn:: transitivity @one_term
@@ -82,7 +95,7 @@ Tactics for simple equalities
       This tactic behaves like :tacn:`transitivity`, using a fresh evar instead of
       a concrete :token:`one_term`.
 
-   .. exn:: The relation @ident is not a declared transitive relation. Maybe you need to require the Coq.Classes.RelationClasses library
+   .. exn:: The relation @ident is not a declared transitive relation. Maybe you need to require the Stdlib.Classes.RelationClasses library
       :undocumented:
 
 .. tacn:: f_equal
@@ -99,20 +112,17 @@ Rewriting with Leibniz and setoid equality
 
 .. tacn:: rewrite {+, @oriented_rewriter } {? @occurrences } {? by @ltac_expr3 }
 
-   .. insertprodn oriented_rewriter one_term_with_bindings
+   .. insertprodn oriented_rewriter oriented_rewriter
 
    .. prodn::
       oriented_rewriter ::= {? {| -> | <- } } {? @natural } {? {| ? | ! } } @one_term_with_bindings
-      one_term_with_bindings ::= {? > } @one_term {? with @bindings }
 
    Replaces subterms with other subterms that have been proven to be equal.
    The type of :n:`@one_term` must have the form:
 
       :n:`{? forall @open_binders , } EQ @term__1 @term__2`
 
-   .. todo :term:`Leibniz equality` does not work with Sphinx 2.3.1. It does with Sphinx 3.0.3.
-
-   where :g:`EQ` is the Leibniz equality `eq` or a registered :term:`setoid equality`.
+   where :g:`EQ` is the :term:`Leibniz equality` `eq` or a registered :term:`setoid equality`.
    Note that :n:`eq @term__1 @term__2` is typically written with the infix notation
    :n:`@term__1 = @term__2`.  You must `Require Setoid` to use the tactic
    with a setoid equality or with :ref:`setoid rewriting <generalizedrewriting>`.
@@ -177,24 +187,26 @@ Rewriting with Leibniz and setoid equality
       For instance, if we want to rewrite the right-hand side in the
       following goal, this will not work:
 
-      .. coqtop:: none
+      .. rocqtop:: none
 
-         Require Import Arith.
+         From Corelib Require Import Setoid.
 
-      .. coqtop:: out
+         Axiom add_comm : forall n m, n + m = m + n.
+
+      .. rocqtop:: out
 
          Lemma example x y : x + y = y + x.
 
-      .. coqtop:: all fail
+      .. rocqtop:: all fail
 
-         rewrite Nat.add_comm at 2.
+         rewrite add_comm at 2.
 
       One can explicitly specify how some variables are bound to match
       a different subterm:
 
-      .. coqtop:: all abort
+      .. rocqtop:: all abort
 
-         rewrite Nat.add_comm with (m := x).
+         rewrite add_comm with (m := x).
 
       Note that the more advanced :tacn:`setoid_rewrite` tactic
       behaves differently, and thus the number of occurrences
@@ -230,26 +242,28 @@ Rewriting with Leibniz and setoid equality
       the same key as the left- or right-hand side of the lemma given to rewrite, and the arguments
       are then unified up to full reduction.
 
+   .. cmd:: Declare Equivalent Keys @one_term @one_term
+      :undocumented:
+
+   .. cmd:: Print Equivalent Keys
+      :undocumented:
+
 .. tacn:: rewrite * {? {| -> | <- } } @one_term {? in @ident } {? at @rewrite_occs } {? by @ltac_expr3 }
           rewrite * {? {| -> | <- } } @one_term at @rewrite_occs in @ident {? by @ltac_expr3 }
    :name: rewrite *; _
    :undocumented:
 
-.. tacn:: rewrite_db @ident {? in @ident }
-   :undocumented:
-
-.. tacn:: replace @one_term__from with @one_term__to {? @occurrences } {? by @ltac_expr3 }
+.. tacn:: replace {? {| -> | <- } } @one_term__from with @one_term__to {? @occurrences } {? by @ltac_expr3 }
           replace {? {| -> | <- } } @one_term__from {? @occurrences }
    :name: replace; _
 
-   The first form replaces all free occurrences of :n:`@one_term__from`
-   in the current goal with :n:`@one_term__to` and generates an equality
-   :n:`@one_term__to = @one_term__from`
-   as a subgoal. (Note the generated equality is reversed with respect
-   to the order of the two terms in the tactic syntax; see
-   issue `#13480 <https://github.com/coq/coq/issues/13480>`_.)
-   This equality is automatically solved if it occurs among
-   the hypotheses, or if its symmetric form occurs.
+   The first form, when used with `<-` or no arrow, replaces all free
+   occurrences of :n:`@one_term__from` in the current goal with :n:`@one_term__to`
+   and generates an equality :n:`@one_term__to = @one_term__from` as a subgoal.
+   Note that this equality is reversed with respect to the order of the two terms.
+   When used with `->`, it generates instead an equality :n:`@one_term__from = @one_term__to`.
+   When :n:`by @ltac_expr3` is not present, this equality is automatically solved
+   if it occurs among the hypotheses, or if its symmetric form occurs.
 
    The second form, with `->` or no arrow, replaces :n:`@one_term__from`
    with :n:`@term__to` using
@@ -267,15 +281,7 @@ Rewriting with Leibniz and setoid equality
    .. exn:: Terms do not have convertible types.
       :undocumented:
 
-   .. tacn:: cutrewrite {? {| -> | <- } } @one_term {? in @ident }
-
-      Where :n:`@one_term` is an equality.
-
-      .. deprecated:: 8.5
-
-         Use :tacn:`replace` instead.
-
-.. tacn:: substitute {? {| -> | <- } } @one_term {? with @bindings }
+.. tacn:: substitute {? {| -> | <- } } @one_term_with_bindings
    :undocumented:
 
 .. tacn:: subst {* @ident }
@@ -287,8 +293,8 @@ Rewriting with Leibniz and setoid equality
    the first one is used.  If no :n:`@ident` is given, replacement is done for all
    hypotheses in the appropriate form in top to bottom order.
 
-   If :n:`@ident` is a local definition of the form :n:`@ident := @term`, it is also
-   unfolded and cleared.
+   If :n:`@ident` is a :term:`local definition <context-local definition>` of the form
+   :n:`@ident := @term`, it is also unfolded and cleared.
 
    If :n:`@ident` is a section variable it must have no
    indirect occurrences in the goal, i.e. no global declarations
@@ -316,8 +322,9 @@ Rewriting with Leibniz and setoid equality
         and :n:`@ident__2 = g @ident__1` which without the
         flag would be a cause of failure of :tacn:`subst`.
 
-      Additionally, it prevents a local definition such as :n:`@ident := t` from being
-      unfolded which otherwise it would exceptionally unfold in configurations
+      Additionally, it prevents a :term:`local definition <context-local definition>`
+      such as :n:`@ident := t` from being
+      unfolded which otherwise would exceptionally unfold in configurations
       containing hypotheses of the form :n:`@ident = u`, or :n:`u′ = @ident`
       with `u′` not a variable. Finally, it preserves the initial order of
       hypotheses, which without the flag it may break.
@@ -398,9 +405,9 @@ Rewriting with definitional equality
    .. exn:: Found an "at" clause without "with" clause
       :undocumented:
 
-   .. tacn:: now_show @one_term
+   .. tacn:: now_show @one_type
 
-      A synonym for :n:`change @one_term`. It can be used to
+      A synonym for :n:`change @one_type`. It can be used to
       make some proof steps explicit when refactoring a proof script
       to make it readable.
 
@@ -412,7 +419,7 @@ Rewriting with definitional equality
    it skips checking that :n:`@one_term__to` is convertible with the goal or
    :n:`@one_term__from`.
 
-   Recall that the Coq kernel typechecks proofs again when they are concluded to
+   Recall that the Rocq kernel typechecks proofs again when they are concluded to
    ensure correctness. Hence, using :tacn:`change` checks convertibility twice
    overall, while :tacn:`change_no_check` can produce ill-typed terms,
    but checks convertibility only once.
@@ -425,7 +432,7 @@ Rewriting with definitional equality
 
    .. example::
 
-      .. coqtop:: all abort fail
+      .. rocqtop:: all abort fail
 
          Goal False.
            change_no_check True.
@@ -434,7 +441,7 @@ Rewriting with definitional equality
 
    .. example::
 
-      .. coqtop:: all abort fail
+      .. rocqtop:: all abort fail
 
          Goal True -> False.
            intro H.
@@ -464,6 +471,9 @@ Tactics described in this section include:
   term
 - :tacn:`vm_compute` and :tacn:`native_compute`, which are performance-oriented.
 
+Except for :tacn:`red`, conversion tactics succeed even if the context is left
+unchanged.
+
 Conversion tactics, with two exceptions, only change the types and contexts
 of existential variables
 and leave the proof term unchanged.  (The :tacn:`vm_compute` and :tacn:`native_compute`
@@ -471,7 +481,7 @@ tactics change existential variables in a way similar to other conversions while
 also adding a single explicit cast to the proof term to tell the kernel
 which reduction engine to use.  See :ref:`type-cast`.)  For example:
 
-   .. coqtop:: all
+   .. rocqtop:: all
 
       Goal 3 + 4 = 7.
       Show Proof.
@@ -480,7 +490,7 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
       Show Proof.
       Show Existentials.
 
-   .. coqtop:: none
+   .. rocqtop:: none
 
       Abort.
 
@@ -491,8 +501,9 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
 
    .. prodn::
       reductions ::= {+ @reduction }
-      | @delta_reductions
-      reduction ::= beta
+      | {? head } @delta_reductions
+      reduction ::= head
+      | beta
       | delta {? @delta_reductions }
       | match
       | fix
@@ -504,6 +515,11 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
    Normalize the goal as specified by :n:`@reductions`.  If no reductions are
    specified by name, all reductions are applied.  If any reductions are specified by name,
    then only the named reductions are applied.  The reductions include:
+
+   `head`
+     Do only head reduction, without going under binders.
+     Supported by :tacn:`simpl`, :tacn:`cbv`, :tacn:`cbn` and :tacn:`lazy`.
+     If this is the only specified reduction, all other reductions are applied.
 
    `beta`
      :term:`beta-reduction` of functional application
@@ -554,6 +570,13 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
    predicate :g:`P`. Most of the time, :g:`t` may be computed without computing
    the proof of :g:`P(t)`, thanks to the lazy strategy.
 
+   .. flag:: Kernel Term Sharing
+
+      Turning this flag off disables the sharing of computations in
+      :tacn:`lazy`, making it a call-by-name reduction. This also
+      affects the reduction procedure used by the kernel when
+      typechecking. By default sharing is activated.
+
    The call-by-value strategy is the one used in ML languages: the
    arguments of a function call are systematically weakly evaluated
    first. The lazy strategy is similar to how Haskell reduces terms.
@@ -565,11 +588,11 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
 
       A variant form of :tacn:`cbv`.
 
-   :opt:`Debug` ``"Cbv"`` makes :tacn:`cbv` (and its derivative :tacn:`compute`) print
+   Setting :opt:`Debug` ``"Cbv"`` makes :tacn:`cbv` (and its derivative :tacn:`compute`) print
    information about the constants it encounters and the unfolding decisions it
    makes.
 
-.. tacn:: simpl {? @delta_reductions } {? {| @reference_occs | @pattern_occs } } @simple_occurrences
+.. tacn:: simpl {? head } {? @delta_reductions } {? {| @reference_occs | @pattern_occs } } @simple_occurrences
 
    .. insertprodn reference_occs pattern_occs
 
@@ -586,6 +609,10 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
    + When reducing a constant unfolding to (co)fixpoints, the tactic
      uses the name of the constant the (co)fixpoint comes from instead of
      the (co)fixpoint definition in recursive calls.
+
+   :n:`@occs_nums`
+     Selects which occurrences of :n:`@one_term` to process (counting from
+     left to right on the expression printed using the :flag:`Printing All` flag)
 
    :n:`@simple_occurrences`
      Permits selecting whether to reduce the conclusion and/or one or more
@@ -612,13 +639,31 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
 
    :tacn:`cbn` was intended to be a more principled, faster and more
    predictable replacement for :tacn:`simpl`.
+   The main difference is that :tacn:`cbn` may unfold constants even when they
+   cannot be reused in recursive calls: in the previous example, :g:`succ t` is
+   reduced to :g:`S t`. Modifiers such as `simpl never` are also not treated the same,
+   see :ref:`Args_effect_on_unfolding`.
 
-   The main difference between :tacn:`cbn` and :tacn:`simpl` is that
-   :tacn:`cbn` may unfold constants even when they cannot be reused in recursive calls:
-   in the previous example, :g:`succ t` is reduced to :g:`S t`.
-
-   :opt:`Debug` ``"RAKAM"`` makes :tacn:`cbn` print various debugging information.
+   Setting :opt:`Debug` ``"RAKAM"`` makes :tacn:`cbn` print various debugging information.
    ``RAKAM`` is the Refolding Algebraic Krivine Abstract Machine.
+
+   .. example::
+
+      Here are typical examples comparing :tacn:`cbn` and :tacn:`simpl`:
+
+      .. rocqtop:: all
+
+         Definition add1 (n:nat) := n + 1.
+         Eval simpl in add1 0.
+         Eval cbn in add1 0.
+
+         Definition pred_add n m := pred (n + m).
+         Eval simpl in pred_add 0 0.
+         Eval cbn in pred_add 0 0.
+
+         Parameter n : nat.
+         Eval simpl in pred_add 0 n.
+         Eval cbn in pred_add 0 n.
 
 .. tacn:: hnf @simple_occurrences
 
@@ -638,17 +683,20 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
 
 .. tacn:: red @simple_occurrences
 
-   βιζ-reduces the constant at the head of `T` (which may be called
-   the :gdef:`head constant`; :gdef:`head` means the beginning
-   of the term), if possible,
-   in the selected hypotheses and/or the goal, which must have the form:
+   βιζ-reduces the :term:`head constant` of `T`, if possible, in the selected
+   hypotheses and/or the goal which have the form:
 
-     :n:`{? forall @open_binders,} T`
+     :n:`{? forall @open_binders , } T`
 
    (where `T` does not begin with a `forall`) to :n:`c t__1 … t__n`
    where :g:`c` is a constant.
    If :g:`c` is transparent then it replaces :g:`c` with its
    definition and reduces again until no further reduction is possible.
+
+   In the term :n:`{? forall @open_binders , } t__1 ... t__n`, where :n:`t__1` is not a
+   :n:`@term_application`, :n:`t__1` is the :gdef:`head` of the term.
+   In a term with the form :n:`{? forall @open_binders , } c t__1 ... t__n`, where
+   :n:`c` is a :term:`constant`, :n:`c` is the :gdef:`head constant`.
 
    .. exn:: No head constant to reduce.
       :undocumented:
@@ -663,8 +711,8 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
 
    :n:`@reference_occs`
      If :n:`@reference` is a :n:`@qualid`, it must be a defined transparent
-     constant or local definition (see :ref:`gallina-definitions` and
-     :ref:`controlling-the-reduction-strategies`).
+     constant or :term:`local definition <context-local definition>`
+     (see :ref:`gallina-definitions` and :ref:`controlling-the-reduction-strategies`).
 
      If :n:`@reference` is a :n:`@string {? @scope_key}`, the :n:`@string` is
      the discriminating
@@ -687,7 +735,7 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
 
       .. example::
 
-         .. coqtop:: abort all fail
+         .. rocqtop:: abort all fail
 
             Goal 0 <= 1.
             unfold le.
@@ -699,7 +747,7 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
 
       .. example::
 
-         .. coqtop:: abort all fail
+         .. rocqtop:: abort all fail
 
             Opaque Nat.add.
             Goal 1 + 0 = 1.
@@ -728,32 +776,38 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
 
    .. example:: :tacn:`fold` doesn't always undo :tacn:`unfold`
 
-      .. coqtop:: all
+      .. rocqtop:: all
 
          Goal ~0=0.
          unfold not.
 
       This :tacn:`fold` doesn't undo the preceeding :tacn:`unfold` (it makes no change):
 
-      .. coqtop:: all
+      .. rocqtop:: all
 
          fold not.
 
       However, this :tacn:`pattern` followed by :tacn:`fold` does:
 
-      .. coqtop:: all abort
+      .. rocqtop:: all abort
 
          pattern (0 = 0).
          fold not.
 
    .. example:: Use :tacn:`fold` to reverse unfolding of `fold_right`
 
-      .. coqtop:: none
+      .. rocqtop:: none
 
-         Require Import Coq.Lists.List.
+         Require Import ListDef.
          Local Open Scope list_scope.
 
-      .. coqtop:: all abort
+         Definition fold_right [A B] (f : B -> A -> A) (a0 : A) :=
+           fix fold_right (l : list B) : A := match l with
+                                              | nil => a0
+                                              | b :: t => f b (fold_right t)
+                                              end.
+
+      .. rocqtop:: all abort
 
          Goal forall x xs, fold_right and True (x::xs).
          red.
@@ -782,6 +836,8 @@ which reduction engine to use.  See :ref:`type-cast`.)  For example:
    This tactic can be used, for instance, when the tactic :tacn:`apply` fails
    on matching or to better control the behavior of :tacn:`rewrite`.
 
+   See the example :ref:`here <example_apply_pattern>`.
+
 Fast reduction tactics: vm_compute and native_compute
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -792,7 +848,7 @@ representation used in the ZINC virtual machine :cite:`Leroy90`. It is
 especially useful for intensive computation of algebraic values, such
 as numbers, and for reflection-based tactics.
 
-:tacn:`native_compute` is based on on converting the Coq code to OCaml.
+:tacn:`native_compute` is based on on converting the Rocq code to OCaml.
 
 Note that both these tactics ignore :cmd:`Opaque` markings
 (see issue `#4776 <https://github.com/coq/coq/issues/4776>`_), nor do they
@@ -800,7 +856,7 @@ apply unfolding strategies such as from :cmd:`Strategy`.
 
 :tacn:`native_compute` is typically two to five
 times faster than :tacn:`vm_compute` at applying conversion rules
-when Coq is running native code, but :tacn:`native_compute` requires
+when Rocq is running native code, but :tacn:`native_compute` requires
 considerably more overhead.  We recommend using :tacn:`native_compute`
 when all of the following are true (otherwise use :tacn:`vm_compute`):
 
@@ -874,7 +930,7 @@ Evaluation of a term can be performed with:
       | native_compute {? {| @reference_occs | @pattern_occs } }
       | red
       | hnf
-      | simpl {? @delta_reductions } {? {| @reference_occs | @pattern_occs } }
+      | simpl {? head } {? @delta_reductions } {? {| @reference_occs | @pattern_occs } }
       | cbn {? @reductions }
       | unfold {+, @reference_occs }
       | fold {+ @one_term }
@@ -929,7 +985,7 @@ The commands to fine-tune the reduction strategies and the lazy conversion
 algorithm are described in this section.  Also see :ref:`Args_effect_on_unfolding`,
 which supports additional fine-tuning.
 
-.. cmd:: Opaque {+ @reference }
+.. cmd:: Opaque {? ! } {+ @reference }
 
    Marks the specified constants as :term:`opaque` so tactics won't :term:`unfold` them
    with :term:`delta-reduction`.
@@ -940,12 +996,20 @@ which supports additional fine-tuning.
    This command accepts the :attr:`global` attribute.  By default, the scope
    of :cmd:`Opaque` is limited to the current section or module.
 
-   :cmd:`Opaque` also affects Coq's conversion algorithm, causing
+   :cmd:`Opaque` also affects Rocq's conversion algorithm, causing
    it to delay unfolding the specified constants as much as possible when it
    has to check that two distinct applied constants are convertible.
    See Section :ref:`conversion-rules`.
 
-.. cmd:: Transparent {+ @reference }
+   In the particular case where the constants refer to primitive projections,
+   a :token:`!` can be used to make the compatibility constants opaque, while
+   by default the projection themselves are made opaque and the compatibility
+   constants always remain transparent. This mechanism is only intended for
+   debugging purposes.
+
+   Use the :cmd:`About` command to see if a symbol is transparent or opaque.
+
+.. cmd:: Transparent {? ! } {+ @reference }
 
    The opposite of :cmd:`Opaque`, it marks the specified constants
    as :term:`transparent`
@@ -962,6 +1026,10 @@ which supports additional fine-tuning.
    statements, not their actual proofs. This distinguishes lemmas from
    the usual defined constants, whose actual values are of course
    relevant in general.
+
+   In the particular case where the constants refer to primitive projections,
+   a :token:`!` can be used to make the compatibility constants transparent
+   (see :cmd:`Opaque` for more details).
 
    .. exn:: The reference @qualid was not found in the current environment.
 
@@ -986,7 +1054,7 @@ which supports additional fine-tuning.
    constants, both at the tactic level and at the kernel level. This
    command associates a :n:`@strategy_level` with the qualified names in the :n:`@reference`
    sequence. Whenever two
-   expressions with two distinct head constants are compared (for
+   expressions with two distinct :term:`head constants <head constant>` are compared (for
    example, typechecking `f x` where `f : A -> B` and `x : C` will result in
    converting `A` and `C`), the one
    with lower level is expanded first. In case of a tie, the second one
@@ -1040,7 +1108,7 @@ which supports additional fine-tuning.
 
    .. example::
 
-      .. coqtop:: all reset abort
+      .. rocqtop:: all reset abort
 
          Opaque id.
          Goal id 10 = 10.
@@ -1062,7 +1130,7 @@ which supports additional fine-tuning.
       This can be illustrated with the following example involving the
       factorial function.
 
-      .. coqtop:: in reset
+      .. rocqtop:: in reset
 
          Fixpoint fact (n : nat) : nat :=
            match n with
@@ -1073,19 +1141,19 @@ which supports additional fine-tuning.
       Suppose now that, for whatever reason, we want in general to
       unfold the :g:`id` function very late during conversion:
 
-      .. coqtop:: in
+      .. rocqtop:: in
 
          Strategy 1000 [id].
 
       If we try to prove :g:`id (fact n) = fact n` by
       :tacn:`reflexivity`, it will now take time proportional to
-      :math:`n!`, because Coq will keep unfolding :g:`fact` and
+      :math:`n!`, because Rocq will keep unfolding :g:`fact` and
       :g:`*` and :g:`+` before it unfolds :g:`id`, resulting in a full
       computation of :g:`fact n` (in unary, because we are using
       :g:`nat`), which takes time :math:`n!`.  We can see this cross
       the relevant threshold at around :math:`n = 9`:
 
-      .. coqtop:: all abort
+      .. rocqtop:: all abort
 
          Goal True.
          Time assert (id (fact 8) = fact 8) by reflexivity.
@@ -1098,7 +1166,7 @@ which supports additional fine-tuning.
 
       We can get around this issue by using :tacn:`with_strategy`:
 
-      .. coqtop:: all
+      .. rocqtop:: all
 
          Goal True.
          Fail Timeout 1 assert (id (fact 100) = fact 100) by reflexivity.
@@ -1108,14 +1176,14 @@ which supports additional fine-tuning.
       trouble, because the reduction strategy changes are local to the
       tactic passed to :tacn:`with_strategy`.
 
-      .. coqtop:: all abort fail
+      .. rocqtop:: all abort fail
 
          exact I.
          Timeout 1 Defined.
 
       We can fix this issue by using :tacn:`abstract`:
 
-      .. coqtop:: all
+      .. rocqtop:: all
 
          Goal True.
          Time assert (id (fact 100) = fact 100) by with_strategy -1 [id] abstract reflexivity.
@@ -1123,7 +1191,7 @@ which supports additional fine-tuning.
          Time Defined.
 
       On small examples this sort of behavior doesn't matter, but
-      because Coq is a super-linear performance domain in so many
+      because Rocq is a super-linear performance domain in so many
       places, unless great care is taken, tactic automation using
       :tacn:`with_strategy` may not be robustly performant when
       scaling the size of the input.
@@ -1132,7 +1200,7 @@ which supports additional fine-tuning.
 
       In much the same way this tactic does not play well with
       :cmd:`Qed` and :cmd:`Defined` without using :tacn:`abstract` as
-      an intermediary, this tactic does not play well with ``coqchk``,
+      an intermediary, this tactic does not play well with ``rocqchk``,
       even when used with :tacn:`abstract`, due to the inability of
       tactics to persist information about conversion hints in the
       proof term. See `#12200

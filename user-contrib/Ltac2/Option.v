@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -58,3 +58,15 @@ Ltac2 bind (x : 'a option) (f : 'a -> 'b option) :=
 Ltac2 ret (x : 'a) := Some x.
 
 Ltac2 lift (f : 'a -> 'b) (x : 'a option) := map f x.
+
+Ltac2 equal (eq : 'a -> 'b -> bool) (a : 'a option) (b : 'b option) : bool
+  := match a with
+     | None => match b with
+               | None => true
+               | _ => false
+               end
+     | Some a => match b with
+                 | Some b => eq a b
+                 | _ => false
+                 end
+     end.

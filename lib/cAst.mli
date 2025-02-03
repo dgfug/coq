@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -24,3 +24,7 @@ val with_val : ('a -> 'b) -> 'a t -> 'b
 val with_loc_val : (?loc:Loc.t -> 'a -> 'b) -> 'a t -> 'b
 
 val eq : ('a -> 'a -> bool) -> 'a t -> 'a t -> bool
+
+module Smart : sig
+  val map : ('a -> 'a) -> 'a t -> 'a t
+end

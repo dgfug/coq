@@ -6,17 +6,35 @@ Variants and the `match` construct
 Variants
 --------
 
-.. cmd:: Variant @variant_definition {* with @variant_definition }
+The :cmd:`Variant` command allows defining types by listing
+the :term:`inhabitants <inhabitant>` of the type.  Each inhabitant is
+specified by a :gdef:`constructor`.  For instance, Booleans have two
+constructors: :g:`true` and :g:`false`. Types can include enumerated types from
+programming languages, such as Booleans, characters or even the
+degenerate cases of the unit and empty types. Variant types more
+generally include enumerated types with arguments or even enumerated
+types with parametric arguments such as option types and sum types.
+It also includes predicates or type families defined by cases
+such as the Boolean reflection or equality predicates. Observing the
+form of the :term:`inhabitants <inhabitant>` of a variant type is done by case analysis
+using the `match` expression.
 
-   .. insertprodn variant_definition variant_definition
+When a constructor of a type takes an argument of that same type,
+the type becomes recursive, in which case it can be either
+:cmd:`Inductive` or :cmd:`CoInductive`. The keyword :cmd:`Variant`
+is reserved for non-recursive types. Natural numbers, lists or streams cannot
+be defined using :cmd:`Variant`.
 
-   .. prodn::
-      variant_definition ::= @ident_decl {* @binder } {? %| {* @binder } } {? : @type } := {? %| } {+| @constructor } {? @decl_notations }
+.. cmd:: Variant @ident_decl {* @binder } {? %| {* @binder } } {? : @type } := {? %| } {+| @constructor } {? @decl_notations }
 
-   The :cmd:`Variant` command is similar to the :cmd:`Inductive` command, except
-   that it disallows recursive definition of types (for instance, lists cannot
-   be defined using :cmd:`Variant`). No induction scheme is generated for
+   Defines a variant type named :n:`@ident` (in :n:`@ident_decl`)
+   with the given list of constructors.
+   No induction scheme is generated for
    this variant, unless the :flag:`Nonrecursive Elimination Schemes` flag is on.
+
+   :n:`{? %| {* @binder } }`
+     The :n:`|` separates uniform and non uniform parameters.
+     See :flag:`Uniform Inductive Parameters`.
 
    This command supports the :attr:`universes(polymorphic)`,
    :attr:`universes(template)`, :attr:`universes(cumulative)`, and
@@ -24,6 +42,52 @@ Variants
 
    .. exn:: The @natural th argument of @ident must be @ident in @type.
       :undocumented:
+
+.. example::
+
+  The Booleans, the unit type and the empty type are respectively defined by:
+
+   .. rocqtop:: none
+
+      Module FreshNameSpace.
+
+   .. rocqtop:: in
+
+      Variant bool : Set := true : bool | false : bool.
+      Variant unit : Set := tt : unit.
+      Variant Empty_set : Set :=.
+
+  The option and sum types are defined by:
+
+   .. rocqtop:: in
+
+      Variant option (A : Type) : Type := None : option A | Some : A -> option A.
+      Variant sum (A B : Type) : Type := inl : A -> sum A B | inr : B -> sum A B.
+
+  *Boolean reflection* is a relation reflecting under the form of a
+  Boolean value when a given proposition :n:`P` holds. It can be
+  defined as a two-constructor type family over :g:`bool`
+  parameterized by the proposition :n:`P`:
+
+  .. rocqtop:: in
+
+     Variant reflect (P : Prop) : bool -> Set :=
+     | ReflectT : P -> reflect P true
+     | ReflectF : ~ P -> reflect P false.
+
+  .. rocqtop:: none
+
+     End FreshNameSpace.
+
+  :term:`Leibniz equality` is another example of variant type.
+
+.. note::
+   The standard library commonly uses :cmd:`Inductive` in
+   place of :cmd:`Variant` even for non-recursive types in order to
+   automatically derive the schemes
+   :n:`@ident`\ ``_rect``, :n:`@ident`\ ``_ind``, :n:`@ident`\
+   ``_rec`` and :n:`@ident`\ ``_sind``.  (These schemes are also created
+   for :cmd:`Variant` if the :flag:`Nonrecursive Elimination Schemes` flag is set.)
 
 Private (matching) inductive types
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -40,9 +104,14 @@ Private (matching) inductive types
    quotient types / higher-order inductive types in projects such as
    the `HoTT library <https://github.com/HoTT/HoTT>`_.
 
+   Reducing definitions from the inductive's module can expose
+   :g:`match` constructs to unification, which may result in invalid proof terms.
+   Errors from such terms are delayed until proof completion (i.e. on the :cmd:`Qed`). Use
+   :cmd:`Validate Proof` to identify which tactic produced the problematic term.
+
 .. example::
 
-   .. coqtop:: all
+   .. rocqtop:: all
 
       Module Foo.
       #[ private(matching) ] Inductive my_nat := my_O : my_nat | my_S : my_nat -> my_nat.
@@ -75,6 +144,7 @@ to apply specific treatments accordingly.
    | @pattern1 {* @pattern1 }
    | @ @qualid {* @pattern1 }
    pattern1 ::= @pattern0 % @scope_key
+   | @pattern0 %_ @scope_key
    | @pattern0
    pattern0 ::= @qualid
    | %{%| {* @qualid := @pattern } %|%}
@@ -119,7 +189,7 @@ the term being matched. This dependency of the term being matched in the
 return type is expressed with an :n:`@ident` clause where :n:`@ident`
 is dependent in the return type. For instance, in the following example:
 
-.. coqtop:: in
+.. rocqtop:: in
 
    Inductive bool : Type := true : bool | false : bool.
    Inductive eq (A:Type) (x:A) : A -> Prop := eq_refl : eq A x x.
@@ -145,11 +215,11 @@ the identifier :g:`b` being used to represent the dependency.
    the return type. For instance, the following alternative definition is
    accepted and has the same meaning as the previous one.
 
-   .. coqtop:: none
+   .. rocqtop:: none
 
       Reset bool_case.
 
-   .. coqtop:: in
+   .. rocqtop:: in
 
       Definition bool_case (b:bool) : or (eq bool b true) (eq bool b false) :=
       match b return or (eq bool b true) (eq bool b false) with
@@ -157,14 +227,14 @@ the identifier :g:`b` being used to represent the dependency.
       | false => or_intror (eq bool false true) (eq bool false false) (eq_refl bool false)
       end.
 
-The second subcase is only relevant for annotated inductive types such
+The second subcase is only relevant for indexed inductive types such
 as the equality predicate (see Section :ref:`coq-equality`),
 the order predicate on natural numbers or the type of lists of a given
 length (see Section :ref:`matching-dependent`). In this configuration, the
 type of each branch can depend on the type dependencies specific to the
 branch and the whole pattern matching expression has a type determined
 by the specific dependencies in the type of the term being matched. This
-dependency of the return type in the annotations of the inductive type
+dependency of the return type in the indices of the inductive type
 is expressed with a clause in the form
 :n:`in @qualid {+ _ } {+ @pattern }`, where
 
@@ -173,7 +243,7 @@ is expressed with a clause in the form
 -  the holes :n:`_` match the parameters of the inductive type: the
    return type is not dependent on them.
 
--  each :n:`@pattern` matches the annotations of the
+-  each :n:`@pattern` matches the indices of the
    inductive type: the return type is dependent on them
 
 -  in the basic case which we describe below, each :n:`@pattern`
@@ -182,7 +252,7 @@ is expressed with a clause in the form
 
 For instance, in the following example:
 
-.. coqtop:: in
+.. rocqtop:: in
 
    Definition eq_sym (A:Type) (x y:A) (H:eq A x y) : eq A y x :=
    match H in eq _ _ z return eq A z x with
@@ -198,7 +268,7 @@ return type.
 
 Finally, the third subcase is a combination of the first and second
 subcase. In particular, it only applies to pattern matching on terms in
-a type with annotations. For this third subcase, both the clauses ``as`` and
+a type with indices. For this third subcase, both the clauses ``as`` and
 ``in`` are available.
 
 There are specific notations for case analysis on types with one or two

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -10,134 +10,6 @@
 
 type 'a cmp = 'a -> 'a -> int
 type 'a eq = 'a -> 'a -> bool
-
-module type S = module type of List
-
-module type ExtS =
-sig
-  include S
-  val compare : 'a cmp -> 'a list cmp
-  val equal : 'a eq -> 'a list eq
-  val is_empty : 'a list -> bool
-  val mem_f : 'a eq -> 'a -> 'a list -> bool
-  val for_all_i : (int -> 'a -> bool) -> int -> 'a list -> bool
-  val for_all2eq : ('a -> 'b -> bool) -> 'a list -> 'b list -> bool
-  val prefix_of : 'a eq -> 'a list -> 'a list -> bool
-  val same_length : 'a list -> 'b list -> bool
-  val interval : int -> int -> int list
-  val make : int -> 'a -> 'a list
-  val addn : int -> 'a -> 'a list -> 'a list
-  val init : int -> (int -> 'a) -> 'a list
-  val append : 'a list -> 'a list -> 'a list
-  val concat : 'a list list -> 'a list
-  val flatten : 'a list list -> 'a list
-  val assign : 'a list -> int -> 'a -> 'a list
-  val filter : ('a -> bool) -> 'a list -> 'a list
-  val filter2 : ('a -> 'b -> bool) -> 'a list -> 'b list -> 'a list * 'b list
-  val filteri :
-    (int -> 'a -> bool) -> 'a list -> 'a list
-  val filter_with : bool list -> 'a list -> 'a list
-  val map_filter : ('a -> 'b option) -> 'a list -> 'b list
-  val map_filter_i : (int -> 'a -> 'b option) -> 'a list -> 'b list
-  val partitioni :
-    (int -> 'a -> bool) -> 'a list -> 'a list * 'a list
-  val map : ('a -> 'b) -> 'a list -> 'b list
-  val map2 : ('a -> 'b -> 'c) -> 'a list -> 'b list -> 'c list
-  val map_left : ('a -> 'b) -> 'a list -> 'b list
-  val map_i : (int -> 'a -> 'b) -> int -> 'a list -> 'b list
-  val map2_i :
-    (int -> 'a -> 'b -> 'c) -> int -> 'a list -> 'b list -> 'c list
-  val map3 :
-    ('a -> 'b -> 'c -> 'd) -> 'a list -> 'b list -> 'c list -> 'd list
-  val map4 :
-    ('a -> 'b -> 'c -> 'd -> 'e) -> 'a list -> 'b list -> 'c list -> 'd list -> 'e list
-  val map_of_array : ('a -> 'b) -> 'a array -> 'b list
-  val map_append : ('a -> 'b list) -> 'a list -> 'b list
-  val map_append2 : ('a -> 'b -> 'c list) -> 'a list -> 'b list -> 'c list
-  val extend : bool list -> 'a -> 'a list -> 'a list
-  val count : ('a -> bool) -> 'a list -> int
-  val index : 'a eq -> 'a -> 'a list -> int
-  val safe_index : 'a eq -> 'a -> 'a list -> int option
-  val index0 : 'a eq -> 'a -> 'a list -> int
-  val fold_left_until : ('c -> 'a -> 'c CSig.until) -> 'c -> 'a list -> 'c
-  val fold_right_i :  (int -> 'a -> 'b -> 'b) -> int -> 'a list -> 'b -> 'b
-  val fold_left_i :  (int -> 'a -> 'b -> 'a) -> int -> 'a -> 'b list -> 'a
-  val fold_right_and_left :
-      ('a -> 'b -> 'b list -> 'a) -> 'b list -> 'a -> 'a
-  val fold_left3 : ('a -> 'b -> 'c -> 'd -> 'a) -> 'a -> 'b list -> 'c list -> 'd list -> 'a
-  val fold_left2_set : exn -> ('a -> 'b -> 'c -> 'b list -> 'c list -> 'a) -> 'a -> 'b list -> 'c list -> 'a
-  val fold_left_map : ('a -> 'b -> 'a * 'c) -> 'a -> 'b list -> 'a * 'c list
-  val fold_right_map : ('b -> 'a -> 'c * 'a) -> 'b list -> 'a -> 'c list * 'a
-  val fold_left2_map : ('a -> 'b -> 'c -> 'a * 'd) -> 'a -> 'b list -> 'c list -> 'a * 'd list
-  val fold_right2_map : ('b -> 'c -> 'a -> 'd * 'a) -> 'b list -> 'c list -> 'a -> 'd list * 'a
-  val fold_left3_map : ('a -> 'b -> 'c -> 'd -> 'a * 'e) -> 'a -> 'b list -> 'c list -> 'd list -> 'a * 'e list
-  val fold_left4_map : ('a -> 'b -> 'c -> 'd -> 'e -> 'a * 'r) -> 'a -> 'b list -> 'c list -> 'd list -> 'e list -> 'a * 'r list
-  val except : 'a eq -> 'a -> 'a list -> 'a list
-  val remove : 'a eq -> 'a -> 'a list -> 'a list
-  val remove_first : ('a -> bool) -> 'a list -> 'a list
-  val extract_first : ('a -> bool) -> 'a list -> 'a list * 'a
-  val find_map : ('a -> 'b option) -> 'a list -> 'b
-  exception IndexOutOfRange
-  val goto : int -> 'a list -> 'a list * 'a list
-  val split_when : ('a -> bool) -> 'a list -> 'a list * 'a list
-  val sep_last : 'a list -> 'a * 'a list
-  val drop_last : 'a list -> 'a list
-  val last : 'a list -> 'a
-  val lastn : int -> 'a list -> 'a list
-  val chop : int -> 'a list -> 'a list * 'a list
-  val firstn : int -> 'a list -> 'a list
-  val skipn : int -> 'a list -> 'a list
-  val skipn_at_least : int -> 'a list -> 'a list
-  val drop_prefix : 'a eq -> 'a list -> 'a list -> 'a list
-  val insert : ('a -> 'a -> bool) -> 'a -> 'a list -> 'a list
-  val share_tails : 'a list -> 'a list -> 'a list * 'a list * 'a list
-  val map_assoc : ('a -> 'b) -> ('c * 'a) list -> ('c * 'b) list
-  val assoc_f : 'a eq -> 'a -> ('a * 'b) list -> 'b
-  val remove_assoc_f : 'a eq -> 'a -> ('a * 'b) list -> ('a * 'b) list
-  val mem_assoc_f : 'a eq -> 'a -> ('a * 'b) list -> bool
-  val factorize_left : 'a eq -> ('a * 'b) list -> ('a * 'b list) list
-  val split : ('a * 'b) list -> 'a list * 'b list
-  val combine : 'a list -> 'b list -> ('a * 'b) list
-  val split3 : ('a * 'b * 'c) list -> 'a list * 'b list * 'c list
-  val split4 : ('a * 'b * 'c * 'd) list -> 'a list * 'b list * 'c list * 'd list
-  val combine3 : 'a list -> 'b list -> 'c list -> ('a * 'b * 'c) list
-  val add_set : 'a eq -> 'a -> 'a list -> 'a list
-  val eq_set : 'a eq -> 'a list -> 'a list -> bool
-  val subset : 'a list -> 'a list -> bool
-  val merge_set : 'a cmp -> 'a list -> 'a list -> 'a list
-  val intersect : 'a eq -> 'a list -> 'a list -> 'a list
-  val union : 'a eq -> 'a list -> 'a list -> 'a list
-  val unionq : 'a list -> 'a list -> 'a list
-  val subtract : 'a eq -> 'a list -> 'a list -> 'a list
-  val subtractq : 'a list -> 'a list -> 'a list
-  val distinct : 'a list -> bool
-  val distinct_f : 'a cmp -> 'a list -> bool
-  val duplicates : 'a eq -> 'a list -> 'a list
-  val uniquize : 'a list -> 'a list
-  val sort_uniquize : 'a cmp -> 'a list -> 'a list
-  val min : 'a cmp -> 'a list -> 'a
-  val cartesian : ('a -> 'b -> 'c) -> 'a list -> 'b list -> 'c list
-  val cartesians : ('a -> 'b -> 'b) -> 'b -> 'a list list -> 'b list
-  val combinations : 'a list list -> 'a list list
-  val cartesians_filter :
-    ('a -> 'b -> 'b option) -> 'b -> 'a list list -> 'b list
-
-  module Smart :
-  sig
-    val map : ('a -> 'a) -> 'a list -> 'a list
-  end
-
-  module type MonoS = sig
-    type elt
-    val equal : elt list -> elt list -> bool
-    val mem : elt -> elt list -> bool
-    val assoc : elt -> (elt * 'a) list -> 'a
-    val mem_assoc : elt -> (elt * 'a) list -> bool
-    val remove_assoc : elt -> (elt * 'a) list -> (elt * 'a) list
-    val mem_assoc_sym : elt -> ('a * elt) list -> bool
-  end
-
-end
 
 include List
 
@@ -194,6 +66,13 @@ let for_all_i p =
 
 let for_all2eq f l1 l2 =
   try List.for_all2 f l1 l2 with Invalid_argument _ -> false
+
+let exists_i p =
+  let rec exists_p i = function
+    | [] -> false
+    | a::l -> p i a || exists_p (i+1) l
+  in
+  exists_p
 
 let prefix_of cmp prefl l =
   let rec prefrec = function
@@ -281,20 +160,31 @@ let assign l n e =
 
 (** {6 Filtering} *)
 
-let rec filter_loop f p = function
-  | [] -> ()
-  | x :: l' as l ->
-    let b = f x in
-    filter_loop f p l';
-    if b then if p.tail == l' then p.tail <- l else p.tail <- x :: p.tail
+(* [filter_loop f (Some (c0,l0)) c l] will do c0.tail <- l0 if [for_all f l] *)
+let rec filter_loop f reset p = function
+  | [] -> begin match reset with
+      | None -> ()
+      | Some (c,orig) -> c.tail <- orig
+    end
+  | x :: l as orig ->
+    if f x then
+      let c = { head = x; tail = [] } in
+      let () = p.tail <- cast c in
+      let reset = match reset with
+        | Some _ -> reset
+        | None -> Some (p,orig)
+      in
+      filter_loop f reset c l
+    else
+      filter_loop f None p l
 
 let rec filter f = function
   | [] -> []
-  | x :: l' as l ->
+  | x :: l' as orig ->
     if f x then
       let c = { head = x; tail = [] } in
-      filter_loop f c l';
-      if c.tail == l' then l else cast c
+      filter_loop f None c l';
+      if c.tail == l' then orig else cast c
     else
       filter f l'
 
@@ -436,6 +326,17 @@ let map2 f l1 l2 = match l1, l2 with
     cast c
   | _ -> invalid_arg "List.map2"
 
+(* remove when requiring OCaml >= 5.1.0 *)
+let rec concat_map_loop f p = function
+  | [] -> ()
+  | x :: l -> concat_map_loop f (copy p (f x)) l
+
+(* remove when requiring OCaml >= 5.1.0 *)
+let concat_map f l =
+  let dummy = { head = Obj.magic 0; tail = [] } in
+  concat_map_loop f dummy l;
+  dummy.tail
+
 (** Like OCaml [List.mapi] but tail-recursive *)
 
 let rec map_i_loop f i p = function
@@ -494,6 +395,26 @@ let map4 f l1 l2 l3 l4 = match l1, l2, l3, l4 with
     cast c
   | _ -> invalid_arg "List.map4"
 
+let rec map_until_loop f p = function
+  | [] -> []
+  | x :: l as l' ->
+    match f x with
+    | None -> l'
+    | Some fx ->
+      let c = { head = fx; tail = [] } in
+      p.tail <- cast c;
+      map_until_loop f c l
+
+let map_until f = function
+  | [] -> [], []
+  | x :: l as l' ->
+    match f x with
+    | None -> [], l'
+    | Some fx ->
+    let c = { head = fx; tail = [] } in
+    let l = map_until_loop f c l in
+    cast c, l
+
 let rec map_of_array_loop f p a i l =
   if Int.equal i l then ()
   else
@@ -534,7 +455,7 @@ let rec index_f f x l n = match l with
 
 let index f x l = index_f f x l 1
 
-let safe_index f x l = try Some (index f x l) with Not_found -> None
+let index_opt f x l = try Some (index f x l) with Not_found -> None
 
 let index0 f x l = index_f f x l 0
 
@@ -571,7 +492,13 @@ let rec fold_left4 f accu l1 l2 l3 l4 =
   match (l1, l2, l3, l4) with
   | ([], [], [], []) -> accu
   | (a1 :: l1, a2 :: l2, a3 :: l3, a4 :: l4) -> fold_left4 f (f accu a1 a2 a3 a4) l1 l2 l3 l4
-  | (_,_, _, _) -> invalid_arg "List.fold_left4"
+  | (_, _, _, _) -> invalid_arg "List.fold_left4"
+
+let rec fold_left5 f accu l1 l2 l3 l4 l5 =
+  match (l1, l2, l3, l4, l5) with
+  | ([], [], [], [], []) -> accu
+  | (a1 :: l1, a2 :: l2, a3 :: l3, a4 :: l4, a5 :: l5) -> fold_left5 f (f accu a1 a2 a3 a4 a5) l1 l2 l3 l4 l5
+  | (_, _, _, _, _) -> invalid_arg "List.fold_left5"
 
 (* [fold_right_and_left f [a1;...;an] hd =
    f (f (... (f (f hd
@@ -647,12 +574,14 @@ let fold_left4_map f e l1 l2 l3 l4 =
   on_snd List.rev @@
   fold_left4 (fun (e,l) x1 x2 x3 x4 -> let (e,y) = f e x1 x2 x3 x4 in (e,y::l)) (e,[]) l1 l2 l3 l4
 
+let fold_left5_map f e l1 l2 l3 l4 l5 =
+  on_snd List.rev @@
+  fold_left5 (fun (e,l) x1 x2 x3 x4 x5 -> let (e,y) = f e x1 x2 x3 x4 x5 in (e,y::l)) (e,[]) l1 l2 l3 l4 l5
+
 (** {6 Splitting} *)
 
-let except cmp x l =
+let remove cmp x l =
   List.filter (fun y -> not (cmp x y)) l
-
-let remove = except (* Alias *)
 
 let rec remove_first p = function
   | b :: l when p b -> l
@@ -676,11 +605,16 @@ let insert p v l =
   insrec l
 
 let rec find_map f = function
-  | [] -> raise Not_found
+  | [] -> None
   | x :: l ->
     match f x with
     | None -> find_map f l
-    | Some y -> y
+    | Some _ as y -> y
+
+let find_map_exn f l =
+  match find_map f l with
+  | Some v -> v
+  | None -> raise Not_found
 
 (* FIXME: again, generic hash function *)
 
@@ -727,14 +661,19 @@ let split_when p =
   in
   split_when_loop []
 
-let firstn n l =
+let firstn n ol =
   let rec aux acc n l =
     match n, l with
-    | 0, _ -> List.rev acc
+    | 0, [] -> ol
+    | 0, _ :: _ -> List.rev acc
     | n, h :: t -> aux (h :: acc) (pred n) t
     | _ -> failwith "firstn"
   in
-  aux [] n l
+  aux [] n ol
+
+let sep_first = function
+  | [] -> failwith "sep_first"
+  | hd :: tl -> (hd, tl)
 
 let rec sep_last = function
   | [] -> failwith "sep_last"
@@ -765,7 +704,7 @@ let rec skipn n l = match n,l with
   | _, [] -> failwith "List.skipn"
   | n, _ :: l -> skipn (pred n) l
 
-let skipn_at_least n l =
+let skipn_at_best n l =
   try skipn n l with Failure _ when n >= 0 -> []
 
 (** if [l=p++t] then [drop_prefix p l] is [t] else [l] *)
@@ -778,9 +717,9 @@ let drop_prefix cmp p l =
   in
   drop_prefix_rec (p,l)
 
-let share_tails l1 l2 =
+let share_tails eq l1 l2 =
   let rec shr_rev acc = function
-    | (x1 :: l1, x2 :: l2) when x1 == x2 -> shr_rev (x1 :: acc) (l1,l2)
+    | (x1 :: l1, x2 :: l2) when eq x1 x2 -> shr_rev (x1 :: acc) (l1,l2)
     | (l1, l2) -> (List.rev l1, List.rev l2, acc)
   in
   shr_rev [] (List.rev l1, List.rev l2)
@@ -792,6 +731,10 @@ let map_assoc f = map (fun (x,a) -> (x,f a))
 let rec assoc_f f a = function
   | (x, e) :: xs -> if f a x then e else assoc_f f a xs
   | [] -> raise Not_found
+
+let rec assoc_f_opt f a = function
+  | (x, e) :: xs -> if f a x then Some e else assoc_f_opt f a xs
+  | [] -> None
 
 let remove_assoc_f f a l =
   try remove_first (fun (x,_) -> f a x) l with Not_found -> l
@@ -947,17 +890,21 @@ let distinct_f cmp l =
 
 (* FIXME: again, generic hash function *)
 
-let uniquize l =
+let uniquize_key f l =
   let visited = Hashtbl.create 23 in
   let rec aux acc changed = function
-    | h :: t -> if Hashtbl.mem visited h then aux acc true t else
+    | h :: t ->
+        let x = f h in
+        if Hashtbl.mem visited x then aux acc true t else
           begin
-            Hashtbl.add visited h h;
+            Hashtbl.add visited x x;
             aux (h :: acc) changed t
           end
     | [] -> if changed then List.rev acc else l
   in
   aux [] false l
+
+let uniquize l = uniquize_key (fun x -> x) l
 
 (** [sort_uniquize] might be an alternative to the hashtbl-based
     [uniquize], when the order of the elements is irrelevant *)
@@ -1031,6 +978,22 @@ struct
     let h' = f h in
     let tl' = map f tl in
     if h' == h && tl' == tl then l else h' :: tl'
+
+  let rec fold_left_map f e l =
+    match l with
+    | [] -> e, []
+    | h :: tl ->
+      let e', h' = f e h in
+      let e'', tl' = fold_left_map f e' tl in
+      e'', (if h' == h && tl' == tl then l else h' :: tl')
+
+  let rec fold_right_map f l e =
+    match l with
+    | [] -> [], e
+    | h :: tl ->
+      let tl', e' = fold_right_map f tl e in
+      let h', e'' = f h e' in
+      (if h' == h && tl' == tl then l else h' :: tl'), e''
 
 end
 

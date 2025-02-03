@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,9 +8,11 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
+DECLARE GLOBAL PLUGIN
+
 {
-open Pcoq
-open Pcoq.Prim
+open Procq
+open Procq.Prim
 open Vernacexpr
 
 (* Vernaculars specific to the toplevel *)
@@ -22,19 +24,12 @@ type vernac_toplevel =
   | VernacShowGoal of { gid : int; sid: int }
   | VernacShowProofDiffs of Proof_diffs.diffOpt
 
-module Toplevel_ : sig
-  val vernac_toplevel : vernac_toplevel option Entry.t
-end = struct
-  let gec_vernac s = Entry.create ("toplevel:" ^ s)
-  let vernac_toplevel = gec_vernac "vernac_toplevel"
-end
+let vernac_toplevel = Entry.make "toplevel:vernac_toplevel"
 
-open Toplevel_
-
-let err () = raise Stream.Failure
+let err () = raise Gramlib.Stream.Failure
 
 let test_show_goal =
-  let open Pcoq.Lookahead in
+  let open Procq.Lookahead in
   to_entry "test_show_goal" begin
    lk_kw "Show" >> lk_kw "Goal" >> lk_nat
   end

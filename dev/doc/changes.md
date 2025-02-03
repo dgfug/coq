@@ -1,8 +1,73 @@
+## Changes between Coq 8.17 and Coq 8.18
+
+### XML protocol
+
+Version 20230413, see xml-protocol.md for details.
+
+- Coq locations are now fully transmitted, including line and column
+  information vs the previous start/end offset.
+
+## Changes between Coq 8.15 and Coq 8.16
+
+### Plugin Interface
+
+Plugins are now identified by a findlib library name of the form
+`pkg.lib`. This way, plugins can depend on other libraries and Coq can
+properly load the required dependencies.
+
+It is necessary to adjust plugin code:
+
+- `.mlg` files must now use `DECLARE PLUGIN "pkg.lib"` instead of
+  `DECLARE PLUGIN "library_name"`.
+
+- `.v` files should use `Declare ML Module "pkg.lib"`, or, if using
+  Dune, `Declare ML Module "library_name:pkg.lib"` until Dune is
+  adapted.
+
+You must also provide the corresponding `META` file if your build
+system doesn't generate it automatically (see the documentation of
+`-generate-meta-for-package` for how `coq_makefile` can generate it
+automatically).
+
+### XML protocol
+
+See xml-protocol.md for details.
+
+- Added a `Subgoals` command to give more fine-grained control over which of the
+  foreground, background, shelved and given up goals are returned.
+
 ## Changes between Coq 8.14 and Coq 8.15
+
+### XML protocol
+
+See xmlprotocol.md for details.
+
+- Added 4 new "db_*" messages to support the Ltac debugger
+- Modified the "add" request (not backward compatible), adding 3 additional
+  parameters to the request giving the buffer offset of the added statement.
+  The parameters are Loc.bp, Loc.line_nb and Loc.bol_pos, which are needed so
+  the debugger gets back a buffer-relative Loc.t rather than a sentence-relative
+  Loc.t.  For other use cases, these can be set to 0.
+
+### Internal representation of the type of constructors
+
+The type of constructors in fields `mind_user_lc` and `mind_nf_lc` of
+an inductive packet (see `declarations.ml`) now directly refer to the
+inductive type rather than to a `Rel` poimting in a context made of the
+declaration of the inductive types of the block. Thus, instead of `Rel
+n`, one finds `Ind((mind,ntypes-n),u)` where `ntypes` is the number of
+types in the block and `u` is the canonical instance of polymoprhic
+universes (i.e. `Level.Var 0` ... `Level.Var (nbuniv-1)`).
+
+In general, code can be adapted by:
+- either removing a substitution `Rel`->`Ind` if such substitution was applied
+- or inserting a call to
+  `Inductive.abstract_constructor_type_relatively_to_inductive_types_context`
+  to restore `Rel`s in place of `Ind`s if `Rel`s were expected.
 
 ### Universes
 
-- Type `Univ.UContext` now embeds universe user names, generally
+- Type `UVars.UContext` now embeds universe user names, generally
   resulting in more concise code.
 
 - Renaming `Univ.Constraint` into `Univ.Constraints`
@@ -21,6 +86,23 @@
 
 A few functions in Vars, Context, Termops, EConstr have moved. The
 deprecation warning tells what to do.
+
+### Build system and infrastructure
+
+- The Windows installer CI build has been moved from the custom
+  workers based on Inria cloud to a standard Github Action, see
+  https://github.com/coq/coq/pull/12425 .
+
+  Fixes https://github.com/coq/coq/issues/6807
+  https://github.com/coq/coq/issues/7428
+  https://github.com/coq/coq/issues/8046
+  https://github.com/coq/coq/issues/8622
+  https://github.com/coq/coq/issues/9401
+  https://github.com/coq/coq/issues/11073 .
+
+- Location of Coq's runtime environment and files is now handled by a
+  new library, `coq-core.boot`, which provides a more uniform and
+  centralized API to locate files.
 
 ## Changes between Coq 8.13 and Coq 8.14
 
@@ -70,6 +152,15 @@ deprecation warning tells what to do.
   This position expects the entry to be non-empty and populates the topmost
   defined level with the provided rules. Note that this differs from FIRST,
   which creates a new level and prepends it to the list of levels of the entry.
+
+### Notations:
+
+- The type `notation_entry_level` has been split into two: the name
+  `notation_entry_level` still exists and is used to characterize the
+  level and custom entry name (if any) where a grammar rule lives; the
+  new `notation_subentry_level` is to characterize the level (possibly
+  none) and custom entry name associated to the variables (=
+  non-terminal subentries) of the grammar rule.
 
 ## Changes between Coq 8.12 and Coq 8.13
 
@@ -1728,7 +1819,7 @@ module_type_body).
 
 1. tables
 [Summaries] - the only change is the special treatment of the
-global environmet.
+global environment.
 
 2. objects 
 [Libobject] declares persistent objects, given with methods:
@@ -1815,7 +1906,7 @@ Other kinds of objects:
 #### Writing subst_thing functions
 
 The subst_thing should not copy the thing if it hasn't actually
-changed. There are some cool emacs macros in dev/objects.el 
+changed.
 to help writing subst functions this way quickly and without errors.
 Also there are *_smartmap functions in Util.
 

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -10,10 +10,8 @@
 
 (** Entry keys for constr notations *)
 
-type side = Left | Right
-
 type production_position =
-  | BorderProd of side * Gramlib.Gramext.g_assoc option
+  | BorderProd of Constrexpr.side * Gramlib.Gramext.g_assoc option
   | InternalProd
 
 type production_level =
@@ -27,17 +25,21 @@ val production_level_eq : production_level -> production_level -> bool
 
 type 'a constr_entry_key_gen =
   | ETIdent
-  | ETName of bool (* Temporary: true = user told "name", false = user wrote "ident" *)
+  | ETName
   | ETGlobal
   | ETBigint
   | ETBinder of bool  (* open list of binders if true, closed list of binders otherwise *)
-  | ETConstr of Constrexpr.notation_entry * Notation_term.constr_as_binder_kind option * 'a
+  | ETConstr of Constrexpr.notation_entry * Notation_term.notation_binder_kind option * 'a
   | ETPattern of bool * int option (* true = strict pattern, i.e. not a single variable *)
 
 (** Entries level (left-hand side of grammar rules) *)
 
 type constr_entry_key =
     (production_level * production_position) constr_entry_key_gen
+
+val constr_entry_key_eq : constr_entry_key -> constr_entry_key -> bool
+
+val constr_entry_key_eq_ignore_binder_kind : constr_entry_key -> constr_entry_key -> bool
 
 (** Entries used in productions, vernac side (e.g. "x bigint" or "x ident") *)
 
@@ -46,14 +48,14 @@ type simple_constr_prod_entry_key =
 
 (** Entries used in productions (in right-hand-side of grammar rules), to parse non-terminals *)
 
-type binder_entry_kind = ETBinderOpen | ETBinderClosed of (bool * string) list
-
 type binder_target = ForBinder | ForTerm
 
-type constr_prod_entry_key =
+type binder_entry_kind = ETBinderOpen | ETBinderClosed of constr_prod_entry_key option * (bool * string) list
+
+and constr_prod_entry_key =
   | ETProdIdent           (* Parsed as an ident *)
   | ETProdName            (* Parsed as a name (ident or _) *)
-  | ETProdReference       (* Parsed as a global reference *)
+  | ETProdGlobal          (* Parsed as a global reference *)
   | ETProdBigint          (* Parsed as an (unbounded) integer *)
   | ETProdOneBinder of bool (* Parsed as name, or name:type or 'pattern, possibly in closed form *)
   | ETProdConstr of Constrexpr.notation_entry * (production_level * production_position) (* Parsed as constr or pattern, or a subentry of those *)

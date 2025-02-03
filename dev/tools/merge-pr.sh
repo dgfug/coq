@@ -113,7 +113,7 @@ if [ "$REMOTE_URL" != "${OFFICIAL_REMOTE_GIT_URL}" ] && \
    [ "$REMOTE_URL" != "https://${OFFICIAL_REMOTE_HTTPS_URL}.git" ] && \
    [[ "$REMOTE_URL" != "https://"*"@${OFFICIAL_REMOTE_HTTPS_URL}" ]] && \
    [[ "$REMOTE_URL" != "https://"*"@${OFFICIAL_REMOTE_HTTPS_URL}.git" ]] ; then
-  error "remote $REMOTE does not point to the official Coq repo"
+  error "remote $REMOTE does not point to the official Rocq repo"
   error "that is $OFFICIAL_REMOTE_GIT_URL"
   error "it points to $REMOTE_URL instead"
   ask_confirmation
@@ -163,7 +163,7 @@ fi
 # Sanity check: PR has an outdated version of CI
 
 BASE_COMMIT=$(echo "$PRDATA" | jq -r '.base.sha')
-CI_FILES=(".gitlab-ci.yml" "azure-pipelines.yml")
+CI_FILES=(".gitlab-ci.yml" ".github/workflows/ci.yml")
 
 if ! git diff --quiet "$BASE_COMMIT" "$LOCAL_BRANCH_COMMIT" -- "${CI_FILES[@]}"
 then

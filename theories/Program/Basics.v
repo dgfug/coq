@@ -1,6 +1,6 @@
 (* -*- coding: utf-8 -*- *)
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -39,10 +39,12 @@ Local Open Scope program_scope.
 (** The non-dependent function space between [A] and [B]. *)
 
 Definition arrow (A B : Type) := A -> B.
+Register arrow as core.arrow.
 
 (** Logical implication. *)
 
 Definition impl (A B : Prop) : Prop := A -> B.
+Register impl as core.impl.
 
 (** The constant function [const a] always returns [a]. *)
 
@@ -51,12 +53,8 @@ Definition const {A B} (a : A) := fun _ : B => a.
 (** The [flip] combinator reverses the first two arguments of a function. *)
 
 Definition flip {A B C} (f : A -> B -> C) x y := f y x.
+Register flip as core.flip.
 
 (** Application as a combinator. *)
 
 Definition apply {A B} (f : A -> B) (x : A) := f x.
-
-(** Curryfication of [prod] is defined in [Logic.Datatypes]. *)
-
-Arguments prod_curry   {A B C} f p.
-Arguments prod_uncurry {A B C} f x y.

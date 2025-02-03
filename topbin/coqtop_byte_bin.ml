@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,34 +8,13 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
-(* We register this handler for lower-level toplevel loading code *)
-let _ = CErrors.register_handler (function
-    | Symtable.Error e ->
-      Some (Pp.str (Format.asprintf "%a" Symtable.report_error e))
-    | _ ->
-      None
-  )
+open Rocqshim
 
-let drop_setup () =
-  begin try
-    (* Enable rectypes in the toplevel if it has the directive #rectypes *)
-    begin match Hashtbl.find Toploop.directive_table "rectypes" with
-      | Toploop.Directive_none f -> f ()
-      | _ -> ()
-    end
-    with
-    | Not_found -> ()
-  end;
-  let ppf = Format.std_formatter in
-  Mltop.(set_top
-           { load_obj = (fun f -> if not (Topdirs.load_file ppf f)
-                          then CErrors.user_err Pp.(str ("Could not load plugin "^f))
-                        );
-             add_dir  = Topdirs.dir_directory;
-             ml_loop  = (fun () -> Toploop.loop ppf);
-           })
-
-(* Main coqtop initialization *)
-let _ =
-  drop_setup ();
-  Coqtop.(start_coq coqtop_toplevel)
+let () =
+  let args = List.tl (Array.to_list Sys.argv) in
+  let opts, args = Rocqshim.parse_opts args in
+  let () = Rocqshim.init opts args in
+  let prog = get_worker_path { package = "rocq-runtime"; basename = "rocqworker_with_drop" } in
+  let () = if opts.debug_shim then Printf.eprintf "Using %s\n%!" prog in
+  let argv = Array.of_list (prog :: args) in
+  exec_or_create_process prog argv

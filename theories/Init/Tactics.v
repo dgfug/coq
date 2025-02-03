@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -16,10 +16,9 @@ Require Import Specif.
 (** * Useful tactics *)
 
 (** Ex falso quodlibet : a tactic for proving False instead of the current goal.
-    This is just a nicer name for tactics such as [elimtype False]
-    and other [cut False]. *)
+    This is just a nicer name for tactics such as [cut False]. *)
 
-Ltac exfalso := elimtype False.
+Ltac exfalso := Corelib.Init.Ltac.exfalso.
 
 (** A tactic for proof by contradiction. With contradict H,
     -   H:~A |-  B    gives       |-  A
@@ -57,13 +56,6 @@ Ltac contradict H :=
    | (_->False) => neg H
    | _ => (elim H;fail) || pos H
   end.
-
-(* To contradict an hypothesis without copying its type. *)
-
-Ltac absurd_hyp H :=
-  idtac "absurd_hyp is OBSOLETE: use contradict instead.";
-  let T := type of H in
-  absurd T.
 
 (* A useful complement to contradict. Here H:A while G allows concluding ~A *)
 
@@ -232,7 +224,7 @@ Tactic Notation "decide" constr(lemma) "with" constr(H) :=
 Tactic Notation "clear" "dependent" hyp(h) :=
  let rec depclear h :=
   clear h ||
-  match goal with
+  lazymatch goal with
    | H : context [ h ] |- _ => depclear H; depclear h
    | H := context [ h ] |- _ => depclear H; depclear h
   end ||
@@ -242,18 +234,19 @@ Tactic Notation "clear" "dependent" hyp(h) :=
 (** Revert an hypothesis and its dependencies :
     this is actually generalize dependent... *)
 
+#[deprecated(note="Use ""generalize dependent"" instead (""revert dependent"" is currently an alias)", since="8.18")]
 Tactic Notation "revert" "dependent" hyp(h) :=
  generalize dependent h.
 
 (** Provide an error message for dependent induction/dependent destruction that
-    reports an import is required to use it. Importing Coq.Program.Equality will
+    reports an import is required to use it. Importing Stdlib.Program.Equality will
     shadow this notation with the actual tactics. *)
 
 Tactic Notation "dependent" "induction" ident(H) :=
-  fail "To use dependent induction, first [Require Import Coq.Program.Equality.]".
+  fail "To use dependent induction, first [Require Import Stdlib.Program.Equality.]".
 
 Tactic Notation "dependent" "destruction" ident(H) :=
-  fail "To use dependent destruction, first [Require Import Coq.Program.Equality.]".
+  fail "To use dependent destruction, first [Require Import Stdlib.Program.Equality.]".
 
 (** *** [inversion_sigma] *)
 (** The built-in [inversion] will frequently leave equalities of
@@ -340,10 +333,6 @@ Ltac time_constr tac :=
 
 Ltac assert_fails tac :=
   tryif (once tac) then gfail 0 tac "succeeds" else idtac.
-Ltac assert_succeeds tac :=
-  tryif (assert_fails tac) then gfail 0 tac "fails" else idtac.
-Tactic Notation "assert_succeeds" tactic3(tac) :=
-  assert_succeeds tac.
 Tactic Notation "assert_fails" tactic3(tac) :=
   assert_fails tac.
 
@@ -351,3 +340,11 @@ Create HintDb rewrite discriminated.
 #[global]
 Hint Variables Opaque : rewrite.
 Create HintDb typeclass_instances discriminated.
+
+(** A variant of [apply] using [refine], doing as much conversion as necessary. *)
+
+Ltac rapply p :=
+  (** before we try to add more underscores, first ensure that adding such underscores is valid *)
+  (assert_succeeds (idtac; let __ := open_constr:(p _) in idtac);
+   rapply uconstr:(p _))
+  || refine p.

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -9,7 +9,7 @@
 (************************************************************************)
 
 open Printf
-open Cdglobals
+open Common
 
 type loc = int
 
@@ -34,7 +34,7 @@ type entry_type =
   | Binder
 
 type index_entry =
-  | Def of string * entry_type
+  | Def of (string * entry_type) list
   | Ref of coq_module * string * entry_type
 
 let current_library = ref ""
@@ -58,12 +58,19 @@ let full_ident sp id =
   else if id <> "<>"
   then id
   else ""
+let hashtbl_append_def t k v =
+  try
+    match Hashtbl.find t k with
+    | Def l -> Hashtbl.replace t k (Def (l @ [v]))
+    | Ref _ -> Hashtbl.add t k (Def [v])
+  with Not_found ->
+    Hashtbl.add t k (Def [v])
 
 let add_def loc1 loc2 ty sp id =
   let fullid = full_ident sp id in
-  let def = Def (fullid, ty) in
+  let def = (fullid, ty) in
   for loc = loc1 to loc2 do
-    Hashtbl.add reftable (!current_library, loc) def
+    hashtbl_append_def reftable (!current_library, loc) def
   done;
   Hashtbl.add deftable !current_library (fullid, ty);
   Hashtbl.add byidtable id (!current_library, fullid, ty)
@@ -80,7 +87,7 @@ let find m l = Hashtbl.find reftable (m, l)
 
 let find_string s = let (m,s,t) = Hashtbl.find byidtable s in Ref (m,s,t)
 
-(* Coq modules *)
+(* Rocq modules *)
 let split_sp s =
   try
     let i = String.rindex s '.' in
@@ -113,7 +120,7 @@ let find_external_library logicalpath =
         else aux rest
   in aux !external_libraries
 
-let init_coqlib_library () = add_external_library "Coq" !coqlib
+let init_coqlib_library () = add_external_library "Corelib" !prefs.coqlib_url
 
 let find_module m =
   if Hashtbl.mem local_modules m then
@@ -159,7 +166,7 @@ let display_letter c = if c = '*' then "other" else String.make 1 c
 
 let type_name = function
   | Library ->
-      let ln = !lib_name in
+      let ln = !prefs.lib_name in
         if ln <> "" then String.lowercase_ascii ln else "library"
   | Module -> "module"
   | Definition -> "definition"
@@ -232,6 +239,10 @@ let prepare_entry s = function
   | _ ->
       s
 
+let include_entry = function
+| Binder -> !prefs.binder_index
+| _ -> true
+
 let all_entries () =
   let gl = ref [] in
   let add_g s m t = gl := (s,(m,t)) :: !gl in
@@ -240,7 +251,11 @@ let all_entries () =
     let l = try Hashtbl.find bt t with Not_found -> [] in
       Hashtbl.replace bt t ((s,m) :: l)
   in
-  let classify m (s,t) = (add_g s m t; add_bt t s m) in
+  let classify m (s,t) =
+    if include_entry t then begin
+      add_g s m t; add_bt t s m
+    end
+  in
     Hashtbl.iter classify deftable;
     Hashtbl.iter (fun id m -> add_g id m Library; add_bt Library id m) modules;
     { idx_name = "global";

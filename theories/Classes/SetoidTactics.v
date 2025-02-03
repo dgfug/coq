@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -14,10 +14,10 @@
    Institution: LRI, CNRS UMR 8623 - University Paris Sud
 *)
 
-Require Coq.Classes.CRelationClasses Coq.Classes.CMorphisms.
-Require Import Coq.Classes.Morphisms Coq.Classes.Morphisms_Prop.
-Require Export Coq.Classes.RelationClasses Coq.Relations.Relation_Definitions.
-Require Import Coq.Classes.Equivalence Coq.Program.Basics.
+Require Corelib.Classes.CRelationClasses Corelib.Classes.CMorphisms.
+Require Import Corelib.Classes.Morphisms Corelib.Classes.Morphisms_Prop.
+Require Export Corelib.Classes.RelationClasses Corelib.Relations.Relation_Definitions.
+Require Import Corelib.Classes.Equivalence Corelib.Program.Basics.
 
 Generalizable Variables A R.
 
@@ -29,9 +29,12 @@ Unset Strict Implicit.
 (** Default relation on a given support. Can be used by tactics
    to find a sensible default relation on any carrier. Users can
    declare an [Instance def : DefaultRelation A RA] anywhere to
-   declare default relations. *)
+   declare a default relation. This is used by setoid_replace to infer
+   the relation to use on a given type, in a given context.
+   *)
 
 Class DefaultRelation A (R : relation A).
+Register DefaultRelation as rewrite.DefaultRelation.
 
 (** To search for the default relation, just call [default_relation]. *)
 
@@ -149,7 +152,7 @@ Tactic Notation "setoid_replace" constr(x) "with" constr(y)
    [respectful] calls and substitute leibniz equalities. One can
    redefine it using [Ltac add_morphism_tactic ::= t]. *)
 
-Require Import Coq.Program.Tactics.
+Require Import Corelib.Program.Tactics.
 
 Local Open Scope signature_scope.
 
@@ -181,6 +184,7 @@ Ltac default_add_morphism_tactic :=
 
 Ltac add_morphism_tactic := default_add_morphism_tactic.
 
-Obligation Tactic := program_simpl.
+#[global] Obligation Tactic := program_simpl.
+#[export] Obligation Tactic := program_simpl.
 
 (* Notation "'Morphism' s t " := (@Proper _ (s%signature) t) (at level 10, s at next level, t at next level). *)

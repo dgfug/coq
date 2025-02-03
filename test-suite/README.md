@@ -1,10 +1,11 @@
 # Coq Test Suite
 
 The test suite can be run from the Coq root directory by `make test-suite`.
-This does a clean step first, so if you've already run it, then change something,
-you'll have to do a lot of work again.
+However, for incremental test suite builds, we recommend running `make`
+from the test-suite directory (or with `make -C test-suite`).
+This Makefile is compatible with both Dune
+and legacy hybrid builds.
 
-If you run `make` from the `test-suite` directory, there is no clean step.
 You can also run `make aaa/bbb/ccc.v.log` to build the log for one test,
 or `make ddd` where `ddd` is on of the sub-directories of `test-suite`
 to just build the logs for that directory.
@@ -67,12 +68,12 @@ See [`test-suite/Makefile`](Makefile) for more information.
 ## Adding a test
 
 Regression tests for closed bugs should be added to
-[`bugs/closed`](bugs/closed), as `bug_1234.v` where `1234` is the bug number.
+[`bugs`](bugs), as `bug_1234.v` where `1234` is the bug number.
 Files in this directory are tested for successful compilation.
 When you fix a bug, you should usually add a regression test here as well.
 
 The error "(bug seems to be opened, please check)" when running
-`make test-suite` means that a test in [`bugs/closed`](bugs/closed) failed to
+`make test-suite` means that a test in [`bugs`](bugs) failed to
 compile.
 
 There are also output tests in [`output`](output) which consist of a `.v` file
@@ -94,7 +95,3 @@ When an output test `output/foo.v` fails, the output is stored in
 automatically.
 
 Don't forget to check the updated `.out` files into git!
-
-Note that `output/MExtraction.out` is special: it is copied from
-[`micromega/micromega.ml`](../plugins/micromega/micromega.ml) in the plugin
-source directory. Automatic approval will incorrectly update the copy.

@@ -38,6 +38,13 @@ variable can be introduced at the same time. It is also possible to give
 the type of the variable as follows:
 :n:`(@ident : @type := @term)`.
 
+`(x : T | P)` is syntactic sugar for `(x : Stdlib.Init.Specif.sig (fun x : T => P))`,
+which would more typically be written `(x : {x : T | P})`.
+Since `(x : T | P)` uses `sig` directly,
+changing the notation `{x : T | P}`
+will not change the meaning of `(x : T | P)`, while
+changing the implicit arguments of `sig` will break `(x : T | P)`).
+
 Lists of :n:`@binder`\s are allowed. In the case of :g:`fun` and :g:`forall`,
 it is intended that at least one binder of the list is an assumption otherwise
 fun and forall gets identical. Moreover, parentheses can be omitted in
@@ -73,7 +80,8 @@ Section :ref:`let-in`).
 The expression :n:`forall @ident : @type__1, @type__2` denotes the
 :gdef:`product type <product>` (or *product*) of the variable :n:`@ident` of
 type :n:`@type__1` over the type :n:`@type__2`.  If :n:`@ident` is used in
-:n:`@type__2`, then we say the expression is a :gdef:`dependent product`.
+:n:`@type__2`, then we say the expression is a :gdef:`dependent product`,
+and otherwise a :gdef:`non-dependent product`.
 
 The intention behind a dependent product
 :g:`forall x : A, B` is twofold. It denotes either
@@ -90,7 +98,9 @@ These terms are also useful:
 
 * `n : nat` is a :gdef:`dependent premise` of `forall n:nat, n + 0 = n` because
   `n` appears both in the binder of the `forall` and in the quantified statement
-  `n + 0 = n`.
+  `n + 0 = n`.  Note that if `n` isn't used in the statement, Rocq considers it
+  a non-dependent premise.  Similarly, :n:`let n := ... in @term` is a
+  dependent premise only if `n` is used in :n:`@term`.
 
 * `A` and `B` are :gdef:`non-dependent premises <non-dependent premise>`
   (or, often, just ":gdef:`premises <premise>`") of `A -> B -> C` because they don't appear
@@ -103,6 +113,8 @@ As for abstractions, :g:`forall` is followed by a binder list, and products
 over several variables are equivalent to an iteration of one-variable
 products.
 
+.. _function_application:
+
 Function application
 --------------------
 
@@ -112,18 +124,26 @@ Function application
    term_application ::= @term1 {+ @arg }
    | @ @qualid_annotated {+ @term1 }
    arg ::= ( @ident := @term )
+   | ( @natural := @term )
    | @term1
 
-:n:`@term__fun @term` denotes applying the function :n:`@term__fun` to :token:`term`.
+:n:`@term1__fun @term1` denotes applying the function :n:`@term1__fun` to :token:`term1`.
 
-:n:`@term__fun {+ @term__i }` denotes applying
-:n:`@term__fun` to the arguments :n:`@term__i`.  It is
-equivalent to :n:`( … ( @term__fun @term__1 ) … ) @term__n`:
+.. todo: What is the relevant definition of a function here?
+         See https://github.com/coq/coq/pull/16659#discussion_r1039540851
+
+:n:`@term1__fun {+ @term1__i }` denotes applying
+:n:`@term1__fun` to the arguments :n:`@term1__i`.  It is
+equivalent to :n:`( … ( @term1__fun @term1__1 ) … ) @term1__n`:
 associativity is to the left.
 
-The notation :n:`(@ident := @term)` for arguments is used for making
-explicit the value of implicit arguments (see
-Section :ref:`explicit-applications`).
+The :n:`@ @qualid_annotated {+ @term1 }` form requires specifying all arguments,
+including implicit ones.  Otherwise, implicit arguments need
+not be given.  See :ref:`ImplicitArguments`.
+
+The notations :n:`(@ident := @term)` and :n:`(@natural := @term)`
+for arguments are used for making explicit the value of implicit arguments.
+See :ref:`explicit-applications`.
 
 .. _gallina-assumptions:
 
@@ -132,7 +152,7 @@ Assumptions
 
 Assumptions extend the global environment with axioms, parameters, hypotheses
 or variables. An assumption binds an :n:`@ident` to a :n:`@type`. It is accepted
-by Coq only if :n:`@type` is a correct type in the global environment
+by Rocq only if :n:`@type` is a correct type in the global environment
 before the declaration and if :n:`@ident` was not previously defined in
 the same module. This :n:`@type` is considered to be the type (or
 specification, or statement) assumed by :n:`@ident` and we say that :n:`@ident`
@@ -140,7 +160,7 @@ has type :n:`@type`.
 
 .. _Axiom:
 
-.. cmd:: @assumption_token {? Inline {? ( @natural ) } } {| {+ ( @assumpt ) } | @assumpt }
+.. cmd:: @assumption_token {? Inline {? ( @natural ) } } {| @assumpt | {+ ( @assumpt ) } }
    :name: Axiom; Axioms; Conjecture; Conjectures; Hypothesis; Hypotheses; Parameter; Parameters; Variable; Variables
 
    .. insertprodn assumption_token of_type
@@ -157,15 +177,20 @@ has type :n:`@type`.
 
    These commands bind one or more :n:`@ident`\(s) to specified :n:`@type`\(s) as their specifications in
    the global environment. The fact asserted by :n:`@type` (or, equivalently, the existence
-   of an object of this type) is accepted as a postulate.  They accept the :attr:`program` attribute.
+   of an object of this type) is accepted as a postulate.  They accept the :attr:`program`,
+   :attr:`deprecated` and :attr:`warn` attributes.
 
    :cmd:`Axiom`, :cmd:`Conjecture`, :cmd:`Parameter` and their plural forms
    are equivalent.  They can take the :attr:`local` :term:`attribute`,
+   which makes the declared :n:`@ident` accessible only through their fully
+   qualified names, even if :cmd:`Import` or its variants has been used on the
+   current module.
+
    which makes the defined :n:`@ident`\s accessible by :cmd:`Import` and its variants
    only through their fully qualified names.
 
-   Similarly, :cmd:`Hypothesis`, :cmd:`Variable` and their plural forms are equivalent.  Outside
-   of a section, these are equivalent to :n:`Local Parameter`.  Inside a section, the
+   Similarly, :cmd:`Hypothesis`, :cmd:`Variable` and their plural forms are equivalent.
+   They should only be used inside :ref:`section-mechanism`. The
    :n:`@ident`\s defined are only accessible within the section.  When the current section
    is closed, the :n:`@ident`\(s) become undefined and every object depending on them will be explicitly
    parameterized (i.e., the variables are *discharged*).  See Section :ref:`section-mechanism`.
@@ -178,7 +203,7 @@ has type :n:`@type`.
 
 .. example:: Simple assumptions
 
-    .. coqtop:: reset in
+    .. rocqtop:: reset in
 
        Parameter X Y : Set.
        Parameter (R : X -> Y -> Prop) (S : Y -> X -> Prop).
@@ -188,10 +213,12 @@ has type :n:`@type`.
    :name: ‘ident’ already exists. (Axiom)
    :undocumented:
 
-.. warn:: @ident is declared as a local axiom
+.. warn:: Use of "Variable" or "Hypothesis" outside sections behaves as "#[local] Parameter" or "#[local] Axiom".
 
    Warning generated when using :cmd:`Variable` or its equivalent
    instead of :n:`Local Parameter` or its equivalent.
+   This message is an error by default, it may be convenient to disable it
+   while debuging.
 
 .. note::
    We advise using the commands :cmd:`Axiom`, :cmd:`Conjecture` and

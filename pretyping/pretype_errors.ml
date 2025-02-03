@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -24,7 +24,7 @@ type unification_error =
   | MetaOccurInBody of Evar.t
   | InstanceNotSameType of Evar.t * env * types * types
   | InstanceNotFunctionalType of Evar.t * env * constr * types
-  | UnifUnivInconsistency of Univ.univ_inconsistency
+  | UnifUnivInconsistency of UGraph.univ_inconsistency
   | CannotSolveConstraint of Evd.evar_constraint * unification_error
   | ProblemBeyondCapabilities
 
@@ -32,9 +32,11 @@ type position = (Id.t * Locus.hyp_location_flag) option
 
 type position_reporting = (position * int) * constr
 
-type subterm_unification_error = bool * position_reporting * position_reporting * (constr * constr * unification_error) option
+type subterm_unification_error = bool * position_reporting * position_reporting
 
-type type_error = (constr, types) ptype_error
+type type_error = (constr, types, ERelevance.t) ptype_error
+
+let of_type_error = map_ptype_error ERelevance.make EConstr.of_constr
 
 type pretype_error =
   (* Old Case *)
@@ -56,12 +58,13 @@ type pretype_error =
   (* Pretyping *)
   | VarNotFound of Id.t
   | EvarNotFound of Id.t
-  | UnexpectedType of constr * constr
+  | UnexpectedType of constr * constr * unification_error
   | NotProduct of constr
   | TypingError of type_error
+  | CantApplyBadTypeExplained of (constr,types) pcant_apply_bad_type * unification_error
   | CannotUnifyOccurrences of subterm_unification_error
   | UnsatisfiableConstraints of
-    (Evar.t * Evar_kinds.t) option * Evar.Set.t option
+    (Evar.t * Evar_kinds.t) option * Evar.Set.t
   | DisallowedSProp
 
 exception PretypeError of env * Evd.evar_map * pretype_error
@@ -94,10 +97,14 @@ let error_cant_apply_not_functional ?loc env sigma rator randl =
   raise_type_error ?loc
     (env, sigma, CantApplyNonFunctional (rator, randl))
 
-let error_cant_apply_bad_type ?loc env sigma (n,c,t) rator randl =
-  raise_type_error ?loc
-    (env, sigma,
-       CantApplyBadType ((n,c,t), rator, randl))
+let error_cant_apply_bad_type ?loc env sigma ?error (n,c,t) rator randl =
+  let v = ((n,c,t), rator, randl) in
+  match error with
+  | None ->
+    raise_type_error ?loc
+      (env, sigma,
+       CantApplyBadType v)
+  | Some e -> raise_pretype_error ?loc (env,sigma, CantApplyBadTypeExplained (v, e))
 
 let error_ill_formed_branch ?loc env sigma c i actty expty =
   raise_type_error
@@ -113,9 +120,12 @@ let error_ill_typed_rec_body ?loc env sigma i na jl tys =
   raise_type_error ?loc
     (env, sigma, IllTypedRecBody (i, na, jl, tys))
 
-let error_elim_arity ?loc env sigma pi c j a =
+let error_elim_arity ?loc env sigma pi c a =
+  (* XXX type_errors should have a 'sort type parameter *)
+  let a = Option.map EConstr.Unsafe.to_sorts a in
+  let pi = Util.on_snd EConstr.Unsafe.to_instance pi in
   raise_type_error ?loc
-    (env, sigma, ElimArity (pi, c, j, a))
+    (env, sigma, ElimArity (pi, c, a))
 
 let error_not_a_type ?loc env sigma j =
   raise_type_error ?loc (env, sigma, NotAType j)
@@ -148,12 +158,10 @@ let error_cannot_find_well_typed_abstraction env sigma p l e =
 let error_wrong_abstraction_type env sigma na a p l =
   raise (PretypeError (env, sigma,WrongAbstractionType (na,a,p,l)))
 
-let error_abstraction_over_meta env sigma hdmeta metaarg =
-  let m = Evd.meta_name sigma hdmeta and n = Evd.meta_name sigma metaarg in
+let error_abstraction_over_meta env sigma m n =
   raise (PretypeError (env, sigma,AbstractionOverMeta (m,n)))
 
-let error_non_linear_unification env sigma hdmeta t =
-  let m = Evd.meta_name sigma hdmeta in
+let error_non_linear_unification env sigma m t =
   raise (PretypeError (env, sigma,NonLinearUnification (m,t)))
 
 (*s Ml Case errors *)
@@ -163,8 +171,8 @@ let error_cant_find_case_type ?loc env sigma expr =
 
 (*s Pretyping errors *)
 
-let error_unexpected_type ?loc env sigma actty expty =
-  raise_pretype_error ?loc (env, sigma, UnexpectedType (actty, expty))
+let error_unexpected_type ?loc env sigma actty expty e =
+  raise_pretype_error ?loc (env, sigma, UnexpectedType (actty, expty, e))
 
 let error_not_product ?loc env sigma c =
   raise_pretype_error ?loc (env, sigma, NotProduct c)
@@ -188,7 +196,7 @@ let unsatisfiable_constraints env evd ev comp =
     let err = UnsatisfiableConstraints (None, comp) in
     raise (PretypeError (env,evd,err))
   | Some ev ->
-    let loc, kind = Evd.evar_source ev evd in
+    let loc, kind = Evd.evar_source (Evd.find_undefined evd ev) in
     let err = UnsatisfiableConstraints (Some (ev, kind), comp) in
     Loc.raise ?loc (PretypeError (env,evd,err))
 

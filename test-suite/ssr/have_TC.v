@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -15,7 +15,7 @@ Require Import ssreflect.
 Axiom daemon : False. Ltac myadmit := case: daemon.
 
 Class foo (T : Type) := { n : nat }.
-Instance five : foo nat := {| n := 5 |}.
+#[export] Instance five : foo nat := {| n := 5 |}.
 
 Definition bar T {f : foo T} m : Prop :=
   @n _ f = m.
@@ -48,3 +48,10 @@ have totoc (H : bar _ 5) : 3 = 3 := eq_refl.
 move/totoc: nat => _.
 exact I.
 Qed.
+
+Unset SsrHave NoTCResolution.
+
+#[export] Instance test : foo bool.
+Proof.
+  have : foo nat.
+Abort.

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -10,9 +10,8 @@
 
 open Util
 open Names
-open Constr
+open EConstr
 open Vars
-open Environ
 open Context.Named.Declaration
 
 (** Characterization of the head of a term *)
@@ -32,29 +31,29 @@ type head_approximation =
 | FlexibleHead of int * int * int * bool (* [true] if a surrounding case *)
 | NotImmediatelyComputableHead
 
-let rec compute_head_const env cst =
-  let body = Environ.constant_opt_value_in env (cst,Univ.Instance.empty) in
+let rec compute_head_const env sigma cst =
+  let body = Environ.constant_opt_value_in env (cst,UVars.Instance.empty) in
   match body with
   | None -> RigidHead (RigidParameter cst)
-  | Some c -> kind_of_head env c
+  | Some c -> kind_of_head env sigma (EConstr.of_constr c)
 
-and compute_head_var env id = match lookup_named id env with
-| LocalDef (_,c,_) -> kind_of_head env c
+and compute_head_var env sigma id = match lookup_named id env with
+| LocalDef (_,c,_) -> kind_of_head env sigma c
 | _ -> RigidHead RigidOther
 
-and kind_of_head env t =
-  let rec aux k l t b = match kind (Reduction.whd_betaiotazeta env t) with
+and kind_of_head env sigma t =
+  let rec aux k l t b = match EConstr.kind sigma (Reductionops.clos_whd_flags RedFlags.betaiotazeta env sigma t) with
   | Rel n when n > k -> NotImmediatelyComputableHead
   | Rel n -> FlexibleHead (k,k+1-n,List.length l,b)
   | Var id ->
-      (try on_subterm k l b (compute_head_var env id)
+      (try on_subterm k l b (compute_head_var env sigma id)
        with Not_found ->
         (* a goal variable *)
         match lookup_named id env with
         | LocalDef (_,c,_) -> aux k l c b
         | LocalAssum _ -> NotImmediatelyComputableHead)
   | Const (cst,_) ->
-      (try on_subterm k l b (compute_head_const env cst)
+      (try on_subterm k l b (compute_head_const env sigma cst)
        with Not_found ->
          CErrors.anomaly
            Pp.(str "constant not found in kind_of_head: " ++
@@ -74,10 +73,10 @@ and kind_of_head env t =
   | LetIn _ -> assert false
   | Meta _ | Evar _ -> NotImmediatelyComputableHead
   | App (c,al) -> aux k (Array.to_list al @ l) c b
-  | Proj (p,c) -> RigidHead RigidOther
+  | Proj (p,_,c) -> RigidHead RigidOther
 
   | Case (_,_,_,_,_,c,_) -> aux k [] c true
-  | Int _ | Float _ | Array _ -> ConstructorHead
+  | Int _ | Float _ | String _ | Array _ -> ConstructorHead
   | Fix ((i,j),_) ->
       let n = i.(j) in
       try aux k [] (List.nth l n) true
@@ -105,7 +104,7 @@ and kind_of_head env t =
   | x -> x
   in aux 0 [] t false
 
-let is_rigid env t =
-  match kind_of_head env t with
+let is_rigid env sigma t =
+  match kind_of_head env sigma t with
   | RigidHead _ | ConstructorHead -> true
   | _ -> false

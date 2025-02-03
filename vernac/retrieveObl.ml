@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *   INRIA, CNRS and contributors - Copyright 1999-2018       *)
 (* <O___,, *       (see CREDITS file for the list of authors)           *)
 (*   \VV/  **************************************************************)
@@ -22,7 +22,7 @@ let check_evars env evm =
     (fun key evi ->
       if Evd.is_obligation_evar evm key then ()
       else
-        let loc, k = Evd.evar_source key evm in
+        let loc, k = Evd.evar_source evi in
         Pretype_errors.error_unsolvable_implicit ?loc env evm key None)
     (Evd.undefined_map evm)
 
@@ -71,6 +71,7 @@ let subst_evar_constr evm evs n idf t =
          and we must not apply to defined ones (i.e. LetIn's)
       *)
       let args =
+        let args = Evd.expand_existential evm (k, args) in
         let n = match chop with None -> 0 | Some c -> c in
         let l, r = CList.chop n (List.rev args) in
         List.rev r
@@ -138,11 +139,11 @@ let etype_of_evar evm evs hyps concl =
       | LocalDef (id, c, _) ->
         let c', s'', trans'' = subst_evar_constr evm evs n EConstr.mkVar c in
         let c' = subst_vars acc 0 c' in
-        ( Term.mkNamedProd_or_LetIn (LocalDef (id, c', t'')) rest
+        ( Term.mkNamedProd_or_LetIn (LocalDef (EConstr.Unsafe.to_binder_annot id, c', t'')) rest
         , Int.Set.union s'' s'
         , Id.Set.union trans'' trans' )
       | LocalAssum (id, _) ->
-        (Term.mkNamedProd_or_LetIn (LocalAssum (id, t'')) rest, s', trans') )
+        (Term.mkNamedProd_or_LetIn (LocalAssum (EConstr.Unsafe.to_binder_annot id, t'')) rest, s', trans') )
     | [] ->
       let t', s, trans = subst_evar_constr evm evs n EConstr.mkVar concl in
       (subst_vars acc 0 t', s, trans)
@@ -166,7 +167,7 @@ let evar_dependencies evm oev =
   let one_step deps =
     Evar.Set.fold
       (fun ev s ->
-        let evi = Evd.find evm ev in
+        let evi = Evd.find_undefined evm ev in
         let deps' = Evd.evars_of_filtered_evar_info evm evi in
         if Evar.Set.mem oev deps' then
           invalid_arg
@@ -202,12 +203,19 @@ let sort_dependencies evl =
   in
   aux evl Evar.Set.empty []
 
-let retrieve_obligations env name evm fs ?status t ty =
+type obligation_name_lifter =
+  (Names.Id.t -> EConstr.t) -> EConstr.t -> Constr.t
+
+let retrieve_obligations env name evm fs ?deps ?status t ty =
   (* 'Serialize' the evars *)
   let nc = Environ.named_context env in
   let nc_len = Context.Named.length nc in
   let evm = Evarutil.nf_evar_map_undefined evm in
-  let evl = Evarutil.non_instantiated evm in
+  let evl = Evd.undefined_map evm in
+  let evl = match deps with
+  | None -> evl
+  | Some deps -> Evar.Map.filter (fun ev _ -> Evar.Set.mem ev deps) evl
+  in
   let evl = Evar.Map.bindings evl in
   let evl = List.map (fun (id, ev) -> (id, ev, evar_dependencies evm id)) evl in
   let sevl = sort_dependencies evl in
@@ -227,16 +235,16 @@ let retrieve_obligations env name evm fs ?status t ty =
   let evts =
     (* Remove existential variables in types and build the corresponding products *)
     List.fold_right
-      (fun (id, (n, nstr), ev) l ->
+      (fun (id, (n, nstr), ev) evs ->
         let hyps = Evd.evar_filtered_context ev in
         let hyps = trunc_named_context nc_len hyps in
-        let evtyp, deps, transp = etype_of_evar evm l hyps ev.Evd.evar_concl in
+        let evtyp, deps, transp = etype_of_evar evm evs hyps (Evd.evar_concl ev) in
         let evtyp, hyps, chop =
           match chop_product fs evtyp with
           | Some t -> (t, trunc_named_context fs hyps, fs)
           | None -> (evtyp, hyps, 0)
         in
-        let loc, k = Evd.evar_source id evm in
+        let loc, k = Evd.evar_source (Evd.find_undefined evm id) in
         let status =
           match k with
           | Evar_kinds.QuestionMark {Evar_kinds.qm_obligation = o} -> o
@@ -263,7 +271,7 @@ let retrieve_obligations env name evm fs ?status t ty =
           ; ev_deps = deps
           ; ev_tac = None }
         in
-        (id, info) :: l)
+        (id, info) :: evs)
       evn []
   in
   let t', _, transparent =

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,13 +8,14 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
+module CVars = Vars
+
 open Pp
 open CErrors
 open Util
 open Term
 open Constr
 open Context
-open Inductive
 open Inductiveops
 open Names
 open Reductionops
@@ -32,7 +33,9 @@ type retype_error =
   | NotASort
   | NotAnArity
   | NotAType
+  | BadRel
   | BadVariable of Id.t
+  | BadEvar of Evar.t
   | BadMeta of int
   | BadRecursiveType
   | NonFunctionalConstruction
@@ -40,9 +43,11 @@ type retype_error =
 let print_retype_error = function
   | NotASort -> str "Not a sort"
   | NotAnArity -> str "Not an arity"
-  | NotAType -> str "Not a type (1)"
-  | BadVariable id -> str "variable " ++ Id.print id ++ str " unbound"
-  | BadMeta n -> str "unknown meta " ++ int n
+  | NotAType -> str "Not a type"
+  | BadRel -> str "Unbound local variable"
+  | BadVariable id -> str "Variable " ++ Id.print id ++ str " unbound"
+  | BadEvar e -> str "Unknown evar " ++ Evar.print e
+  | BadMeta n -> str "Unknown meta " ++ int n
   | BadRecursiveType -> str "Bad recursive type"
   | NonFunctionalConstruction -> str "Non-functional construction"
 
@@ -55,11 +60,11 @@ let anomaly_on_error f x =
  with RetypeError e -> anomaly ~label:"retyping" (print_retype_error e ++ str ".")
 
 let get_type_from_constraints env sigma t =
-  if isEvar sigma (fst (decompose_app_vect sigma t)) then
+  if isEvar sigma (fst (decompose_app sigma t)) then
     match
       List.map_filter (fun (pbty,env,t1,t2) ->
-        if is_fconv Reduction.CONV env sigma t t1 then Some t2
-        else if is_fconv Reduction.CONV env sigma t t2 then Some t1
+        if is_fconv Conversion.CONV env sigma t t1 then Some t2
+        else if is_fconv Conversion.CONV env sigma t t2 then Some t1
         else None)
         (snd (Evd.extract_all_conv_pbs sigma))
     with
@@ -89,6 +94,7 @@ let rec subst_type env sigma subs typ = function
 
 let subst_type env sigma typ args = subst_type env sigma [] typ args
 
+
 (* If ft is the type of f which itself is applied to args, *)
 (* [sort_of_atomic_type] computes ft[args] which has to be a sort *)
 
@@ -97,7 +103,7 @@ let sort_of_atomic_type env sigma ft args =
     match EConstr.kind sigma (whd_all env sigma ar), args with
     | Prod (na, t, b), h::l ->
       concl_of_arity (push_rel (LocalDef (na, lift n h, t)) env) (n + 1) b l
-    | Sort s, [] -> ESorts.kind sigma s
+    | Sort s, [] -> s
     | _ -> retype_error NotASort
   in concl_of_arity env 0 ft (Array.to_list args)
 
@@ -106,11 +112,16 @@ let type_of_var env id =
   with Not_found -> retype_error (BadVariable id)
 
 let decomp_sort env sigma t =
-  match EConstr.kind sigma (whd_all env sigma t) with
-  | Sort s -> ESorts.kind sigma s
-  | _ -> retype_error NotASort
-
-let destSort sigma s = ESorts.kind sigma (destSort sigma s)
+  let t = whd_all env sigma t in
+  match EConstr.kind sigma t with
+  | Sort s -> s
+  | _ ->
+    let t = try get_type_from_constraints env sigma t
+      with Not_found -> retype_error NotASort
+    in
+    match EConstr.kind sigma (whd_all env sigma t) with
+    | Sort s -> s
+    | _ -> retype_error NotASort
 
 let betazetaevar_applist sigma n c l =
   let rec stacklam n env t stack =
@@ -122,22 +133,145 @@ let betazetaevar_applist sigma n c l =
     | _ -> anomaly (Pp.str "Not enough lambda/let's.") in
   stacklam n [] c l
 
-let retype ?(polyprop=true) sigma =
+let type_of_constant env sigma (c,u) =
+  let cb = lookup_constant c env in
+  let () = check_hyps_inclusion env sigma (GlobRef.ConstRef c) cb.const_hyps in
+  let ty = CVars.subst_instance_constr (EConstr.Unsafe.to_instance u) cb.const_type in
+  EConstr.of_constr (rename_type ty (GlobRef.ConstRef c))
+
+let safe_meta_type metas n = match metas with
+| None -> assert false (* missing meta handler *)
+| Some f -> f n
+
+exception SingletonInductiveBecomesProp of inductive
+
+type output_q =
+  | OutputType
+  (* if the [QVar.t option] is None then it means Prop *)
+  | OutputVar of Sorts.QVar.t option * Univ.Level.Set.t
+
+let template_sort ~forbid_polyprop output_q boundus (s:Sorts.t) =
+  match s with
+  | SProp | Prop | Set -> ESorts.make s
+  | QSort _ -> assert false
+  | Type u ->
+    let subst_fn u = Univ.Level.Map.find_opt u boundus in
+    let u = UnivSubst.subst_univs_universe subst_fn u in
+    let s = match output_q with
+      | OutputType -> Sorts.sort_of_univ u
+      | OutputVar (None, _) ->
+        begin match forbid_polyprop with
+        | None -> Sorts.prop
+        | Some indna -> raise (SingletonInductiveBecomesProp indna)
+        end
+      | OutputVar (Some q, _) -> Sorts.qsort q u
+    in
+    ESorts.make s
+
+let bind_template_univ ~domu u bound =
+  Univ.Level.Map.update domu (function
+      | None -> Some u
+      | Some u' -> CErrors.anomaly ~label:"retyping" Pp.(str "non linear template univ"))
+    bound
+
+let rec finish_template ~forbid_polyprop output_q boundus = let open TemplateArity in function
+  | CtorType (_,typ) -> typ
+  | IndType (_, ctx, s) ->
+    let s = template_sort ~forbid_polyprop output_q boundus s in
+    mkArity (ctx,s)
+  | DefParam (na,v,t,codom) ->
+    let codom = finish_template ~forbid_polyprop output_q boundus codom in
+    mkLetIn (na,v,t,codom)
+  | NonTemplateArg (na,dom,codom) ->
+    let codom = finish_template ~forbid_polyprop output_q boundus codom in
+    mkProd (na,dom,codom)
+  | TemplateArg (na,ctx,domu,codom) ->
+    let output_q = match output_q with
+      | OutputType -> OutputType
+      | OutputVar (q, used_levels) ->
+        if Univ.Level.Set.mem domu used_levels
+        then OutputType
+        else output_q
+    in
+    let u = Univ.Universe.make domu in
+    let boundus = bind_template_univ ~domu u boundus in
+    let codom = finish_template ~forbid_polyprop output_q boundus codom in
+    let s = Sorts.sort_of_univ u in
+    mkProd (na, mkArity (ctx, ESorts.make s), codom)
+
+let rec type_of_template_knowing_parameters ~forbid_polyprop arity_sort_of output_q boundus typ args =
+  let open TemplateArity in
+  match args, typ with
+  | [], _
+  | _, (CtorType _ | IndType _) ->
+    finish_template ~forbid_polyprop output_q boundus typ
+  | _, DefParam (na, v, t, codom) ->
+    let codom = type_of_template_knowing_parameters ~forbid_polyprop arity_sort_of output_q boundus codom args in
+    mkLetIn (na, v, t, codom)
+  | _ :: args, NonTemplateArg (na, dom, codom) ->
+    let codom = type_of_template_knowing_parameters ~forbid_polyprop arity_sort_of output_q boundus codom args in
+    mkProd (na, dom, codom)
+  | arg :: args, TemplateArg (na, ctx, domu, codom) ->
+    let s = arity_sort_of arg in
+    let output_q = match output_q with
+      | OutputType -> output_q
+      | OutputVar (q, used_levels) ->
+        if not (Univ.Level.Set.mem domu used_levels) then output_q
+        else match s with
+          | Sorts.SProp -> OutputType (* invalid type, return whatever *)
+          | Set | Type _ -> OutputType
+          | Prop -> output_q
+          | QSort (q', _) ->
+            match q with
+            | None -> OutputVar (Some q', used_levels)
+            | Some q ->
+              if Sorts.QVar.equal q q' then output_q
+              else
+                (* no other supremum for different qvars
+                   (Type is a supremum because they're above Prop) *)
+                OutputType
+    in
+    let boundus =
+      let u = match s with
+        | Sorts.SProp | Prop | Set -> Univ.Universe.type0
+        | Type u | QSort (_, u) -> u
+      in
+      bind_template_univ ~domu u boundus
+    in
+    let codom = type_of_template_knowing_parameters ~forbid_polyprop arity_sort_of output_q boundus codom args in
+    (* typing ensures [ctx -> s] is correct *)
+    mkProd (na, mkArity (ctx, ESorts.make s), codom)
+
+let type_of_template_knowing_parameters ~forbid_polyprop arity_sort_of (can_be_prop,typ) args =
+  let output_q = match can_be_prop.TemplateArity.template_can_be_prop with
+    | None -> OutputType
+    | Some used_levels -> OutputVar (None, used_levels)
+  in
+  type_of_template_knowing_parameters ~forbid_polyprop arity_sort_of output_q Univ.Level.Map.empty typ args
+
+let retype ?metas ?(polyprop=true) sigma =
   let rec type_of env cstr =
     match EConstr.kind sigma cstr with
     | Meta n ->
-      (try strip_outer_cast sigma (Evd.meta_ftype sigma n).Evd.rebus
-       with Not_found -> retype_error (BadMeta n))
+      begin match safe_meta_type metas n with
+      | None -> retype_error (BadMeta n)
+      | Some ty -> strip_outer_cast sigma ty
+      end
     | Rel n ->
-        let ty = RelDecl.get_type (lookup_rel n env) in
-        lift n ty
+      let ty = try RelDecl.get_type (lookup_rel n env)
+        with Not_found -> retype_error BadRel
+      in
+      lift n ty
     | Var id -> type_of_var env id
-    | Const (cst, u) -> EConstr.of_constr (rename_type_of_constant env (cst, EInstance.kind sigma u))
-    | Evar ev -> existential_type sigma ev
-    | Ind (ind, u) -> EConstr.of_constr (rename_type_of_inductive env (ind, EInstance.kind sigma u))
-    | Construct (cstr, u) -> EConstr.of_constr (rename_type_of_constructor env (cstr, EInstance.kind sigma u))
+    | Const c -> type_of_constant env sigma c
+    | Evar ev -> begin match Evd.existential_type_opt sigma ev with
+        | Some t -> t
+        | None -> retype_error (BadEvar (fst ev))
+      end
+    | Ind ind -> Inductiveops.e_type_of_inductive env sigma ind
+    | Construct c -> Inductiveops.e_type_of_constructor env sigma c
     | Case (ci,u,pms,p,iv,c,lf) ->
-        let (_,p,iv,c,lf) = EConstr.expand_case env sigma (ci,u,pms,p,iv,c,lf) in
+        let (_,(p,_),iv,c,lf) = EConstr.expand_case env sigma (ci,u,pms,p,iv,c,lf) in
         let Inductiveops.IndType(indf,realargs) =
           let t = type_of env c in
           try Inductiveops.find_rectype env sigma t
@@ -158,61 +292,82 @@ let retype ?(polyprop=true) sigma =
          subst1 b (type_of (push_rel (LocalDef (name,b,c1)) env) c2)
     | Fix ((_,i),(_,tys,_)) -> tys.(i)
     | CoFix (i,(_,tys,_)) -> tys.(i)
-    | App(f,args) when Termops.is_template_polymorphic_ind env sigma f ->
-        let t = type_of_global_reference_knowing_parameters env f args in
-        strip_outer_cast sigma (subst_type env sigma t (Array.to_list args))
     | App(f,args) ->
+      if Termops.is_template_polymorphic_ref env sigma f then
+        substituted_type_of_global_reference_knowing_parameters env f args
+      else
         strip_outer_cast sigma
           (subst_type env sigma (type_of env f) (Array.to_list args))
-    | Proj (p,c) ->
-       let ty = type_of env c in
-       EConstr.of_constr (try
-           Inductiveops.type_of_projection_knowing_arg env sigma p c ty
-         with Invalid_argument _ -> retype_error BadRecursiveType)
+    | Proj (p,_,c) ->
+      let ty = type_of env c in
+      (try Inductiveops.type_of_projection_knowing_arg env sigma p c ty
+        with Invalid_argument _ -> retype_error BadRecursiveType)
     | Cast (c,_, t) -> t
     | Sort _ | Prod _ -> mkSort (sort_of env cstr)
     | Int _ -> EConstr.of_constr (Typeops.type_of_int env)
     | Float _ -> EConstr.of_constr (Typeops.type_of_float env)
+    | String _ -> EConstr.of_constr (Typeops.type_of_string env)
     | Array(u, _, _, ty) ->
       let arr = EConstr.of_constr @@ Typeops.type_of_array env (EInstance.kind sigma u) in
       mkApp(arr, [|ty|])
 
-  and sort_of env t =
+  and sort_of env t : ESorts.t =
     match EConstr.kind sigma t with
     | Cast (c,_, s) when isSort sigma s -> destSort sigma s
     | Sort s ->
       begin match ESorts.kind sigma s with
-      | SProp | Prop | Set -> Sorts.type1
-      | Type u -> Sorts.sort_of_univ (Univ.super u)
+      | SProp | Prop | Set -> ESorts.type1
+      | Type u | QSort (_, u) -> ESorts.make (Sorts.sort_of_univ (Univ.Universe.super u))
       end
     | Prod (name,t,c2) ->
       let dom = sort_of env t in
       let rang = sort_of (push_rel (LocalAssum (name,t)) env) c2 in
-      Typeops.sort_of_product env dom rang
+      ESorts.make (Typeops.sort_of_product env (ESorts.kind sigma dom) (ESorts.kind sigma rang))
     | App(f,args) when Termops.is_template_polymorphic_ind env sigma f ->
       let t = type_of_global_reference_knowing_parameters env f args in
-        sort_of_atomic_type env sigma t args
+      sort_of_atomic_type env sigma t args
     | App(f,args) -> sort_of_atomic_type env sigma (type_of env f) args
     | Lambda _ | Fix _ | Construct _ -> retype_error NotAType
     | _ -> decomp_sort env sigma (type_of env t)
 
-  and type_of_global_reference_knowing_parameters env c args =
+  and substituted_type_of_global_reference_knowing_parameters env c args =
     match EConstr.kind sigma c with
     | Ind (ind, u) ->
-      let u = EInstance.kind sigma u in
-      let mip = lookup_mind_specif env ind in
-      let paramtyps = Array.map_to_list (fun arg () ->
-          let t = type_of env arg in
-          let s = sort_of_arity_with_constraints env sigma t in
-          Sorts.univ_of_sort (ESorts.kind sigma s))
-          args
+      let ty = type_of_global_reference_knowing_parameters env c args in
+      strip_outer_cast sigma (subst_type env sigma ty (Array.to_list args))
+    | Construct ((ind, i as ctor), u) ->
+      let mib, mip = Inductive.lookup_mind_specif env ind in
+      let ty =
+        if mib.mind_nparams <= Array.length args then
+        (* Fully applied parameters, we do not have to substitute *)
+          EConstr.of_constr (rename_type mip.mind_user_lc.(i - 1) (ConstructRef ctor))
+      else
+        type_of_global_reference_knowing_parameters env c args
       in
-      EConstr.of_constr
-        (Inductive.type_of_inductive_knowing_parameters
-           ~polyprop (mip, u) paramtyps)
-    | Construct (cstr, u) ->
-      let u = EInstance.kind sigma u in
-      EConstr.of_constr (type_of_constructor env (cstr, u))
+      strip_outer_cast sigma (subst_type env sigma ty (Array.to_list args))
+    | _ -> assert false
+
+  and type_of_global_reference_knowing_parameters env c args =
+    let arity_sort_of arg =
+      let t = type_of env arg in
+      let s = sort_of_arity_with_constraints env sigma t in
+      ESorts.kind sigma s
+    in
+    let rename_type typ gr =
+      EConstr.of_constr @@ rename_type (EConstr.Unsafe.to_constr typ) gr
+    in
+    match EConstr.kind sigma c with
+    | Ind (ind, _) ->
+      let typ = TemplateArity.get_template_arity env ind ~ctoropt:None in
+      let forbid_polyprop = if polyprop then None
+        else Some ind
+      in
+      let typ = type_of_template_knowing_parameters ~forbid_polyprop arity_sort_of typ (Array.to_list args) in
+      rename_type typ (IndRef ind)
+    | Construct ((ind,ctor as cstr), _) ->
+      let typ = TemplateArity.get_template_arity env ind ~ctoropt:(Some ctor) in
+      let typ = type_of_template_knowing_parameters ~forbid_polyprop:None arity_sort_of typ (Array.to_list args) in
+      rename_type typ (ConstructRef cstr)
     | _ -> assert false
 
   in type_of, sort_of, type_of_global_reference_knowing_parameters
@@ -221,7 +376,7 @@ let get_sort_family_of ?(polyprop=true) env sigma t =
   let type_of,_,type_of_global_reference_knowing_parameters = retype ~polyprop sigma in
   let rec sort_family_of env t =
     match EConstr.kind sigma t with
-    | Cast (c,_, s) when isSort sigma s -> Sorts.family (destSort sigma s)
+    | Cast (c,_, s) when isSort sigma s -> ESorts.family sigma (destSort sigma s)
     | Sort _ -> InType
     | Prod (name,t,c2) ->
         let s2 = sort_family_of (push_rel (LocalAssum (name,t)) env) c2 in
@@ -229,12 +384,12 @@ let get_sort_family_of ?(polyprop=true) env sigma t =
            s2 == InSet && sort_family_of env t == InType then InType else s2
     | App(f,args) when Termops.is_template_polymorphic_ind env sigma f ->
         let t = type_of_global_reference_knowing_parameters env f args in
-        Sorts.family (sort_of_atomic_type env sigma t args)
+        ESorts.family sigma (sort_of_atomic_type env sigma t args)
     | App(f,args) ->
-        Sorts.family (sort_of_atomic_type env sigma (type_of env f) args)
+        ESorts.family sigma (sort_of_atomic_type env sigma (type_of env f) args)
     | Lambda _ | Fix _ | Construct _ -> retype_error NotAType
     | _ ->
-      Sorts.family (decomp_sort env sigma (type_of env t))
+      ESorts.family sigma (decomp_sort env sigma (type_of env t))
   in sort_family_of env t
 
 let get_sort_of ?(polyprop=true) env sigma t =
@@ -246,17 +401,39 @@ let type_of_global_reference_knowing_conclusion env sigma c conclty =
   match EConstr.kind sigma c with
     | Ind (ind,u) ->
         let spec = Inductive.lookup_mind_specif env ind in
-          type_of_inductive_knowing_conclusion env sigma (spec, EInstance.kind sigma u) conclty
+          type_of_inductive_knowing_conclusion env sigma (spec, u) conclty
     | Const (cst, u) ->
         let t = constant_type_in env (cst, EInstance.kind sigma u) in
           sigma, EConstr.of_constr t
     | Var id -> sigma, type_of_var env id
-    | Construct (cstr, u) -> sigma, EConstr.of_constr (type_of_constructor env (cstr, EInstance.kind sigma u))
+    | Construct (cstr, u) -> sigma, type_of_constructor env (cstr, u)
     | _ -> assert false
 
-let get_type_of ?(polyprop=true) ?(lax=false) env sigma c =
-  let f,_,_ = retype ~polyprop sigma in
+let get_type_of ?metas ?(polyprop=true) ?(lax=false) env sigma c =
+  let f,_,_ = retype ?metas ~polyprop sigma in
     if lax then f env c else anomaly_on_error (f env) c
+
+let rec check_named env sigma c =
+  match EConstr.kind sigma c with
+  | Var id ->
+    (try ignore (lookup_named id env)
+     with Not_found -> retype_error (BadVariable id))
+  | Evar _ ->
+    (* This is cheating, but some devs exploit that a
+       dependency in the evar args may disappear *)
+    ()
+  | _ -> EConstr.iter sigma (check_named env sigma) c
+
+let reinterpret_get_type_of ~src env sigma c =
+  try
+    check_named env sigma c;
+    get_type_of ~lax:true env sigma c
+  with RetypeError e ->
+    user_err
+      (str "Cannot reinterpret " ++ Id.print src ++ str " bound to " ++
+       quote (Termops.Internal.print_constr_env env sigma c) ++
+       str " in the current environment" ++ spc() ++
+       surround (print_retype_error e))
 
 (* Makes an unsafe judgment from a constr *)
 let get_judgment_of env evc c = { uj_val = c; uj_type = get_type_of env evc c }
@@ -283,6 +460,9 @@ let expand_projection env sigma pr c args =
     mkApp (mkConstU (Projection.constant pr,u),
            Array.of_list (ind_args @ (c :: args)))
 
+let relevance_of_projection_repr env (p, u) =
+  ERelevance.make @@ Relevanceops.relevance_of_projection_repr env (p, EConstr.Unsafe.to_instance u)
+
 let relevance_of_term env sigma c =
   if Environ.sprop_allowed env then
     let rec aux rels c =
@@ -290,35 +470,44 @@ let relevance_of_term env sigma c =
       | Rel n ->
         let len = Range.length rels in
         if n <= len then Range.get rels (n - 1)
-        else Relevanceops.relevance_of_rel env (n - len)
-      | Var x -> Relevanceops.relevance_of_var env x
-      | Sort _ -> Sorts.Relevant
+        else ERelevance.make @@ Relevanceops.relevance_of_rel env (n - len)
+      | Var x -> ERelevance.make @@ Relevanceops.relevance_of_var env x
+      | Sort _ -> ERelevance.relevant
       | Cast (c, _, _) -> aux rels c
-      | Prod ({binder_relevance=r}, _, codom) ->
-        aux (Range.cons r rels) codom
+      | Prod _ -> ERelevance.relevant
       | Lambda ({binder_relevance=r}, _, bdy) ->
         aux (Range.cons r rels) bdy
       | LetIn ({binder_relevance=r}, _, _, bdy) ->
         aux (Range.cons r rels) bdy
       | App (c, _) -> aux rels c
-      | Const (c,_) -> Relevanceops.relevance_of_constant env c
-      | Ind _ -> Sorts.Relevant
-      | Construct (c,_) -> Relevanceops.relevance_of_constructor env c
-      | Case (ci, _, _, _, _, _, _) -> ci.ci_relevance
+      | Const (c,u) ->
+        let u = Unsafe.to_instance u in
+        ERelevance.make @@ Relevanceops.relevance_of_constant env (c,u)
+      | Ind _ -> ERelevance.relevant
+      | Construct (c,u) ->
+        let u = Unsafe.to_instance u in
+        ERelevance.make @@ Relevanceops.relevance_of_constructor env (c,u)
+      | Case (_, _, _, (_, r), _, _, _) -> r
       | Fix ((_,i),(lna,_,_)) -> (lna.(i)).binder_relevance
       | CoFix (i,(lna,_,_)) -> (lna.(i)).binder_relevance
-      | Proj (p, _) -> Relevanceops.relevance_of_projection env p
-      | Int _ | Float _ | Array _ -> Sorts.Relevant
-      | Meta _ | Evar _ -> Sorts.Relevant
-
+      | Proj (p, r, _) -> r
+      | Evar (evk, _) ->
+          let evi = Evd.find_undefined sigma evk in
+          Evd.evar_relevance evi
+      | Int _ | Float _ | String _ | Array _ -> ERelevance.relevant
+      | Meta _ -> ERelevance.relevant
     in
     aux Range.empty c
-  else Sorts.Relevant
+  else ERelevance.relevant
+
+let is_term_irrelevant env sigma c =
+  let r = relevance_of_term env sigma c in
+  Evd.is_relevance_irrelevant sigma r
 
 let relevance_of_type env sigma t =
-  let s = get_sort_family_of env sigma t in
-  Sorts.relevance_of_sort_family s
+  let s = get_sort_of env sigma t in
+  ESorts.relevance_of_sort s
 
-let relevance_of_sort s = Sorts.relevance_of_sort (EConstr.Unsafe.to_sorts s)
+let relevance_of_sort = ESorts.relevance_of_sort
 
-let relevance_of_sort_family f =  Sorts.relevance_of_sort_family f
+let relevance_of_sort_family sigma f = ERelevance.make (Sorts.relevance_of_sort_family f)

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -18,15 +18,17 @@ open Printer
     WARNING: some terms may not make sense in the environment, because they are
     sealed inside opaque modules. Do not try to do anything fancy with those
     terms apart from printing them, otherwise demons may fly out of your nose.
+
+    NOTE: this function is used in the plugin paramcoq.
 *)
 val traverse :
-  Label.t -> constr ->
-    (GlobRef.Set_env.t * GlobRef.Set_env.t GlobRef.Map_env.t *
+  Global.indirect_accessor -> Label.t -> constr ->
+    (GlobRef.Set_env.t * GlobRef.Set_env.t option GlobRef.Map_env.t *
      (Label.t * Constr.rel_context * types) list GlobRef.Map_env.t)
 
 (** Collects all the assumptions (optionally including opaque definitions)
    on which a term relies (together with their type). The above warning of
    {!traverse} also applies. *)
 val assumptions :
-  ?add_opaque:bool -> ?add_transparent:bool -> TransparentState.t ->
-     GlobRef.t -> constr -> types ContextObjectMap.t
+  ?add_opaque:bool -> ?add_transparent:bool -> Global.indirect_accessor ->
+  TransparentState.t -> GlobRef.t -> constr -> types ContextObjectMap.t

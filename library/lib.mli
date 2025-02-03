@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -17,69 +17,58 @@ open Names
    mechanism (at a low level; discharge is not known at this step). *)
 
 type is_type = bool (* Module Type or just Module *)
-type export = bool option (* None for a Module Type *)
+type export_flag = Export | Import
+type export = (export_flag * Libobject.open_filter) option (* None for a Module Type *)
 
 val make_oname : Nametab.object_prefix -> Names.Id.t -> Libobject.object_name
-val make_foname : Names.Id.t -> Libnames.full_path * Names.KerName.t
+val make_foname : Names.Id.t -> Libobject.object_name
+val oname_prefix : Libobject.object_name -> Nametab.object_prefix
 
-type node =
-  | Leaf of Libobject.t
+type 'summary node =
   | CompilingLibrary of Nametab.object_prefix
-  | OpenedModule of is_type * export * Nametab.object_prefix * Summary.frozen
-  | OpenedSection of Nametab.object_prefix * Summary.frozen
+  | OpenedModule of is_type * export * Nametab.object_prefix * 'summary
+  | OpenedSection of Nametab.object_prefix * 'summary
 
-type library_segment = (Libobject.object_name * node) list
+(** Extract the [object_prefix] component. Note that it is the prefix
+   of the objects *inside* this node, eg in [Module M.] we have
+   [OpenedModule] with prefix containing [M]. *)
+val node_prefix : 'summary node -> Nametab.object_prefix
 
-type lib_atomic_objects = (Id.t * Libobject.obj) list
-type lib_objects = (Id.t * Libobject.t) list
-
-(** {6 Object iteration functions. } *)
-
-val open_atomic_objects : Libobject.open_filter
-  -> int -> Nametab.object_prefix -> lib_atomic_objects -> unit
-val load_atomic_objects : int -> Nametab.object_prefix -> lib_atomic_objects -> unit
-val subst_atomic_objects : Mod_subst.substitution -> lib_atomic_objects -> lib_atomic_objects
-(*val load_and_subst_objects : int -> Libnames.Nametab.object_prefix -> Mod_subst.substitution -> lib_objects -> lib_objects*)
-
-(** [classify_segment seg] verifies that there are no OpenedThings,
-   clears ClosedSections and FrozenStates and divides Leafs according
-   to their answers to the [classify_object] function in three groups:
-   [Substitute], [Keep], [Anticipate] respectively.  The order of each
-   returned list is the same as in the input list. *)
-val classify_segment :
-  library_segment -> lib_objects * lib_objects * Libobject.t list
-
-(** [segment_of_objects prefix objs] forms a list of Leafs *)
-val segment_of_objects :
-  Nametab.object_prefix -> lib_objects -> library_segment
-
-(** {6 ... } *)
-(** Low-level adding operations *)
-
-val add_entry : Libobject.object_name -> node -> unit
-val add_anonymous_entry : node -> unit
+type 'summary library_segment = ('summary node * Libobject.t list) list
 
 (** {6 ... } *)
 (** Adding operations (which call the [cache] method, and getting the
   current list of operations (most recent ones coming first). *)
 
-val add_leaf : Id.t -> Libobject.obj -> Libobject.object_name
-val add_anonymous_leaf : ?cache_first:bool -> Libobject.obj -> unit
+val add_leaf : Libobject.obj -> unit
+
+val add_discharged_leaf : Libobject.discharged_obj -> unit
 
 (** {6 ... } *)
 
 (** The function [contents] gives access to the current entire segment *)
 
-val contents : unit -> library_segment
-
-(** The function [contents_after] returns the current library segment,
-  starting from a given section path. *)
-
-val contents_after : Libobject.object_name -> library_segment
+val contents : unit -> Summary.Interp.frozen library_segment
 
 (** {6 Functions relative to current path } *)
 
-(** User-side names *)
+(** User-side names
+
+    [cwd()] is [(prefix()).obj_dir]
+    [current_mp()] is [(prefix()).obj_mp]
+
+    Inside a library A.B module M section S, we have
+    - library_dp = A.B
+    - cwd = A.B.M.S
+    - cwd_except_section = A.B.M
+    - current_dirpath true = M.S
+    - current_dirpath false = S
+    - current_mp = MPdot(MPfile A.B, M)
+
+    make_path (resp make_path_except_section) uses cwd (resp cwd_except_section)
+    make_kn uses current_mp
+*)
+val prefix : unit -> Nametab.object_prefix
 val cwd : unit -> DirPath.t
 val cwd_except_section : unit -> DirPath.t
 val current_dirpath : bool -> DirPath.t (* false = except sections *)
@@ -92,7 +81,6 @@ val make_kn : Id.t -> KerName.t
 
 (** Are we inside an opened section *)
 val sections_are_opened : unit -> bool
-[@@ocaml.deprecated "Use Global.sections_are_opened"]
 val sections_depth : unit -> int
 
 (** Are we inside an opened module type *)
@@ -102,80 +90,111 @@ val is_modtype : unit -> bool
    if the latest module started is a module type.  *)
 val is_modtype_strict : unit -> bool
 val is_module : unit -> bool
-val current_mod_id : unit -> module_ident
 
-(** Returns the opening node of a given name *)
-val find_opening_node : Id.t -> node
+type discharged_item =
+  | DischargedExport of Libobject.ExportObj.t
+  | DischargedLeaf of Libobject.discharged_obj
 
-(** {6 Modules and module types } *)
+type classified_objects = {
+  substobjs : Libobject.t list;
+  keepobjs : Libobject.t list;
+  escapeobjs : Libobject.t list;
+  anticipateobjs : Libobject.t list;
+}
 
-val start_module :
-  export -> module_ident -> ModPath.t ->
-  Summary.frozen -> Nametab.object_prefix
+(** The [StagedLibS] abstraction describes operations and traversal for Lib at a
+    given stage. *)
+module type StagedLibS = sig
 
-val start_modtype :
-  module_ident -> ModPath.t ->
-  Summary.frozen -> Nametab.object_prefix
+  type summary
 
-val end_module :
-  unit ->
-  Libobject.object_name * Nametab.object_prefix *
-    Summary.frozen * library_segment
+  (** Returns the opening node of a given name *)
+  val find_opening_node : ?loc:Loc.t -> Id.t -> summary node
 
-val end_modtype :
-  unit ->
-  Libobject.object_name * Nametab.object_prefix *
-    Summary.frozen * library_segment
+  val add_entry : summary node -> unit
+  val add_leaf_entry : Libobject.t -> unit
+
+  (** {6 Sections } *)
+  val open_section : Id.t -> unit
+
+  (** [close_section] needs to redo Export, so the complete
+      implementation needs to involve [Declaremods]. *)
+  val close_section : unit -> discharged_item list
+
+  (** {6 Modules and module types } *)
+
+  val start_module :
+    export -> module_ident -> ModPath.t ->
+    summary -> Nametab.object_prefix
+
+  val start_modtype :
+    module_ident -> ModPath.t ->
+    summary -> Nametab.object_prefix
+
+  val end_module :
+    unit ->
+    Nametab.object_prefix * summary * classified_objects
+
+  val end_modtype :
+    unit ->
+    Nametab.object_prefix * summary * classified_objects
+
+  type frozen
+
+  val freeze : unit -> frozen
+  val unfreeze : frozen -> unit
+  val init : unit -> unit
+
+  (** Keep only the libobject structure, not the objects themselves *)
+  val drop_objects : frozen -> frozen
+
+  val declare_info : Library_info.t -> unit
+
+end
+
+(** We provide two instances of [StagedLibS], corresponding to the Synterp and
+    Interp stages. *)
+
+module Synterp : StagedLibS with type summary = Summary.Synterp.frozen
+module Interp : StagedLibS with type summary = Summary.Interp.frozen
 
 (** {6 Compilation units } *)
 
 val start_compilation : DirPath.t -> ModPath.t -> unit
-val end_compilation_checks : DirPath.t -> Libobject.object_name
-val end_compilation :
-  Libobject.object_name-> Nametab.object_prefix * library_segment
+
+type compilation_result = {
+  info : Library_info.t;
+  synterp_objects : classified_objects;
+  interp_objects : classified_objects;
+}
+
+(** Finalize the compilation of a library. *)
+val end_compilation : DirPath.t -> compilation_result
 
 (** The function [library_dp] returns the [DirPath.t] of the current
    compiling library (or [default_library]) *)
 val library_dp : unit -> DirPath.t
 
 (** Extract the library part of a name even if in a section *)
-val dp_of_mp : ModPath.t -> DirPath.t
 val split_modpath : ModPath.t -> DirPath.t * Id.t list
 val library_part :  GlobRef.t -> DirPath.t
 
-(** {6 Sections } *)
-
-val open_section : Id.t -> unit
-val close_section : unit -> unit
-
-(** {6 We can get and set the state of the operations (used in [States]). } *)
-
-type frozen
-
-val freeze : unit -> frozen
-val unfreeze : frozen -> unit
-
-(** Keep only the libobject structure, not the objects themselves *)
-val drop_objects : frozen -> frozen
-
-val init : unit -> unit
-
 (** {6 Section management for discharge } *)
-val section_segment_of_constant : Constant.t -> Declarations.abstr_info
-val section_segment_of_mutual_inductive: MutInd.t -> Declarations.abstr_info
-val section_segment_of_reference : GlobRef.t -> Declarations.abstr_info
+val section_segment_of_constant : Constant.t -> Cooking.cooking_info
+val section_segment_of_inductive: MutInd.t -> Cooking.cooking_info
+val section_segment_of_reference : GlobRef.t -> Cooking.cooking_info
 
-val variable_section_segment_of_reference : GlobRef.t -> Constr.named_context
-
-val section_instance : GlobRef.t -> Univ.Instance.t * Id.t array
+val section_instance : GlobRef.t -> Constr.t array
 val is_in_section : GlobRef.t -> bool
-
-val replacement_context : unit -> Declarations.work_list
 
 (** {6 Discharge: decrease the section level if in the current section } *)
 
-(* XXX Why can't we use the kernel functions ? *)
-
+(** [discharge_proj_repr p] discharges projection [p] if the associated record
+    was defined in the current section. If that is not the case, it returns [p]
+    unchanged. *)
 val discharge_proj_repr : Projection.Repr.t -> Projection.Repr.t
-val discharge_abstract_universe_context :
-  Declarations.abstr_info -> Univ.AbstractContext.t -> Univ.universe_level_subst * Univ.AbstractContext.t
+
+(** Compatibility layer *)
+
+(** This also does init_summaries *)
+val init : unit -> unit

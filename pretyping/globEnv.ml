@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -97,21 +97,21 @@ let push_rec_types ~hypnaming sigma (lna,typarray) env =
   let env,ctx = Array.fold_left_map (fun e assum -> let (d,e) = push_rel sigma assum e ~hypnaming in (e,d)) env ctxt in
   Array.map get_annot ctx, env
 
-let new_evar env sigma ?src ?naming typ =
-  let inst_vars = EConstr.identity_subst_val (named_context_val env.renamed_env) in
-  let rec rel_list n accu =
-    if n <= 0 then accu
-    else rel_list (n - 1) (mkRel n :: accu)
+let new_evar env sigma ?src ?(naming = Namegen.IntroAnonymous) ?relevance typ =
+  let (subst, _, sign) as ext = Lazy.force env.extra in
+  let instance = Evarutil.default_ext_instance ext in
+  let typ' = csubst_subst sigma subst typ in
+  let name = Evarutil.next_evar_name sigma naming in
+  let relevance = match relevance with
+    | Some r -> r
+    | None -> Retyping.relevance_of_type env.static_env sigma typ
   in
-  let instance = rel_list (nb_rel env.renamed_env) inst_vars in
-  let (subst, _, sign) = Lazy.force env.extra in
-  let typ' = csubst_subst subst typ in
-  let (sigma, evk) = new_pure_evar sign sigma typ' ?src ?naming in
+  let (sigma, evk) = new_pure_evar sign sigma typ' ?src ~relevance ?name in
   (sigma, mkEvar (evk, instance))
 
 let new_type_evar env sigma ~src =
   let sigma, s = Evd.new_sort_variable Evd.univ_flexible_alg sigma in
-  new_evar env sigma ~src (EConstr.mkSort s)
+  new_evar env sigma ~src (EConstr.mkSort s) ~relevance:ERelevance.relevant
 
 let hide_variable env expansion id =
   let lvar = env.lvar in
@@ -137,13 +137,6 @@ let hide_variable env expansion id =
   else
     env
 
-let protected_get_type_of env sigma c =
-  try Retyping.get_type_of ~lax:true env sigma c
-  with Retyping.RetypeError _ ->
-    user_err
-      (str "Cannot reinterpret " ++ quote (Termops.Internal.print_constr_env env sigma c) ++
-       str " in the current environment.")
-
 let invert_ltac_bound_name env id0 id =
   try mkRel (pi1 (lookup_rel_id id (rel_context env.static_env)))
   with Not_found ->
@@ -153,28 +146,34 @@ let invert_ltac_bound_name env id0 id =
 
 let interp_ltac_variable ?loc typing_fun env sigma id : Evd.evar_map * unsafe_judgment =
   (* Check if [id] is an ltac variable *)
-  try
-    let (ids,c) = Id.Map.find id env.lvar.ltac_constrs in
+  match Id.Map.find_opt id env.lvar.ltac_constrs with
+  | Some (ids, c) ->
     let subst = List.map (invert_ltac_bound_name env id) ids in
     let c = substl subst c in
-    sigma, { uj_val = c; uj_type = protected_get_type_of env.renamed_env sigma c }
-  with Not_found ->
-  try
-    let {closure;term} = Id.Map.find id env.lvar.ltac_uconstrs in
+    sigma, { uj_val = c; uj_type = Retyping.reinterpret_get_type_of ~src:id env.renamed_env sigma c }
+  | None ->
+  match Id.Map.find_opt id env.lvar.ltac_uconstrs with
+  | Some {closure;term} ->
     let lvar = {
       ltac_constrs = closure.typed;
       ltac_uconstrs = closure.untyped;
       ltac_idents = closure.idents;
-      ltac_genargs = Id.Map.empty; }
+      ltac_genargs = closure.genargs; }
     in
     (* spiwack: I'm catching [Not_found] potentially too eagerly
        here, as the call to the main pretyping function is caught
        inside the try but I want to avoid refactoring this function
        too much for now. *)
     typing_fun {env with lvar; static_env = env.renamed_env} term
-  with Not_found ->
+  | None ->
   (* Check if [id] is a ltac variable not bound to a term *)
   (* and build a nice error message *)
+  if Id.Map.mem id env.lvar.ltac_idents then begin
+    let bnd = Id.Map.find id env.lvar.ltac_idents in
+    user_err ?loc
+     (str "Variable " ++ Id.print id ++ str " should be bound to a term but is \
+      bound to the identifier " ++ quote (Id.print bnd) ++ str ".")
+  end;
   if Id.Map.mem id env.lvar.ltac_genargs then begin
     let Geninterp.Val.Dyn (typ, _) = Id.Map.find id env.lvar.ltac_genargs in
     user_err ?loc

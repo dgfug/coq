@@ -1,12 +1,12 @@
 # Grammar extraction tool for documentation
 
 `doc_grammar` extracts Coq's grammar from `.mlg` files, edits it and inserts it
-into `.rst` files.  The tool inserts `prodn` directives for  grammar productions.
+into `.rst` files.  The tool inserts `prodn` directives for grammar productions.
 It also updates `tacn` and `cmd` directives when they can be unambiguously matched to
 productions of the grammar (in practice, that's probably almost always).
 `tacv` and `cmdv` directives are not updated because matching them appears to require
 human judgement.  `doc_grammar` generates a few files that may be useful to
-developers and documentors.
+developers and documenters.
 
 The mlg grammars present several challenges to generating an accurate grammar
 for documentation purposes:
@@ -33,7 +33,7 @@ for documentation purposes:
 
 ## What the tool does
 
-1.  The tool reads all the `mlg` files and generates `fullGrammar`, which includes
+1. The tool reads all the `mlg` files and generates `fullGrammar`, which includes
     all the grammar without the actions for each production or the OCaml code.  This
     file is provided as a convenience to make it easier to examine the (mostly)
     unprocessed grammar of the mlg files with less clutter.  This step includes two
@@ -44,7 +44,7 @@ for documentation purposes:
     ```
     ltac_expr:
       [ "5" RIGHTA
-        [ te = binder_tactic -> { te } ]
+        [ ... ]
       [ "4"   ...
     ```
 
@@ -52,7 +52,7 @@ for documentation purposes:
 
     ```
     tactic_expr5: [
-    | binder_tactic
+    | ...
     | tactic_expr4
     ]
     ```
@@ -68,7 +68,10 @@ for documentation purposes:
 
     References to renamed symbols are updated with the modified names.
 
-2.  The tool applies grammar editing operations specified by `common.edit_mlg` to
+    Note: the 4 SSR mlgs and ssreflect-proof-language.rst are currently excluded
+    from processing (hard coded).
+
+2. The tool applies grammar editing operations specified by `common.edit_mlg` to
     generate `editedGrammar`.
 
 3. `orderedGrammar` gives the desired order for nonterminals and individual productions
@@ -82,16 +85,18 @@ for documentation purposes:
     The update process removes manually-added comments from `orderedGrammar` while
     automatically-generated comments will be regenerated.
 
-4.  The tool updates the `.rst` files.  Comments in the form
+4. The tool updates the `.rst` files.  Comments in the form
     `.. insertprodn <first nt> <last nt>` indicate inserting the productions for a
-    range of nonterminals.  `.. cmd::` and `.. tacn::` directives are updated using
+    range of nonterminals (in `orderedGrammar` order).  `.. cmd::` and `.. tacn::`
+    directives are updated using
     prefixes in the form `[a-zA-Z0-9_ ]+` from the directive and the
     grammar.  If there is unique match in the grammar, the directive is updated, if needed.
     Multiple matches or no match gives an error message.
 
-5.  For reference, the tool generates `prodnGrammar`, which has the entire grammar in the form of `prodns`.
+5. For reference, the tool generates `prodnGrammar`, which has the entire grammar in the form of `prodns`.
 
-6.  The tool generates `prodnCommands` (for commands) and `prodnTactics` (for tactics).
+6. If requested by command-line arguments `-check-cmds` or `-check-tacs`,
+    the tool generates `prodnCommands` (for commands) and `prodnTactics` (for tactics).
     The former lists all commands that are under `command` in `orderedGrammar` and
     compares it to the `:cmd:` and `:cmdv:` given in the rst files.  The latter
     lists all tactics that are under `simple_tactic` in the grammar and compares it
@@ -102,6 +107,9 @@ for documentation purposes:
     - `+` - an rst entry that doesn't match a grammar production
     - `v` - the rst entry is a `:cmdv:` or `:tacv:`
     - `?` - the match between the grammar and the rst files is not unique
+
+    These command line arguments also generate error messages for commands and
+    tactics that are in the grammar but not the documentation and vice versa.
 
 ## How to use the tool
 
@@ -114,13 +122,13 @@ for documentation purposes:
 
 * `make doc_gram_rsts DOCGRAMWARN=1` will additionally print warnings.
 
-Changes to `fullGrammar`, `orderedGrammar` and the `.rsts` should be checked in to git.
+Changes to `fullGrammar`, `orderedGrammar` and `*.rst` should be checked in to git.
 The `prodn*` and other `*Grammar` files should not.
 
 ### Command line arguments
 
 The executable takes a list of `.mlg` and `.rst` files as arguments.  The tool
-inserts the grammar into the `.rsts` as specified by comments in those files.
+inserts the grammar into the `*.rst` as specified by comments in those files.
 The order of the `.mlg` files affects the order of nonterminals and productions in
 `fullGrammar`.  The order doesn't matter for the `.rst` files.
 
@@ -131,9 +139,9 @@ the `.rst` files in their PRs when they've changed the grammar.
 
 Other command line arguments:
 
-* `-check-tacs` reports on differences in tactics between the `rsts` and the grammar
+* `-check-tacs` causes generation of `prodnTactics`
 
-* `-check-cmds` reports on differences in commands between the `rsts` and the grammar
+* `-check-cmds` causes generation of `prodnCommands`
 
 * `-no-warn` suppresses printing of some warning messages
 
@@ -162,8 +170,8 @@ in the order they appear.  There are two types of editing operations:
 * Local edits - edit rules that apply to the productions of a single non-terminal.
   The rule is a local edit if the non-terminal name isn't reserved.  Individual
   productions within a local edit that begin with a different set of reserved names
-  edit existing productions.  For  example `binders: [ | DELETE Pcoq.Constr.binders ]`
-  deletes the production `binders: [ | Pcoq.Constr.binders]`
+  edit existing productions.  For  example `binders: [ | DELETE Procq.Constr.binders ]`
+  deletes the production `binders: [ | Procq.Constr.binders]`
 
 Productions that don't begin with a reserved name are added to the grammar,
 such as `empty: [ | ]`, which adds a new non-terminal `empty` with an
@@ -176,8 +184,9 @@ uses of `LEFTQMARK` anywhere in the grammar with its productions and removing th
 non-terminal.  The combined effect of these two is to replace all uses of
 `LEFTQMARK` with `"?"`.
 
-Here are the current operations.  They are likely to be refined as we learn
-what operations are most useful while we update the mlg files and documentation:
+
+
+Here are the current operations:
 
 ### Global edits
 
@@ -195,6 +204,12 @@ as a separate production.  (Doesn't work recursively; splicing for both
 
 `OPTINREF` - applies the local `OPTINREF` edit to every nonterminal
 
+`REACHABLE` - suppresses the "Unreachable symbol" warning for the listed nonterminals
+and any symbols reachable from them.
+
+`NOTINRSTS` - suppresses the "Nonterminal <NT> not included in .rst files" messages for
+the listed nonterminals.
+
 ### Local edits
 
 `DELETE <production>` - removes the specified production from the grammar
@@ -202,7 +217,7 @@ as a separate production.  (Doesn't work recursively; splicing for both
 `EDIT <production>` - modifies the specified production using the following tags
 that appear in the specified production:
 
-* `USE_NT <name>` LIST* - extracts LIST* as new nonterminal with the specified
+* `USE_NT <name>` LIST* - extracts LIST* as a new nonterminal with the specified
   new non-terminal name
 
 * `ADD_OPT <grammar symbol>` - looks for a production that matches the specified

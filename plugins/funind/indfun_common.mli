@@ -69,15 +69,10 @@ val pr_info : Environ.env -> Evd.evar_map -> function_info -> Pp.t
 val pr_table : Environ.env -> Evd.evar_map -> Pp.t
 
 val observe_tac :
-  (Environ.env -> Evd.evar_map -> Pp.t) -> Tacmach.tactic -> Tacmach.tactic
-
-module New : sig
-  val observe_tac :
-       header:Pp.t
-    -> (Environ.env -> Evd.evar_map -> Pp.t)
-    -> unit Proofview.tactic
-    -> unit Proofview.tactic
-end
+  header:Pp.t
+  -> (Environ.env -> Evd.evar_map -> Pp.t)
+  -> unit Proofview.tactic
+  -> unit Proofview.tactic
 
 (* val function_debug : bool ref  *)
 val observe : Pp.t -> unit
@@ -100,25 +95,22 @@ val acc_rel : EConstr.constr Util.delayed
 val well_founded : EConstr.constr Util.delayed
 
 val evaluable_of_global_reference :
-  GlobRef.t -> Tacred.evaluable_global_reference
+  GlobRef.t -> Evaluable.t
 
 val list_rewrite : bool -> (EConstr.constr * bool) list -> unit Proofview.tactic
 
-val decompose_lam_n :
+val decompose_lambda_n :
      Evd.evar_map
   -> int
   -> EConstr.t
-  -> (Names.Name.t Context.binder_annot * EConstr.t) list * EConstr.t
+  -> (Names.Name.t EConstr.binder_annot * EConstr.t) list * EConstr.t
 
 val compose_lam :
-  (Names.Name.t Context.binder_annot * EConstr.t) list -> EConstr.t -> EConstr.t
+  (Names.Name.t EConstr.binder_annot * EConstr.t) list -> EConstr.t -> EConstr.t
 
 val compose_prod :
-  (Names.Name.t Context.binder_annot * EConstr.t) list -> EConstr.t -> EConstr.t
+  (Names.Name.t EConstr.binder_annot * EConstr.t) list -> EConstr.t -> EConstr.t
 
 type tcc_lemma_value = Undefined | Value of Constr.t | Not_needed
 
 val funind_purify : ('a -> 'b) -> 'a -> 'b
-
-val tac_type_of :
-  Goal.goal Evd.sigma -> EConstr.constr -> Goal.goal Evd.sigma * EConstr.types

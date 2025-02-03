@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -26,7 +26,7 @@ module AdaptorDb = struct
 
   module AdaptorKind = struct
     type t = kind
-    let compare = pervasives_compare
+    let compare = Stdlib.compare
   end
   module AdaptorMap = Map.Make(AdaptorKind)
 
@@ -37,12 +37,12 @@ module AdaptorDb = struct
     try AdaptorMap.find k !term_view_adaptor_db
     with Not_found -> []
 
-  let cache_adaptor (_, (k, t)) =
+  let cache_adaptor (k, t) =
     let lk = get k in
     if not (List.exists (Glob_ops.glob_constr_eq t) lk) then
       term_view_adaptor_db := AdaptorMap.add k (t :: lk) !term_view_adaptor_db
 
-  let subst_adaptor ( subst, (k, t as a)) =
+  let subst_adaptor (subst, (k, t as a)) =
     let t' = Detyping.subst_glob_constr (Global.env()) subst t in
     if t' == t then a else k, t'
 
@@ -53,7 +53,7 @@ module AdaptorDb = struct
       ~subst:(Some subst_adaptor)
 
   let declare kind terms =
-    List.iter (fun term -> Lib.add_anonymous_leaf (in_db (kind,term)))
+    List.iter (fun term -> Lib.add_leaf (in_db (kind,term)))
       (List.rev terms)
 
 end
@@ -85,6 +85,7 @@ type vstate = {
 include Ssrcommon.MakeState(struct
   type state = vstate option
   let init = None
+  let name = "ssrview"
 end)
 
 let vsINIT ~view ~subject_name ~to_clear =
@@ -99,7 +100,7 @@ let vsBOOTSTRAP = Goal.enter_one ~__LOC__ begin fun gl ->
     match kind_of_type (Goal.sigma gl) concl with
     | ProdType({binder_name=Name.Name id}, _, _)
       when Ssrcommon.is_discharged_id id -> id
-    | _ -> mk_anon_id "view_subject" (Tacmach.New.pf_ids_of_hyps gl) in
+    | _ -> mk_anon_id "view_subject" (Tacmach.pf_ids_of_hyps gl) in
   let view = EConstr.mkVar id in
   Ssrcommon.tclINTRO_ID id <*>
   tclSET (Some { subject_name = [id]; view; to_clear = [] })
@@ -157,18 +158,19 @@ let is_tac_in_term ?extra_scope { annotation; body; glob_env; interp_env } =
         extra = ist.ast_extra;
         intern_sign = ist.ast_intern_sign;
         genv;
+        strict_check = true;
       }
     in
     (* We open extra_scope *)
     let body =
       match extra_scope with
       | None -> body
-      | Some s -> CAst.make (Constrexpr.CDelimiters(s,body))
+      | Some s -> CAst.make Constrexpr.(CDelimiters(DelimUnboundedScope,s,body))
     in
     (* We unravel notations *)
     let g = intern_constr_expr ist sigma body in
     match DAst.get g with
-    | Glob_term.GHole (_,_, Some x)
+    | Glob_term.GGenarg x
       when Genarg.has_type x (Genarg.glbwit Tacarg.wit_tactic)
         -> tclUNIT (`Tac (Genarg.out_gen (Genarg.glbwit Tacarg.wit_tactic) x))
     | _ -> tclUNIT (`Term (annotation, interp_env, g))
@@ -184,7 +186,7 @@ let tclINJ_CONSTR_IST ist p =
 
 let mkGHole =
   DAst.make
-    (Glob_term.GHole(Evar_kinds.InternalHole, Namegen.IntroAnonymous, None))
+    (Glob_term.GHole (GInternalHole))
 let rec mkGHoles n = if n > 0 then mkGHole :: mkGHoles (n - 1) else []
 let mkGApp f args =
   if args = [] then f
@@ -201,8 +203,7 @@ let interp_glob ist glob = Goal.enter_one ~__LOC__ begin fun goal ->
     Ssrprinters.debug_ssr (fun () ->
       Pp.(str"interp-out: " ++ Printer.pr_econstr_env env sigma term));
     tclUNIT (env,sigma,term)
-  with e ->
-    (* XXX this is another catch all! *)
+  with e when CErrors.noncritical e ->
     let e, info = Exninfo.capture e in
     Ssrprinters.debug_ssr (fun () ->
     Pp.(str"interp-err: " ++ Printer.pr_glob_constr_env env sigma glob));
@@ -237,18 +238,18 @@ let guess_max_implicits ist glob =
   Proofview.tclORELSE
     (interp_glob ist (mkGApp glob (mkGHoles 6)) >>= fun (env,sigma,term) ->
      let term_ty = Retyping.get_type_of env sigma term in
-     let ctx, _ = Reductionops.splay_prod env sigma term_ty in
+     let ctx, _ = Reductionops.whd_decompose_prod env sigma term_ty in
      tclUNIT (List.length ctx + 6))
   (fun _ -> tclUNIT 5)
 
 let pad_to_inductive ist glob = Goal.enter_one ~__LOC__ begin fun goal ->
   interp_glob ist glob >>= fun (env, sigma, term as ot) ->
   let term_ty = Retyping.get_type_of env sigma term in
-  let ctx, i = Reductionops.splay_prod env sigma term_ty in
+  let ctx, i = Reductionops.whd_decompose_prod env sigma term_ty in
   let rel_ctx =
     List.map (fun (a,b) -> Context.Rel.Declaration.LocalAssum(a,b)) ctx in
   if not (Ssrcommon.isAppInd (EConstr.push_rel_context rel_ctx env) sigma i)
-  then Tacticals.New.tclZEROMSG Pp.(str"not an inductive")
+  then Tacticals.tclZEROMSG Pp.(str"not an inductive")
   else tclUNIT (mkGApp glob (mkGHoles (List.length ctx)))
        >>= tclADD_CLEAR_IF_ID ot
 end
@@ -303,27 +304,31 @@ Goal.enter_one ~__LOC__ begin fun g ->
   let sigma = Goal.sigma g in
   let evars_of_p = Evd.evars_of_term sigma p in
   let filter x _ = Evar.Set.mem x evars_of_p in
+  let sigma = Evd.push_shelf sigma in
   let sigma = Typeclasses.resolve_typeclasses ~fail:false ~filter env sigma in
+  let _, sigma = Evd.pop_shelf sigma in
   let p = Reductionops.nf_evar sigma p in
-  let get_body = function Evd.Evar_defined x -> x | _ -> assert false in
+  let get_body : type a. a Evd.evar_body -> EConstr.t = function Evd.Evar_defined x -> x | Evd.Evar_empty -> assert false in
   let evars_of_econstr sigma t =
-    Evarutil.undefined_evars_of_term sigma (EConstr.of_constr t) in
+    Evarutil.undefined_evars_of_term sigma t in
   let rigid_of s =
     List.fold_left (fun l k ->
       if Evd.is_defined sigma k then
-        let bo = get_body Evd.(evar_body (find sigma k)) in
-          k :: l @ Evar.Set.elements (evars_of_econstr sigma (EConstr.Unsafe.to_constr bo))
+        let EvarInfo evi = Evd.find sigma k in
+        let bo = get_body (Evd.evar_body evi) in
+          k :: l @ Evar.Set.elements (evars_of_econstr sigma bo)
       else l
     ) [] s in
+  let env0 = Proofview.Goal.env s0 in
+  let sigma0 = Proofview.Goal.sigma s0 in
   let und0 = (* Unassigned evars in the initial goal *)
-    let sigma0 = Tacmach.project s0 in
-    let g0info = Evd.find sigma0 (Tacmach.sig_it s0) in
+    let EvarInfo g0info = Evd.find sigma0 (Proofview.Goal.goal s0) in
     let g0 = Evd.evars_of_filtered_evar_info sigma0 g0info in
     List.filter (fun k -> Evar.Set.mem k g0)
       (List.map fst (Evar.Map.bindings (Evd.undefined_map sigma0))) in
   let rigid = rigid_of und0 in
-  let n, p, to_prune, _ucst = pf_abs_evars2 s0 rigid (sigma, p) in
-  let p = if simple_types then pf_abs_cterm s0 n p else p in
+  let p, to_prune, _ucst = abs_evars env0 sigma0 ~rigid (sigma, p) in
+  let p = if simple_types then abs_cterm env0 sigma0 (List.length to_prune) p else p in
   Ssrprinters.debug_ssr (fun () -> Pp.(str"view@finalized: " ++
     Printer.pr_econstr_env env sigma p));
   let sigma = List.fold_left Evd.remove sigma to_prune in
@@ -332,12 +337,12 @@ Goal.enter_one ~__LOC__ begin fun g ->
 end
 
 let pose_proof subject_name p =
-  Tactics.generalize [p] <*>
+  Generalize.generalize [p] <*>
   begin match subject_name with
   | id :: _ -> Ssrcommon.tclRENAME_HD_PROD (Name.Name id)
   | _ -> tclUNIT() end
   <*>
-  Tactics.New.reduce_after_refine
+  Tactics.reduce_after_refine
 
 (* returns true if the last item was a tactic *)
 let rec apply_all_views_aux ~clear_if_id vs finalization conclusion s0 =
@@ -369,8 +374,9 @@ let rec apply_all_views_aux ~clear_if_id vs finalization conclusion s0 =
              Tactics.clear name <*>
              tclINDEPENDENTL begin
                Ssrprinters.debug_ssr (fun () -> Pp.(str"..was NOT the last view"));
-               Ssrcommon.tacSIGMA >>=
-                 apply_all_views_aux ~clear_if_id vs finalization conclusion
+               Proofview.Goal.enter_one begin fun gl ->
+                 apply_all_views_aux ~clear_if_id vs finalization conclusion gl
+               end
              end >>= reduce_or)
 
 let apply_all_views vs ~conclusion ~clear_if_id =
@@ -380,8 +386,9 @@ let apply_all_views vs ~conclusion ~clear_if_id =
       | None -> k [] None
       | Some t ->
           finalize_view s0 t >>= fun p -> k (names @ to_clear) (Some p)) in
-  Ssrcommon.tacSIGMA >>=
-    apply_all_views_aux ~clear_if_id vs finalization conclusion
+  Proofview.Goal.enter_one begin fun gl ->
+    apply_all_views_aux ~clear_if_id vs finalization conclusion gl
+  end
 
 (* We apply a view to a term given by the user, e.g. `case/V: x`. `x` is
    `subject` *)
@@ -393,10 +400,11 @@ let apply_all_views_to subject ~simple_types vs ~conclusion = begin
       | `Term v -> pile_up_view ~clear_if_id:false v <*> process_all_vs vs in
   State.vsASSERT_EMPTY <*>
   State.vsINIT ~subject_name:[] ~to_clear:[] ~view:subject <*>
-  Ssrcommon.tacSIGMA >>= fun s0 ->
+  Proofview.Goal.enter_one begin fun s0 ->
   process_all_vs vs <*>
   State.vsCONSUME (fun ~names:_ t ~to_clear:_ ->
     finalize_view s0 ~simple_types t >>= conclusion)
+  end
 end
 
 (* Entry points *********************************************************)

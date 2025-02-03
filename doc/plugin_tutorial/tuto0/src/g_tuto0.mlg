@@ -1,11 +1,13 @@
-DECLARE PLUGIN "tuto0_plugin"
+DECLARE PLUGIN "coq-plugin-tutorial.tuto0"
 
 {
 
 open Pp
 open Ltac_plugin
 
-let tuto_warn = CWarnings.create ~name:"name" ~category:"category"
+let cat = CWarnings.create_category ~name:"plugin-tuto-cat" ()
+
+let tuto_warn = CWarnings.create ~name:"name" ~category:cat
                             (fun _ -> strbrk Tuto0_main.message)
 
 }
@@ -26,7 +28,7 @@ END
 TACTIC EXTEND hello_world_tactic
 | [ "hello_world" ] ->
   { let _ = Feedback.msg_notice (str Tuto0_main.message) in
-    Tacticals.New.tclIDTAC }
+    Tacticals.tclIDTAC }
 END
 
 (*** Printing warnings ***)
@@ -50,7 +52,7 @@ TACTIC EXTEND hello_warning_tactic
 | [ "hello_warning" ] ->
    {
      let _ = tuto_warn () in
-     Tacticals.New.tclIDTAC
+     Tacticals.tclIDTAC
    }
 END
 
@@ -70,5 +72,5 @@ END
 TACTIC EXTEND hello_error_tactic
 | [ "hello_error" ] ->
   { let _ = CErrors.user_err (str Tuto0_main.message) in
-    Tacticals.New.tclIDTAC }
+    Tacticals.tclIDTAC }
 END

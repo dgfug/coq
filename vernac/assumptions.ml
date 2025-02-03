@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -16,16 +16,10 @@
 (* Initial author: Arnaud Spiwack
    Module-traversing code: Pierre Letouzey *)
 
-open Pp
-open CErrors
 open Util
 open Names
-open Constr
-open Context
 open Declarations
-open Mod_subst
-open Printer
-open Context.Named.Declaration
+open Mod_declarations
 
 module NamedDecl = Context.Named.Declaration
 
@@ -60,12 +54,13 @@ let rec search_mind_label lab = function
 *)
 
 let rec fields_of_functor f subs mp0 args = function
-  |NoFunctor a -> f subs mp0 args a
-  |MoreFunctor (mbid,_,e) ->
+  | NoFunctor a -> f subs mp0 args a
+  | MoreFunctor (mbid,_,e) ->
+    let open Mod_subst in
     match args with
     | [] -> assert false (* we should only encounter applied functors *)
     | mpa :: args ->
-      let subs = join (map_mbid mbid mpa empty_delta_resolver (*TODO*)) subs in
+      let subs = join (map_mbid mbid mpa (empty_delta_resolver mpa) (*TODO*)) subs in
       fields_of_functor f subs mp0 args e
 
 let rec lookup_module_in_impl mp =
@@ -87,18 +82,29 @@ and memoize_fields_of_mp mp =
     l
 
 and fields_of_mp mp =
+  let open Mod_subst in
   let mb = lookup_module_in_impl mp in
-  let fields,inner_mp,subs = fields_of_mb empty_subst mb [] in
+  let fields,inner_mp,subs = fields_of_mb empty_subst mp mb [] in
+  let delta_mb = mod_delta mb in
   let subs =
+    (* XXX this code makes little sense, adding a delta_mb to subs if the root
+       does not coincide with mp used to be equivalent to a no-op and now fails
+       with an assertion failure. More likely than not, this means that we have
+       no idea about what we are doing. *)
     if ModPath.equal inner_mp mp then subs
-    else add_mp inner_mp mp mb.mod_delta subs
+    else if has_root_delta_resolver mp delta_mb then
+      add_mp inner_mp mp delta_mb subs
+    else
+      add_mp inner_mp mp (empty_delta_resolver mp) subs
   in
-  Modops.subst_structure subs fields
+  Modops.subst_structure subs mp fields
 
-and fields_of_mb subs mb args = match mb.mod_expr with
-  |Algebraic expr -> fields_of_expression subs mb.mod_mp args expr
-  |Struct sign -> fields_of_signature subs mb.mod_mp args sign
-  |Abstract|FullStruct -> fields_of_signature subs mb.mod_mp args mb.mod_type
+and fields_of_mb subs mp mb args = match Mod_declarations.mod_expr mb with
+  | Algebraic expr -> fields_of_expression subs mp args (mod_type mb) expr
+  | Struct sign ->
+    let sign = Modops.annotate_struct_body sign (mod_type mb) in
+    fields_of_signature subs mp args sign
+  | Abstract|FullStruct -> fields_of_signature subs mp args (mod_type mb)
 
 (** The Abstract case above corresponds to [Declare Module] *)
 
@@ -109,13 +115,16 @@ and fields_of_signature x =
       (struc, mp0, subs)) x
 
 and fields_of_expr subs mp0 args = function
-  |MEident mp ->
-    let mb = lookup_module_in_impl (subst_mp subs mp) in
-    fields_of_mb subs mb args
-  |MEapply (me1,mp2) -> fields_of_expr subs mp0 (mp2::args) me1
-  |MEwith _ -> assert false (* no 'with' in [mod_expr] *)
+  | MEident mp ->
+    let mp = Mod_subst.subst_mp subs mp in
+    let mb = lookup_module_in_impl mp in
+    fields_of_mb subs mp mb args
+  | MEapply (me1,mp2) -> fields_of_expr subs mp0 (mp2::args) me1
+  | MEwith _ -> assert false (* no 'with' in [mod_expr] *)
 
-and fields_of_expression x = fields_of_functor fields_of_expr x
+and fields_of_expression subs mp args mty me =
+  let me = Modops.annotate_module_expression me mty in
+  fields_of_functor fields_of_expr subs mp args me
 
 let lookup_constant_in_impl cst fallback =
   try
@@ -132,7 +141,10 @@ let lookup_constant_in_impl cst fallback =
        - The label has not been found in the structure. This is an error *)
     match fallback with
       | Some cb -> cb
-      | None -> anomaly (str "Print Assumption: unknown constant " ++ Constant.print cst ++ str ".")
+      | None ->
+        CErrors.anomaly
+          Pp.(str "Print Assumption: unknown constant "
+            ++ Constant.print cst ++ str ".")
 
 let lookup_constant cst =
   let env = Global.env() in
@@ -149,7 +161,9 @@ let lookup_mind_in_impl mind =
     let fields = memoize_fields_of_mp mp in
       search_mind_label lab fields
   with Not_found ->
-    anomaly (str "Print Assumption: unknown inductive " ++ MutInd.print mind ++ str ".")
+    CErrors.anomaly
+      Pp.(str "Print Assumption: unknown inductive "
+        ++ MutInd.print mind ++ str ".")
 
 let lookup_mind mind =
   let env = Global.env() in
@@ -167,18 +181,19 @@ let label_of = let open GlobRef in function
 
 let fold_with_full_binders g f n acc c =
   let open Context.Rel.Declaration in
+  let open Constr in
   match kind c with
-  | Rel _ | Meta _ | Var _   | Sort _ | Const _ | Ind _ | Construct _  | Int _ | Float _ -> acc
+  | Rel _ | Meta _ | Var _   | Sort _ | Const _ | Ind _ | Construct _  | Int _ | Float _ | String _ -> acc
   | Cast (c,_, t) -> f n (f n acc c) t
   | Prod (na,t,c) -> f (g (LocalAssum (na,t)) n) (f n acc t) c
   | Lambda (na,t,c) -> f (g (LocalAssum (na,t)) n) (f n acc t) c
   | LetIn (na,b,t,c) -> f (g (LocalDef (na,b,t)) n) (f n (f n acc b) t) c
   | App (c,l) -> Array.fold_left (f n) (f n acc c) l
-  | Proj (_,c) -> f n acc c
-  | Evar (_,l) -> List.fold_left (f n) acc l
+  | Proj (_,_,c) -> f n acc c
+  | Evar _ -> assert false
   | Case (ci, u, pms, p, iv, c, bl) ->
     let mib = lookup_mind (fst ci.ci_ind) in
-    let (ci, p, iv, c, bl) = Inductive.expand_case_specif mib (ci, u, pms, p, iv, c, bl) in
+    let (ci, (p,_), iv, c, bl) = Inductive.expand_case_specif mib (ci, u, pms, p, iv, c, bl) in
     Array.fold_left (f n) (f n (fold_invert (f n) (f n acc p) iv) c) bl
   | Fix (_,(lna,tl,bl)) ->
       let n' = CArray.fold_left2_i (fun i c n t -> g (LocalAssum (n,lift i t)) c) n lna tl in
@@ -190,41 +205,39 @@ let fold_with_full_binders g f n acc c =
       Array.fold_left (fun acc (t,b) -> f n' (f n acc t) b) acc fd
   | Array(_u,t,def,ty) -> f n (f n (Array.fold_left (f n) acc t) def) ty
 
-let get_constant_body kn =
+let get_constant_body access kn =
   let cb = lookup_constant kn in
-  let env = Global.env () in
-  let access = Library.indirect_accessor in
-  let otab = Environ.opaque_tables env in
   match cb.const_body with
-  | Undef _ | Primitive _ -> None
+  | Undef _ | Primitive _ | Symbol _ -> None
   | Def c -> Some c
   | OpaqueDef o ->
-    match Opaqueproof.force_proof access otab o with
+    match Global.force_proof access o with
     | c, _ -> Some c
-    | exception _ -> None (* missing delayed body, e.g. in vok mode *)
+    | exception e when CErrors.noncritical e -> None (* missing delayed body, e.g. in vok mode *)
 
-let rec traverse current ctx accu t =
+let rec traverse access current ctx accu t =
   let open GlobRef in
+  let open Constr in
   match Constr.kind t with
 | Var id ->
   let body () = id |> Global.lookup_named |> NamedDecl.get_value in
-  traverse_object accu body (VarRef id)
+  traverse_object access accu body (VarRef id)
 | Const (kn, _) ->
-  let body () = get_constant_body kn in
-  traverse_object accu body (ConstRef kn)
+  let body () = get_constant_body access kn in
+  traverse_object access accu body (ConstRef kn)
 | Ind ((mind, _) as ind, _) ->
-  traverse_inductive accu mind (IndRef ind)
+  traverse_inductive access accu mind (IndRef ind)
 | Construct (((mind, _), _) as cst, _) ->
-  traverse_inductive accu mind (ConstructRef cst)
+  traverse_inductive access accu mind (ConstructRef cst)
 | Meta _ | Evar _ -> assert false
-| Case (_, _, _, ([|_|], oty), _, c, [||]) when Vars.noccurn 1 oty ->
+| Case (_, _, _, (([|_|], oty),_), _, c, [||]) when Vars.noccurn 1 oty ->
     (* non dependent match on an inductive with no constructors *)
     begin match Constr.kind c with
     | Const (kn, _) when not (Declareops.constant_has_body (lookup_constant kn)) ->
       let (curr, data, ax2ty) = accu in
       let obj = ConstRef kn in
       let already_in = GlobRef.Map_env.mem obj data in
-      let data = if not already_in then GlobRef.Map_env.add obj GlobRef.Set_env.empty data else data in
+      let data = if not already_in then GlobRef.Map_env.add obj None data else data in
       let ty = (current, ctx, Vars.subst1 mkProp oty) in
       let ax2ty =
         try let l = GlobRef.Map_env.find obj ax2ty in GlobRef.Map_env.add obj (ty::l) ax2ty
@@ -232,25 +245,23 @@ let rec traverse current ctx accu t =
       (GlobRef.Set_env.add obj curr, data, ax2ty)
     | _ ->
         fold_with_full_binders
-          Context.Rel.add (traverse current) ctx accu t
+          Context.Rel.add (traverse access current) ctx accu t
     end
 | _ -> fold_with_full_binders
-          Context.Rel.add (traverse current) ctx accu t
+          Context.Rel.add (traverse access current) ctx accu t
 
-and traverse_object (curr, data, ax2ty) body obj =
+and traverse_object access (curr, data, ax2ty) body obj =
   let data, ax2ty =
     let already_in = GlobRef.Map_env.mem obj data in
-    match body () with
+    if already_in then data, ax2ty
+    else match body () (* Beware: this can be very costly *) with
     | None ->
-        let data =
-          if not already_in then GlobRef.Map_env.add obj GlobRef.Set_env.empty data else data in
-        data, ax2ty
+      GlobRef.Map_env.add obj None data, ax2ty
     | Some body ->
-      if already_in then data, ax2ty else
       let contents,data,ax2ty =
-        traverse (label_of obj) Context.Rel.empty
+        traverse access (label_of obj) Context.Rel.empty
                  (GlobRef.Set_env.empty,data,ax2ty) body in
-      GlobRef.Map_env.add obj contents data, ax2ty
+      GlobRef.Map_env.add obj (Some contents) data, ax2ty
   in
   (GlobRef.Set_env.add obj curr, data, ax2ty)
 
@@ -258,40 +269,26 @@ and traverse_object (curr, data, ax2ty) body obj =
     definitions. All the constructors and names of a mutual inductive
     definition share exactly the same dependencies. Also, there is no explicit
     dependency between mutually defined inductives and constructors. *)
-and traverse_inductive (curr, data, ax2ty) mind obj =
+and traverse_inductive access (curr, data, ax2ty) mind obj =
   let firstind_ref = (GlobRef.IndRef (mind, 0)) in
   let label = label_of obj in
   let data, ax2ty =
    (* Invariant : I_0 \in data iff I_i \in data iff c_ij \in data
       where I_0, I_1, ... are in the same mutual definition and c_ij
       are all their constructors. *)
-   if GlobRef.Map_env.mem firstind_ref data then data, ax2ty else
+   if
+     (* recursive call: *) GlobRef.Set_env.mem firstind_ref curr ||
+     (* already in: *) GlobRef.Map_env.mem firstind_ref data
+   then data, ax2ty
+   else
+     (* Take into account potential recursivity of ind in itself *)
+     let curr = GlobRef.Set_env.add firstind_ref GlobRef.Set_env.empty in
+     let accu = (curr, data, ax2ty) in
      let mib = lookup_mind mind in
      (* Collects references of parameters *)
      let param_ctx = mib.mind_params_ctxt in
      let nparam = List.length param_ctx in
-     let accu =
-       traverse_context label Context.Rel.empty
-                        (GlobRef.Set_env.empty, data, ax2ty) param_ctx
-     in
-     (* Build the context of all arities *)
-     let arities_ctx =
-       let instance =
-         let open Univ in
-         Instance.of_array
-           (Array.init
-              (AbstractContext.size
-                 (Declareops.inductive_polymorphic_context mib))
-              Level.var)
-       in
-       Array.fold_left (fun accu oib ->
-          let pspecif = ((mib, oib), instance) in
-          let ind_type = Inductive.type_of_inductive pspecif in
-          let indr = oib.mind_relevance in
-          let ind_name = Name oib.mind_typename in
-          Context.Rel.add (Context.Rel.Declaration.LocalAssum (make_annot ind_name indr, ind_type)) accu)
-          Context.Rel.empty mib.mind_packets
-     in
+     let accu = traverse_context access label Context.Rel.empty accu param_ctx in
      (* For each inductive, collects references in their arity and in the type
         of constructors*)
      let (contents, data, ax2ty) = Array.fold_left (fun accu oib ->
@@ -300,43 +297,44 @@ and traverse_inductive (curr, data, ax2ty) mind obj =
          in
          let accu =
            traverse_context
-             label param_ctx accu arity_wo_param
+             access label param_ctx accu arity_wo_param
          in
          Array.fold_left (fun accu cst_typ ->
-            let param_ctx, cst_typ_wo_param = Term.decompose_prod_n_assum nparam cst_typ in
-            let ctx = Context.(Rel.fold_outside Context.Rel.add ~init:arities_ctx param_ctx) in
-            traverse label ctx accu cst_typ_wo_param)
+            let param_ctx, cst_typ_wo_param = Term.decompose_prod_n_decls nparam cst_typ in
+            traverse access label param_ctx accu cst_typ_wo_param)
           accu oib.mind_user_lc)
        accu mib.mind_packets
      in
      (* Maps all these dependencies to inductives and constructors*)
-     let data = Array.fold_left_i (fun n data oib ->
+     let data =
+       let contents = GlobRef.Set_env.remove firstind_ref contents in
+       Array.fold_left_i (fun n data oib ->
        let ind = (mind, n) in
-       let data = GlobRef.Map_env.add (GlobRef.IndRef ind) contents data in
+       let data = GlobRef.Map_env.add (GlobRef.IndRef ind) (Some contents) data in
        Array.fold_left_i (fun k data _ ->
-         GlobRef.Map_env.add (GlobRef.ConstructRef (ind, k+1)) contents data
+         GlobRef.Map_env.add (GlobRef.ConstructRef (ind, k+1)) (Some contents) data
        ) data oib.mind_consnames) data mib.mind_packets
      in
-     data, ax2ty
+     (data, ax2ty)
   in
   (GlobRef.Set_env.add obj curr, data, ax2ty)
 
 (** Collects references in a rel_context. *)
-and traverse_context current ctx accu ctxt =
+and traverse_context access current ctx accu ctxt =
   snd (Context.Rel.fold_outside (fun decl (ctx, accu) ->
     match decl with
      | Context.Rel.Declaration.LocalDef (_,c,t) ->
-          let accu = traverse current ctx (traverse current ctx accu t) c in
+          let accu = traverse access current ctx (traverse access current ctx accu t) c in
           let ctx = Context.Rel.add decl ctx in
           ctx, accu
      | Context.Rel.Declaration.LocalAssum (_,t) ->
-          let accu = traverse current ctx accu t in
+          let accu = traverse access current ctx accu t in
           let ctx = Context.Rel.add decl ctx in
            ctx, accu) ctxt ~init:(ctx, accu))
 
-let traverse current t =
+let traverse access current t =
   let () = modcache := MPmap.empty in
-  traverse current Context.Rel.empty (GlobRef.Set_env.empty, GlobRef.Map_env.empty, GlobRef.Map_env.empty) t
+  traverse access current Context.Rel.empty (GlobRef.Set_env.empty, GlobRef.Map_env.empty, GlobRef.Map_env.empty) t
 
 (** Hopefully bullet-proof function to recover the type of a constant. It just
     ignores all the universe stuff. There are many issues that can arise when
@@ -345,19 +343,21 @@ let type_of_constant cb = cb.Declarations.const_type
 
 let uses_uip mib =
   Array.exists (fun mip ->
-      mip.mind_relevance == Sorts.Irrelevant
+      Option.is_empty mip.mind_squashed
+      && mip.mind_relevance == Sorts.Irrelevant
       && Array.length mip.mind_nf_lc = 1
       && List.length (fst mip.mind_nf_lc.(0)) = List.length mib.mind_params_ctxt)
     mib.mind_packets
 
-let assumptions ?(add_opaque=false) ?(add_transparent=false) st gr t =
+let assumptions ?(add_opaque=false) ?(add_transparent=false) access st gr t =
+  let open Printer in
   (* Only keep the transitive dependencies *)
-  let (_, graph, ax2ty) = traverse (label_of gr) t in
+  let (_, graph, ax2ty) = traverse access (label_of gr) t in
   let open GlobRef in
-  let fold obj _ accu = match obj with
+  let fold obj contents accu = match obj with
   | VarRef id ->
     let decl = Global.lookup_named id in
-    if is_local_assum decl then
+    if Context.Named.Declaration.is_local_assum decl then
       let t = Context.Named.Declaration.get_type decl in
       ContextObjectMap.add (Variable id) t accu
     else accu
@@ -375,11 +375,11 @@ let assumptions ?(add_opaque=false) ?(add_transparent=false) st gr t =
           let l = try GlobRef.Map_env.find obj ax2ty with Not_found -> [] in
           ContextObjectMap.add (Axiom (TypeInType obj, l)) Constr.mkProp accu
       in
-    if not (Declareops.constant_has_body cb) then
+    if not (Option.has_some contents) then
       let t = type_of_constant cb in
       let l = try GlobRef.Map_env.find obj ax2ty with Not_found -> [] in
       ContextObjectMap.add (Axiom (Constant kn,l)) t accu
-    else if add_opaque && (Declareops.is_opaque cb || not (TransparentState.is_transparent_constant st kn)) then
+    else if add_opaque && (Declareops.is_opaque cb || not (Structures.PrimitiveProjections.is_transparent_constant st kn)) then
       let t = type_of_constant cb in
       ContextObjectMap.add (Opaque kn) t accu
     else if add_transparent then

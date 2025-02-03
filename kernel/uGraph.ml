@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -9,40 +9,43 @@
 (************************************************************************)
 
 open Univ
+open UVars
 
 module G = AcyclicGraph.Make(struct
     type t = Level.t
     module Set = Level.Set
     module Map = Level.Map
-    module Constraints = Constraints
 
     let equal = Level.equal
     let compare = Level.compare
 
-    type explanation = Univ.explanation
-    let error_inconsistency d u v p =
-      raise (UniverseInconsistency (d,Universe.make u, Universe.make v, p))
-
-    let pr = Level.pr
-  end) [@@inlined] (* without inline, +1% ish on HoTT, compcert. See jenkins 594 vs 596 *)
+    let raw_pr = Level.raw_pr
+  end)
 (* Do not include G to make it easier to control universe specific
    code (eg add_universe with a constraint vs G.add with no
    constraint) *)
 
 type t = {
   graph: G.t;
-  sprop_cumulative : bool;
   type_in_type : bool;
+  checking_pseudo_sort_poly : bool;
 }
 
+(* Universe inconsistency: error raised when trying to enforce a relation
+   that would create a cycle in the graph of universes. *)
+
+type path_explanation = G.explanation Lazy.t
+
+type explanation =
+  | Path of path_explanation
+  | Other of Pp.t
+
+type univ_variable_printers = (Sorts.QVar.t -> Pp.t) * (Level.t -> Pp.t)
+type univ_inconsistency = univ_variable_printers option * (constraint_type * Sorts.t * Sorts.t * explanation option)
+
+exception UniverseInconsistency of univ_inconsistency
+
 type 'a check_function = t -> 'a -> 'a -> bool
-
-let g_map f g =
-  let g' = f g.graph in
-  if g.graph == g' then g
-  else {g with graph=g'}
-
-let set_cumulative_sprop b g = {g with sprop_cumulative=b}
 
 let set_type_in_type b g = {g with type_in_type=b}
 
@@ -64,31 +67,26 @@ let real_check_leq g u v =
   Universe.for_all (fun ul -> exists_bigger g ul v) u
 
 let check_leq g u v =
-  type_in_type g ||
-  Universe.equal u v || (g.sprop_cumulative && Universe.is_sprop u) ||
-  (not (Universe.is_sprop u) && not (Universe.is_sprop v) &&
-    (is_type0m_univ u ||
-     real_check_leq g u v))
+  type_in_type g || Universe.equal u v || (real_check_leq g u v)
 
 let check_eq g u v =
-  type_in_type g ||
-  Universe.equal u v ||
-  (not (Universe.is_sprop u || Universe.is_sprop v) &&
-   (real_check_leq g u v && real_check_leq g v u))
+  type_in_type g || Universe.equal u v ||
+    (real_check_leq g u v && real_check_leq g v u)
 
 let check_eq_level g u v =
-  u == v ||
-  type_in_type g ||
-  (not (Level.is_sprop u || Level.is_sprop v) && G.check_eq g.graph u v)
+  u == v || type_in_type g || G.check_eq g.graph u v
 
-let empty_universes = {graph=G.empty; sprop_cumulative=false; type_in_type=false}
+let empty_universes = {
+  graph=G.empty;
+  type_in_type=false;
+  checking_pseudo_sort_poly=false;
+}
 
 let initial_universes =
   let big_rank = 1000000 in
   let g = G.empty in
-  let g = G.add ~rank:big_rank Level.prop g in
   let g = G.add ~rank:big_rank Level.set g in
-  {empty_universes with graph=G.enforce_lt Level.prop Level.set g}
+  {empty_universes with graph=g}
 
 let initial_universes_with g = {g with graph=initial_universes.graph}
 
@@ -98,31 +96,30 @@ let enforce_constraint (u,d,v) g =
   | Lt -> G.enforce_lt u v g
   | Eq -> G.enforce_eq u v g
 
-let enforce_constraint (u,d,v as cst) g =
-  match Level.is_sprop u, d, Level.is_sprop v with
-  | false, _, false -> g_map (enforce_constraint cst) g
-  | true, (Eq|Le), true -> g
-  | true, Le, false when g.sprop_cumulative -> g
-  | _ ->  raise (UniverseInconsistency (d,Universe.make u, Universe.make v, None))
+let enforce_constraint0 cst g = match enforce_constraint cst g.graph with
+| None -> None
+| Some g' ->
+  if g' == g.graph then Some g
+  else Some { g with graph = g' }
 
-let enforce_constraint cst g =
-  if not (type_in_type g) then enforce_constraint cst g
-  else try enforce_constraint cst g with UniverseInconsistency _ -> g
+let enforce_constraint cst g = match enforce_constraint0 cst g with
+| None ->
+  if not (type_in_type g) then
+    let (u, c, v) = cst in
+    let e = lazy (G.get_explanation cst g.graph) in
+    let mk u = Sorts.sort_of_univ @@ Universe.make u in
+    raise (UniverseInconsistency (None, (c, mk u, mk v, Some (Path e))))
+  else g
+| Some g -> g
 
 let merge_constraints csts g = Constraints.fold enforce_constraint csts g
 
-let check_constraint g (u,d,v) =
-  match d with
+let check_constraint { graph = g; type_in_type; _ } (u,d,v) =
+  type_in_type
+  || match d with
   | Le -> G.check_leq g u v
   | Lt -> G.check_lt g u v
   | Eq -> G.check_eq g u v
-
-let check_constraint g (u,d,v as cst) =
-  match Level.is_sprop u, d, Level.is_sprop v with
-  | false, _, false -> check_constraint g.graph cst
-  | true, (Eq|Le), true -> true
-  | true, Le, false -> g.sprop_cumulative || type_in_type g
-  | _ -> type_in_type g
 
 let check_constraints csts g = Constraints.for_all (check_constraint g) csts
 
@@ -141,9 +138,9 @@ let enforce_leq_alg u v g =
       if check_smaller_expr g u v then orig
       else
         (let c = leq_expr u v in
-         match enforce_constraint c g with
-         | g -> Inl (Constraints.add c cstrs,g)
-         | exception (UniverseInconsistency _ as e) -> Inr e)
+         match enforce_constraint0 c g with
+         | Some g -> Inl (Constraints.add c cstrs,g)
+         | None -> Inr (c, g))
   in
   (* max(us) <= max(vs) <-> forall u in us, exists v in vs, u <= v *)
   let c = List.map (fun u -> List.map (fun v -> (u,v)) (Universe.repr v)) (Universe.repr u) in
@@ -158,52 +155,39 @@ let enforce_leq_alg u v g =
   in
   match List.min order c with
   | Inl x -> x
-  | Inr e -> raise e
-
-let enforce_leq_alg u v g =
-  match Universe.is_sprop u, Universe.is_sprop v with
-  | true, true -> Constraints.empty, g
-  | false, false -> enforce_leq_alg u v g
-  | left, _ ->
-    if left && g.sprop_cumulative then Constraints.empty, g
-    else raise (UniverseInconsistency (Le, u, v, None))
-
-(* sanity check wrapper *)
-let enforce_leq_alg u v g =
-  let _,g as cg = enforce_leq_alg u v g in
-  assert (check_leq g u v);
-  cg
-
-module Bound =
-struct
-  type t = Prop | Set
-end
+  | Inr ((u, c, v), g) ->
+    let e = lazy (G.get_explanation (u, c, v) g.graph) in
+    let mk u = Sorts.sort_of_univ @@ Universe.make u in
+    let e = UniverseInconsistency (None, (c, mk u, mk v, Some (Path e))) in
+    raise e
 
 exception AlreadyDeclared = G.AlreadyDeclared
-let add_universe u ~lbound ~strict g =
-  let lbound = match lbound with Bound.Prop -> Level.prop | Bound.Set -> Level.set in
+let add_universe u ~strict g =
   let graph = G.add u g.graph in
   let d = if strict then Lt else Le in
-  enforce_constraint (lbound,d,u) {g with graph}
+  enforce_constraint (Level.set, d, u) { g with graph }
 
-let add_universe_unconstrained u g = {g with graph=G.add u g.graph}
+let check_declared_universes g l =
+  G.check_declared g.graph l
 
-exception UndeclaredLevel = G.Undeclared
-let check_declared_universes g l = G.check_declared g.graph (Level.Set.remove Level.sprop l)
-
-let constraints_of_universes g = G.constraints_of g.graph
-let constraints_for ~kept g = G.constraints_for ~kept:(Level.Set.remove Level.sprop kept) g.graph
+let constraints_of_universes g =
+  let add cst accu = Constraints.add cst accu in
+  G.constraints_of g.graph add Constraints.empty
+let constraints_for ~kept g =
+  let add cst accu = Constraints.add cst accu in
+  G.constraints_for ~kept g.graph add Constraints.empty
 
 (** Subtyping of polymorphic contexts *)
 
-let check_subtype ~lbound univs ctxT ctx =
-  if AbstractContext.size ctxT == AbstractContext.size ctx then
+let check_subtype univs ctxT ctx =
+  (* NB: size check is the only constraint on qualities *)
+  if eq_sizes (AbstractContext.size ctxT) (AbstractContext.size ctx) then
     let uctx = AbstractContext.repr ctx in
     let inst = UContext.instance uctx in
     let cst = UContext.constraints uctx in
     let cstT = UContext.constraints (AbstractContext.repr ctxT) in
-    let push accu v = add_universe v ~lbound ~strict:false accu in
-    let univs = Array.fold_left push univs (Instance.to_array inst) in
+    let push accu v = add_universe v ~strict:false accu in
+    let univs = Array.fold_left push univs (snd (Instance.to_array inst)) in
     let univs = merge_constraints cstT univs in
     check_constraints cst univs
   else false
@@ -211,20 +195,59 @@ let check_subtype ~lbound univs ctxT ctx =
 (** Instances *)
 
 let check_eq_instances g t1 t2 =
-  let t1 = Instance.to_array t1 in
-  let t2 = Instance.to_array t2 in
-  t1 == t2 ||
-    (Int.equal (Array.length t1) (Array.length t2) &&
-        let rec aux i =
-          (Int.equal i (Array.length t1)) || (check_eq_level g t1.(i) t2.(i) && aux (i + 1))
-        in aux 0)
+  let qt1, ut1 = Instance.to_array t1 in
+  let qt2, ut2 = Instance.to_array t2 in
+  CArray.equal Sorts.Quality.equal qt1 qt2
+  && CArray.equal (check_eq_level g) ut1 ut2
 
-let domain g = Level.Set.add Level.sprop (G.domain g.graph)
-let choose p g u = if Level.is_sprop u
-  then if p u then Some u else None
-  else G.choose p g.graph u
+let domain g = G.domain g.graph
+let choose p g u = G.choose p g.graph u
 
-let check_universes_invariants g = G.check_invariants ~required_canonical:Level.is_small g.graph
+let check_universes_invariants g = G.check_invariants ~required_canonical:Level.is_set g.graph
+
+(** Sort comparison *)
+
+(* The functions below rely on the invariant that no universe in the graph
+   can be unified with Prop / SProp. This is ensured by UGraph, which only
+   contains Set as a "small" level. *)
+
+open Sorts
+
+let get_algebraic = function
+| Prop | SProp -> assert false
+| Set -> Universe.type0
+| Type u | QSort (_, u) -> u
+
+let check_eq_sort ugraph s1 s2 = match s1, s2 with
+| (SProp, SProp) | (Prop, Prop) | (Set, Set) -> true
+| (SProp, _) | (_, SProp) | (Prop, _) | (_, Prop) ->
+  type_in_type ugraph
+| (Type _ | Set), (Type _ | Set) ->
+  check_eq ugraph (get_algebraic s1) (get_algebraic s2)
+| QSort (q1, u1), QSort (q2, u2) ->
+  QVar.equal q1 q2 && check_eq ugraph u1 u2
+| (QSort _, (Type _ | Set)) | ((Type _ | Set), QSort _) -> false
+
+let is_above_prop ugraph q =
+  ugraph.checking_pseudo_sort_poly
+  && match Sorts.QVar.var_index q with
+  | Some 0 -> true
+  | _ -> false
+
+let check_leq_sort ugraph s1 s2 = match s1, s2 with
+| (SProp, SProp) | (Prop, Prop) | (Set, Set) -> true
+| (SProp, _) -> type_in_type ugraph
+| (Prop, SProp) -> type_in_type ugraph
+| (Prop, (Set | Type _)) -> true
+| (Prop, QSort (q,_)) -> is_above_prop ugraph q
+| (_, (SProp | Prop)) -> type_in_type ugraph
+| (Type _ | Set), (Type _ | Set) ->
+  check_leq ugraph (get_algebraic s1) (get_algebraic s2)
+| QSort (q1, u1), QSort (q2, u2) ->
+  QVar.equal q1 q2 && check_leq ugraph u1 u2
+| QSort (q, _), Set -> is_above_prop ugraph q
+| QSort (q, u1), Type u2 -> is_above_prop ugraph q && check_leq ugraph u1 u2
+| ((Type _ | Set), QSort _) -> false
 
 (** Pretty-printing *)
 
@@ -253,3 +276,40 @@ type node = G.node =
 let repr g = G.repr g.graph
 
 let pr_universes prl g = pr_pmap Pp.mt (pr_arc prl) g
+
+open Pp
+
+let explain_universe_inconsistency default_prq default_prl (printers, (o,u,v,p) : univ_inconsistency) =
+  let prq, prl = match printers with
+    | Some (prq, prl) -> prq, prl
+    | None -> default_prq, default_prl
+  in
+  let pr_uni u = match u with
+  | Sorts.Set -> str "Set"
+  | Sorts.Prop -> str "Prop"
+  | Sorts.SProp -> str "SProp"
+  | Sorts.Type u -> Universe.pr prl u
+  | Sorts.QSort (q, u) -> str "Type@{" ++ prq q ++ str " | " ++ Universe.pr prl u ++ str"}"
+  in
+  let pr_rel = function
+    | Eq -> str"=" | Lt -> str"<" | Le -> str"<="
+  in
+  let reason = match p with
+    | None -> mt()
+    | Some (Other p) -> spc() ++ p
+    | Some (Path p) ->
+      let pstart, p = Lazy.force p in
+      if p = [] then mt ()
+      else
+        str " because" ++ spc() ++ prl pstart ++
+        prlist (fun (r,v) -> spc() ++ pr_rel r ++ str" " ++ prl v) p
+  in
+    str "Cannot enforce" ++ spc() ++ pr_uni u ++ spc() ++
+      pr_rel o ++ spc() ++ pr_uni v ++ reason
+
+module Internal = struct
+
+  let for_checking_pseudo_sort_poly g = {g with checking_pseudo_sort_poly=true}
+
+  let is_above_prop = is_above_prop
+end

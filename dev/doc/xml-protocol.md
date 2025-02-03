@@ -5,10 +5,10 @@ for his [vscoq](https://github.com/coq-community/vscoq/) project.
 
 Here, the aim is to provide a "hands on" description of the XML
 protocol that coqtop and IDEs use to communicate. The protocol first appeared 
-with Coq 8.5, and is used by CoqIDE, [vscoq](https://github.com/coq-community/vscoq/), and other user interfaces.
+with Coq 8.5, and is used by RocqDE, [vscoq legacy](https://github.com/coq-community/vscoq-legacy/), and other user interfaces.
 
 A somewhat out-of-date description of the async state machine is
-[documented here](https://github.com/ejgallego/jscoq/blob/v8.10/etc/notes/coq-notes.md).
+[documented here](https://github.com/ejgallego/jscoq/blob/v8.16/etc/notes/coq-notes.md).
 OCaml types for the protocol can be found in the [`ide/protocol/interface.ml` file](/ide/protocol/interface.ml).
 
 Changes to the XML protocol are documented as part of [`dev/doc/changes.md`](/dev/doc/changes.md).
@@ -19,6 +19,7 @@ Changes to the XML protocol are documented as part of [`dev/doc/changes.md`](/de
   - [EditAt](#command-editAt)
   - [Init](#command-init)
   - [Goal](#command-goal)
+  - [Subgoals](#command-subgoals)
   - [Status](#command-status)
   - [Query](#command-query)
   - [Evars](#command-evars)
@@ -31,6 +32,10 @@ Changes to the XML protocol are documented as part of [`dev/doc/changes.md`](/de
   - [PrintAst](#command-printast)
   - [Annotate](#command-annotate)
   - [Db_cmd](#command-db_cmd)
+  - [Db_upd_bpts](#command-db_upd_bpts)
+  - [Db_continue](#command-db_continue)
+  - [Db_stack](#command-db_stack)
+  - [Db_vars](#command-db_vars)
 * [Feedback messages](#feedback)
   - [Added Axiom](#feedback-addedaxiom)
   - [Processing](#feedback-processing)
@@ -87,19 +92,31 @@ The string fields are the Coq version, the protocol version, the release date, a
 The protocol version is a date in YYYYMMDD format, where "20150913" corresponds to Coq 8.6. An IDE that wishes 
 to support multiple Coq versions can use the protocol version information to know how to handle output from Coqtop.
 
-### <a name="command-add">**Add(stateId: integer, command: string, verbose: boolean)**</a>
+### <a name="command-add">**Add(command: string, editId: integer, stateId: integer, verbose: boolean, bp: integer, line_nb: integer, bol_pos: integer)**</a>
 Adds a toplevel command (e.g. vernacular, definition, tactic) to the given state.
-`verbose` controls whether out-of-band messages will be generated for the added command (e.g. "foo is assumed" in response to adding "Axiom foo: nat.").
+`verbose` controls whether out-of-band messages will be generated for the added command
+(e.g. "foo is assumed" in response to adding "Axiom foo: nat.").  `bp`, `line_nb` and
+`bol_pos` are the `Loc.t` values relative to the IDE buffer.
+
 ```html
 <call val="Add">
   <pair>
     <pair>
-      <string>${command}</string>
-      <int>${editId}</int>
+      <pair>
+        <pair>
+          <string>${command}</string>
+          <int>${editId}</int>
+        </pair>
+        <pair>
+          <state_id val="${stateId}"/>
+          <bool val="${verbose}"/>
+        </pair>
+      </pair>
+      <int>${bp}</int>
     </pair>
     <pair>
-      <state_id val="${stateId}"/>
-      <bool val="${verbose}"/>
+      <int>${line_nb}</int>
+      <int>${bol_pos}</int>
     </pair>
   </pair>
 </call>
@@ -111,10 +128,9 @@ Adds a toplevel command (e.g. vernacular, definition, tactic) to the given state
 <value val="good">
   <pair>
     <state_id val="${newStateId}"/>
-    <pair>
-      <union val="in_l"><unit/></union>
-      <string>${message}</string>
-    </pair>
+    <union val="in_l">
+      <unit/>
+    </union>
   </pair>
 </value>
 ```
@@ -135,17 +151,21 @@ state that should become the next tip.
 * Failure:
   - Syntax error. Error offsets are byte offsets (not character offsets) with respect to the start of the sentence, starting at 0.
   ```html
-  <value val="fail"
-      loc_s="${startOffsetOfError}"
-      loc_e="${endOffsetOfError}">
+  <value val="fail">
     <state_id val="${stateId}"/>
+    <option val="none|some">${loc}</option>
     <richpp>${errorMessage}</richpp>
   </value>
   ```
   - Another kind of error, for example, Qed with a pending goal.	
   ```html
-  <value val="fail"><state_id val="${stateId}"/><richpp>${errorMessage}</richpp></value>
+  <value val="fail"><state_id val="${stateId}"/><option val="some">${loc}</option><richpp>${errorMessage}</richpp></value>
   ```
+
+  Note that IDEs may need to convert byte offsets passed in the four position fields of the
+  location to character offsets to correctly handle multi-byte characters. Also, due to
+  asynchronous evaluation, line number fields of locations may need to be adjusted
+  if the sentence has moved since it was sent to Coqtop.
 
 -------------------------------
 
@@ -162,7 +182,7 @@ Moves current tip to `${stateId}`, such that commands may be added to the new st
 </value>
 ```
 
-* New focus; focusedQedStateId is the closing Qed of the new focus; senteneces between the two should be cleared
+* New focus; focusedQedStateId is the closing Qed of the new focus; sentences between the two should be cleared
 ```html
 <value val="good">
   <union val="in_r">
@@ -178,8 +198,9 @@ Moves current tip to `${stateId}`, such that commands may be added to the new st
 ```
 * Failure: If `stateId` is in an error-state and cannot be jumped to, `errorFreeStateId` is the parent state of `stateId` that should be edited instead.
 ```html
-<value val="fail" loc_s="${startOffsetOfError}" loc_e="${endOffsetOfError}">
+<value val="fail">
   <state_id val="${errorFreeStateId}"/>
+  <option val="none|some">${loc}</option>
   ${errorMessage}
 </value>
 ```
@@ -191,21 +212,18 @@ Moves current tip to `${stateId}`, such that commands may be added to the new st
 ```html
 <call val="Init"><option val="none"/></call>
 ```
-* With options. Looking at
-  [ide_slave.ml](https://github.com/coq/coq/blob/c5d0aa889fa80404f6c291000938e443d6200e5b/ide/ide_slave.ml#L355),
-  it seems that `options` is just the name of a script file, whose path
-  is added via `Add LoadPath` to the initial state.
+* With options:
 ```html
 <call val="Init">
   <option val="some">
-    <string>${options}</string>
+    <string>${v_file}.v</string>
   </option>
 </call>
 ```
-Providing the script file enables Coq to use .aux files created during
-compilation. Those file contain timing information that allow Coq to
-choose smartly between asynchronous and synchronous processing of
-proofs.
+Providing the script file `$v_file.v` enables Coq to use the `.$v_file.aux`
+file created during compilation. Those file contain timing information
+that allow Coq to choose smartly between asynchronous and synchronous
+processing of proofs.
 
 #### *Returns*
 * The initial stateId (not associated with a sentence)
@@ -287,9 +305,33 @@ Pseudocode for listing all of the goals in order: `rev (flat_map fst background)
 
 -------------------------------
 
+### <a name="command-subgoals">**Subgoals(flags: goal_flags)**</a>
+Similar to [Goal](#command-goal), but with `flags` to control whether to include
+information about `fg`, `bg`, `shelved`, or `given_up` goals. The flags also
+include `mode`, which is either "full" (return hypotheses and conclusion for
+each goal) or "short" (return only the conclusion). The "short" mode is useful
+for speeding up goal display when there are many shelved or admitted goals with
+large proof contexts, but the IDE only needs to know their conclusions or how
+many there are.
+```html
+<call val="Subgoals">
+  <goal_flags>
+    <string>${mode}</string>
+    <bool val="${fg}"/>
+    <bool val="${bg}"/>
+    <bool val="${shelved}"/>
+    <bool val="${given_up}"/>
+  </goal_flags>
+</call>
+```
+
+#### Returns
+* The same as [Goal](#command-goal).
+
+-------------------------------
 
 ### <a name="command-status">**Status(force: bool)**</a>
-Returns information about the current proofs. CoqIDE typically sends this
+Returns information about the current proofs. RocqIDE typically sends this
 message with `force = false` after each sentence, and with `force = true` if
 the user wants to force the checking of all proofs (wheels button). In terms of
 the STM API, `force` triggers a `Join`.
@@ -502,7 +544,7 @@ Sends a list of option settings, where each setting roughly looks like:
   </list>
 </call>
 ```
-CoqIDE sends the following settings (defaults in parentheses):
+RocqIDE sends the following settings (defaults in parentheses):
 ```
 Printing Width : (<option_value val="intvalue"><int>60</int></option_value>),
 Printing Coercions : (<option_value val="boolvalue"><bool val="false"/></option_value>),
@@ -640,8 +682,136 @@ take `<call val="Annotate"><string>Theorem plus_0_r : forall n : nat, n + 0 = n.
 #### *Returns*
 *
 
-`<call val="Db_cmd"><string>h</string></call>` passes the command "h" to the debugger.
-It returns unit.
+`<call val="Db_cmd"><string>h</string></call>` directs Coq to process the debugger command "h".
+It returns unit.  This call is processed only when the debugger is stopped and has just
+sent a `prompt` message.
+
+
+
+-------------------------------
+
+
+
+### <a name="command-db_upd_bpts">**Db_upd_bpts(...)**</a>
+The call passes a list of breakpoints to set or clear.  The string is the
+absolute pathname of the .v file (or "ToplevelInput"), the int is the byte offset
+within the file and the boolean is true to set a breakpoint and false to clear it.
+Breakpoints can be updated when Coq is not busy or when Coq is stopped in the
+debugger.  If this message is sent in other states, it will be received and
+processed when Coq is no longer busy or execution stops in the debugger.
+
+```html
+<call val="Db_upd_bpts">
+  <list>
+    <pair>
+      <pair>
+        <string>/home/proj/coq/ide/rocqide/debug.v</string>
+        <int>22</int>
+      </pair>
+      <bool val="true"/>
+    </pair>
+  </list>
+</call>
+```
+#### *Returns*
+* Unit.
+
+
+
+-------------------------------
+
+
+
+
+### <a name="command-db_continue">**Db_continue(option: integer)**</a>
+
+Tells Coq to continue processing the proof when it is stopped in the debugger.
+The integer indicates when the debugger should stop again:
+
+```
+0: StepIn - step one tactic.  If it is an Ltac tactic, stop at the first tactic within it
+1: StepOver - step over one tactic.  if it is an Ltac tactic, don't stop within it
+2: StepOut - stop on the first tactic after exiting the current Ltac tactic
+3: Continue - continue running until the next breakpoint or the debugger exits
+4: Interrupt - generate a User interrupt (for use when stopped in the debugger; otherwise
+     interrupt is sent as a signal)
+```
+
+If the debugger encounters a breakpoint during a StepOver or a StepOut, it will
+stop at the breakpoint.
+
+```html
+<call val="Db_continue">
+  <int>1</int>
+</call>
+```
+
+#### *Returns*
+* Unit.
+
+
+
+### <a name="command-db_stack">**Db_stack()**</a>
+
+Returns the Ltac call stack.  Each entry has a description of what was called
+(e.g. the tactic name) plus the absolute pathname of the file and the offset of
+the call therein.  The top of stack is the first entry in the list.  Offsets
+are in bytes, not counts of unicode characters.
+
+```html
+<call val="Db_stack">
+  </unit>
+</call>
+```
+
+#### *Returns*
+```html
+<value val="good">
+  <list>
+    <pair>
+      <string>vars2.z</string>
+      <option val="some">
+        <pair>
+          <string>ToplevelInput</string>
+          <list>
+            <int>51</int>
+            <int>58</int>
+          </list>
+        </pair>
+      </option>
+    </pair>
+      :
+  </list>
+</value>
+```
+
+
+### <a name="command-db_vars">**Db_vars(frame: integer)**</a>
+
+Returns a list of the names and values of the local variables defined in the
+specified frame of the Ltac call stack.  (0 = top of stack, 1, 2, ...).
+
+```html
+<call val="Db_vars">
+  <int>0</int>
+</call>
+```
+
+#### *Returns*
+```html
+<value val="good">
+  <list>
+    <pair>
+      <string>w</string>
+      <ppdoc val="string">
+        <string>0</string>
+      </ppdoc>
+    </pair>
+      :
+  </list>
+</value>
+```
+
 
 -------------------------------
 
@@ -756,13 +926,19 @@ Ex: `status = "Idle"` or `status = "proof: myLemmaName"` or `status = "Dead"`
   </feedback_content>
 </feedback>
 ```
+* <a name="location">Location</a>, a Coq location (`Loc.t`)
+```xml
+   <loc start="${start_offset}" stop="${stop_offset}
+        line_nb="${start_line}" bol_pos="${begin_of_start_line_offset}"
+        line_nb_last="${end_line}" bol_pos_last="${begin_of_end_line_offset}"
+```
 
-* <a name="feedback-custom">Custom</a>. A feedback message that Coq plugins can use to return structured results, including results from Ltac profiling. Optionally, `startPos` and `stopPos` define a range of offsets in the document that the message refers to; otherwise, they will be 0. `customTag` is intended as a unique string that identifies what kind of payload is contained in `customXML`.
+* <a name="feedback-custom">Custom</a>. A feedback message that Coq plugins can use to return structured results, including results from Ltac profiling. `customTag` is intended as a unique string that identifies what kind of payload is contained in `customXML`. An optional location may be attached if present in the message.
 ```xml
 <feedback object="state" route="0">
   <state_id val="${stateId}"/>
   <feedback_content val="custom">
-    <loc start="${startPos}" stop="${stopPos}"/>
+    <option val="none|some">${loc}</option>
     <string>${customTag}</string>
     ${customXML}
   </feedback_content>
@@ -781,7 +957,7 @@ Currently these tags are used:
 * **goal** - the current goal for the debugger, for display in the Messages panel
   or elsewhere
 * **prompt** - output for display in the Messages panel prompting the user to
-  enter a debug command, allowing CoqIDE to display it without
+  enter a debug command, allowing RocqIDE to display it without
   appending a newline.  It also signals that coqidetop is waiting to receive
   a debugger-specific message such as [Db_cmd](#command-db_cmd).
 
@@ -808,8 +984,8 @@ There are 4 tags that indicate how the enclosed text should be highlighted:
 - diff.added.bg - unchanged text in a line that has additions ("bg" for "background")
 - diff.removed.bg - unchanged text in a line that has removals
 
-CoqIDE, Proof General and coqtop currently use 2 shades of green and 2 shades of red
-as the background color for highlights.  Coqtop and CoqIDE also apply underlining and/or
+RocqIDE, Proof General and coqtop currently use 2 shades of green and 2 shades of red
+as the background color for highlights.  Coqtop and RocqIDE also apply underlining and/or
 strikeout highlighting for the sake of the color blind.
 
 For example, `<diff.added>ABC</diff.added>` indicates that "ABC" should be highlighted

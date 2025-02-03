@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,14 +8,14 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 open Names
-open Univ
+open Values
 
 (********************************************)
 (* Initialization of the abstract machine ***)
 (* Necessary for [relaccu_tbl]              *)
 (********************************************)
 
-external init_vm : unit -> unit = "init_coq_vm"
+external init_vm : unit -> unit = "init_rocq_vm"
 
 let _ = init_vm ()
 
@@ -50,15 +50,17 @@ shared without reallocating a more structured representation. *)
 type structured_constant =
   | Const_sort of Sorts.t
   | Const_ind of inductive
+  | Const_evar of Evar.t
   | Const_b0 of tag
-  | Const_univ_level of Univ.Level.t
+  | Const_univ_instance of UVars.Instance.t
   | Const_val of structured_values
   | Const_uint of Uint63.t
   | Const_float of Float64.t
+  | Const_string of Pstring.t
 
 type reloc_table = (tag * int) array
 
-(** When changing this, adapt Is_tailrec_switch in coq_values.h accordingly *)
+(** When changing this, adapt Is_tailrec_switch in rocq_values.h accordingly *)
 type annot_switch =
    { rtbl : reloc_table; tailcall : bool; max_stack_size : int }
 
@@ -76,6 +78,8 @@ let rec eq_structured_values v1 v2 =
       then Int64.equal (Obj.magic v1 : int64) (Obj.magic v2 : int64)
     else if Int.equal t1 Obj.double_tag
       then Float64.(equal (of_float (Obj.magic v1)) (of_float (Obj.magic v2)))
+    else if Int.equal t1 Obj.string_tag
+      then String.equal (Obj.magic v1) (Obj.magic v2)
     else begin
       assert (t1 <= Obj.last_non_constant_constructor_tag &&
               t2 <= Obj.last_non_constant_constructor_tag);
@@ -98,27 +102,33 @@ let eq_structured_constant c1 c2 = match c1, c2 with
 | Const_sort _, _ -> false
 | Const_ind i1, Const_ind i2 -> Ind.CanOrd.equal i1 i2
 | Const_ind _, _ -> false
+| Const_evar e1, Const_evar e2 -> Evar.equal e1 e2
+| Const_evar _, _ -> false
 | Const_b0 t1, Const_b0 t2 -> Int.equal t1 t2
 | Const_b0 _, _ -> false
-| Const_univ_level l1 , Const_univ_level l2 -> Univ.Level.equal l1 l2
-| Const_univ_level _ , _ -> false
+| Const_univ_instance u1 , Const_univ_instance u2 -> UVars.Instance.equal u1 u2
+| Const_univ_instance _ , _ -> false
 | Const_val v1, Const_val v2 -> eq_structured_values v1 v2
 | Const_val _, _ -> false
 | Const_uint i1, Const_uint i2 -> Uint63.equal i1 i2
 | Const_uint _, _ -> false
 | Const_float f1, Const_float f2 -> Float64.equal f1 f2
 | Const_float _, _ -> false
+| Const_string s1, Const_string s2 -> Pstring.equal s1 s2
+| Const_string _, _ -> false
 
 let hash_structured_constant c =
   let open Hashset.Combine in
   match c with
   | Const_sort s -> combinesmall 1 (Sorts.hash s)
   | Const_ind i -> combinesmall 2 (Ind.CanOrd.hash i)
-  | Const_b0 t -> combinesmall 3 (Int.hash t)
-  | Const_univ_level l -> combinesmall 4 (Univ.Level.hash l)
-  | Const_val v -> combinesmall 5 (hash_structured_values v)
-  | Const_uint i -> combinesmall 6 (Uint63.hash i)
-  | Const_float f -> combinesmall 7 (Float64.hash f)
+  | Const_evar e -> combinesmall 3 (Evar.hash e)
+  | Const_b0 t -> combinesmall 4 (Int.hash t)
+  | Const_univ_instance u -> combinesmall 5 (UVars.Instance.hash u)
+  | Const_val v -> combinesmall 6 (hash_structured_values v)
+  | Const_uint i -> combinesmall 7 (Uint63.hash i)
+  | Const_float f -> combinesmall 8 (Float64.hash f)
+  | Const_string s -> combinesmall 9 (Pstring.hash s)
 
 let eq_annot_switch asw1 asw2 =
   let eq_rlc (i1, j1) (i2, j2) = Int.equal i1 i2 && Int.equal j1 j2 in
@@ -138,16 +148,20 @@ let pp_sort s =
   | SProp -> Pp.str "SProp"
   | Prop -> Pp.str "Prop"
   | Set -> Pp.str "Set"
-  | Type u -> Pp.(str "Type@{" ++ Univ.pr_uni u ++ str "}")
+  | Type u -> Pp.(str "Type@{" ++ Univ.Universe.raw_pr u ++ str "}")
+  | QSort (q, u) ->
+    Pp.(str "QSort@{" ++ (Sorts.QVar.raw_pr q) ++ strbrk ", " ++ Univ.Universe.raw_pr u ++ str "}")
 
 let pp_struct_const = function
   | Const_sort s -> pp_sort s
   | Const_ind (mind, i) -> Pp.(MutInd.print mind ++ str"#" ++ int i)
+  | Const_evar e -> Pp.( str "Evar(" ++ int (Evar.repr e) ++ str ")")
   | Const_b0 i -> Pp.int i
-  | Const_univ_level l -> Univ.Level.pr l
+  | Const_univ_instance u -> UVars.Instance.pr Sorts.QVar.raw_pr Univ.Level.raw_pr u
   | Const_val _ -> Pp.str "(value)"
   | Const_uint i -> Pp.str (Uint63.to_string i)
   | Const_float f -> Pp.str (Float64.to_string f)
+  | Const_string s -> Pp.str (Printf.sprintf "%S" (Pstring.to_string s))
 
 (* Abstract data *)
 type vprod
@@ -162,7 +176,7 @@ let fix_val v = (Obj.magic v : values)
 let cofix_upd_val v = (Obj.magic v : values)
 
 type vm_env
-type vm_global
+let inj_env v = (Obj.magic v : vm_env)
 let fun_env v = (Obj.magic v : vm_env)
 let cofix_env v = (Obj.magic v : vm_env)
 let cofix_upd_env v = (Obj.magic v : vm_env)
@@ -170,20 +184,18 @@ type vstack = values array
 
 let fun_of_val v = (Obj.magic v : vfun)
 
-let vm_global (v : values array) = (Obj.magic v : vm_global)
-
 (*******************************************)
 (* Machine code *** ************************)
 (*******************************************)
 
 type tcode
 (** A block whose first field is a C-allocated VM bytecode, encoded as char*.
-    This is compatible with the representation of the Coq VM closures. *)
+    This is compatible with the representation of OCaml closures. *)
 
 type tcode_array
 
-external mkAccuCode : int -> tcode = "coq_makeaccu"
-external offset_tcode : tcode -> int -> tcode = "coq_offset_tcode"
+external mkAccuCode : int -> tcode = "rocq_makeaccu"
+external offset_tcode : tcode -> int -> tcode = "rocq_offset_tcode"
 
 let fun_code v = (Obj.magic v : tcode)
 let fix_code = fun_code
@@ -241,7 +253,7 @@ type vswitch = {
 (*          tag[ _ | _ |v1|... | vn]                                      *)
 (* Generally the first field is a code pointer.                           *)
 
-(* Do not edit this type without editing C code, especially "coq_values.h" *)
+(* Do not edit this type without editing C code, especially "rocq_values.h" *)
 
 type id_key =
 | ConstKey of Constant.t
@@ -267,24 +279,14 @@ type zipper =
   | Zapp of arguments
   | Zfix of vfix*arguments  (* Possibly empty *)
   | Zswitch of vswitch
-  | Zproj of Projection.Repr.t (* name of the projection *)
+  | Zproj of int (* index of the projection as in Projection.Repr *)
 
 type stack = zipper list
 
 type to_update = values
+type accumulator = atom * stack
 
-type whd =
-  | Vprod of vprod
-  | Vfun of vfun
-  | Vfix of vfix * arguments option
-  | Vcofix of vcofix * to_update * arguments option
-  | Vconstr_const of int
-  | Vconstr_block of vblock
-  | Vint64 of int64
-  | Vfloat64 of float
-  | Varray of values Parray.t
-  | Vatom_stk of atom * stack
-  | Vuniv_level of Univ.Level.t
+type kind = (values, accumulator, vfun, vprod, vfix * arguments option, vcofix * to_update * arguments option, vblock) Values.kind
 
 (* Functions over arguments *)
 let nargs : arguments -> int = fun args -> Obj.size (Obj.repr args) - 3
@@ -299,29 +301,7 @@ let arg args i =
 (* Destructors ***********************************)
 (*************************************************)
 
-let uni_lvl_val (v : values) : Univ.Level.t =
-    let whd = Obj.magic v in
-    match whd with
-    | Vuniv_level lvl -> lvl
-    | _ ->
-      let pr =
-        let open Pp in
-        match whd with
-        | Vprod _ -> str "Vprod"
-        | Vfun _ -> str "Vfun"
-        | Vfix _ -> str "Vfix"
-        | Vcofix _ -> str "Vcofix"
-        | Vconstr_const _i -> str "Vconstr_const"
-        | Vconstr_block _b -> str "Vconstr_block"
-        | Vint64 _ -> str "Vint64"
-        | Vfloat64 _ -> str "Vfloat64"
-        | Varray _ -> str "Varray"
-        | Vatom_stk (_a,_stk) -> str "Vatom_stk"
-        | Vuniv_level _ -> assert false
-      in
-      CErrors.anomaly
-        Pp.(   strbrk "Parsing virtual machine value expected universe level, got "
-            ++ pr ++ str ".")
+let uni_instance (v : values) : UVars.Instance.t = Obj.magic v
 
 let rec whd_accu a stk =
   let stk =
@@ -331,21 +311,17 @@ let rec whd_accu a stk =
   match Obj.tag at with
   | i when Int.equal i type_atom_tag ->
      begin match stk with
-     | [] -> Vatom_stk(Obj.magic at, stk)
+     | [] -> Vaccu (Obj.magic at, stk)
      | [Zapp args] ->
-        let args = Array.init (nargs args) (arg args) in
+        let () = assert (Int.equal (nargs args) 1) in
+        let inst = uni_instance (arg args 0) in
         let s = Obj.obj (Obj.field at 0) in
-        begin match s with
-        | Sorts.Type u ->
-          let inst = Instance.of_array (Array.map uni_lvl_val args) in
-          let u = Univ.subst_instance_universe inst u in
-          Vatom_stk (Asort (Sorts.sort_of_univ u), [])
-        | _ -> assert false
-        end
+        let s = UVars.subst_instance_sort inst s in
+        Vaccu (Asort s, [])
      | _ -> assert false
      end
   | i when i <= max_atom_tag ->
-      Vatom_stk(Obj.magic at, stk)
+      Vaccu (Obj.magic at, stk)
   | i when Int.equal i proj_tag ->
      let zproj = Zproj (Obj.obj (Obj.field at 0)) in
      whd_accu (Obj.field at 1) (zproj :: stk)
@@ -373,10 +349,6 @@ let rec whd_accu a stk =
       | [Zapp args] -> Vcofix(vcofix, res, Some args)
       | _           -> assert false
       end
-  | i when Int.equal i Obj.custom_tag ->
-    Vint64 (Obj.magic i)
-  | i when Int.equal i Obj.double_tag ->
-    Vfloat64 (Obj.magic i)
   | tg ->
     CErrors.anomaly
       Pp.(strbrk "Failed to parse VM value. Tag = " ++ int tg ++ str ".")
@@ -389,16 +361,16 @@ type vm_closure_kind =
   | VCaccu (** accumulator *)
 [@@@warning "+37"]
 
-external kind_of_closure : Obj.t -> vm_closure_kind = "coq_kind_of_closure"
-external is_accumulate : tcode -> bool = "coq_is_accumulate_code"
-external int_tcode : tcode -> int -> int = "coq_int_tcode"
-external accumulate : unit -> tcode = "accumulate_code"
-external set_bytecode_field : Obj.t -> int -> tcode -> unit = "coq_set_bytecode_field"
+external kind_of_closure : Obj.t -> vm_closure_kind = "rocq_kind_of_closure"
+external is_accumulate : tcode -> bool = "rocq_is_accumulate_code"
+external int_tcode : tcode -> int -> int = "rocq_int_tcode"
+external accumulate : unit -> tcode = "rocq_accumulate"
+external set_bytecode_field : Obj.t -> int -> tcode -> unit = "rocq_set_bytecode_field"
 let accumulate = accumulate ()
 
 let whd_val (v: values) =
   let o = Obj.repr v in
-  if Obj.is_int o then Vconstr_const (Obj.obj o)
+  if Obj.is_int o then Vconst (Obj.obj o)
   else
     let tag = Obj.tag o in
     if Int.equal tag 0 then
@@ -412,11 +384,12 @@ let whd_val (v: values) =
       | VCfun -> Vfun (Obj.obj o)
       | VCfix -> Vfix (Obj.obj o, None)
       | VCfix_partial -> Vfix (Obj.obj (Obj.field o 2), Some (Obj.obj o))
-      | VCaccu -> Vatom_stk (Aid (RelKey (int_tcode (fun_code o) 1)), [])
+      | VCaccu -> Vaccu (Aid (RelKey (int_tcode (fun_code o) 1)), [])
     else if Int.equal tag Obj.custom_tag then Vint64 (Obj.magic v)
     else if Int.equal tag Obj.double_tag then Vfloat64 (Obj.magic v)
+    else if Int.equal tag Obj.string_tag then Vstring (Obj.magic v)
     else
-      Vconstr_block (Obj.obj o)
+      Vblock (Obj.obj o)
 
 (**********************************************)
 (* Constructors *******************************)
@@ -435,11 +408,13 @@ let obj_of_str_const str =
   match str with
   | Const_sort s -> obj_of_atom (Asort s)
   | Const_ind ind -> obj_of_atom (Aind ind)
+  | Const_evar e -> obj_of_atom (Aid (EvarKey e))
   | Const_b0 tag -> Obj.repr tag
-  | Const_univ_level l -> Obj.repr (Vuniv_level l)
+  | Const_univ_instance u -> Obj.repr u
   | Const_val v -> Obj.repr v
   | Const_uint i -> Obj.repr i
   | Const_float f -> Obj.repr f
+  | Const_string s -> Obj.repr s
 
 let val_of_block tag (args : structured_values array) =
   let nargs = Array.length args in
@@ -458,6 +433,10 @@ let val_of_atom a = val_of_obj (obj_of_atom a)
 let val_of_int i = (Obj.magic i : values)
 
 let val_of_uint i = (Obj.magic i : structured_values)
+
+let val_of_float f = (Obj.magic f : structured_values)
+
+let val_of_string s = (Obj.magic s : structured_values)
 
 let atom_of_proj kn v =
   let r = Obj.new_block proj_tag 2 in
@@ -500,7 +479,6 @@ let val_of_constant c = val_of_idkey (ConstKey c)
 let val_of_evar evk = val_of_idkey (EvarKey evk)
 
 external val_of_annot_switch : annot_switch -> values = "%identity"
-external val_of_proj_name : Projection.Repr.t -> values = "%identity"
 
 (*************************************************)
 (** Operations manipulating data types ***********)
@@ -513,14 +491,14 @@ let codom : vprod -> vfun = fun p -> (Obj.obj (Obj.field (Obj.repr p) 1))
 
 (* Functions over vfun *)
 
-external closure_arity : vfun -> int = "coq_closure_arity"
+external closure_arity : vfun -> int = "rocq_closure_arity"
 
 (* Functions over fixpoint *)
 
-external current_fix : vfix -> int = "coq_current_fix"
-external shift_fix : vfix -> int -> vfix = "coq_shift_fix"
-external last_fix : vfix -> vfix = "coq_last_fix"
-external tcode_array : tcode_array -> tcode array = "coq_tcode_array"
+external current_fix : vfix -> int = "rocq_current_fix"
+external shift_fix : vfix -> int -> vfix = "rocq_shift_fix"
+external last_fix : vfix -> vfix = "rocq_last_fix"
+external tcode_array : tcode_array -> tcode array = "rocq_tcode_array"
 
 let first_fix o = shift_fix o (- current_fix o)
 let fix_env v = (Obj.magic (last_fix v) : vm_env)
@@ -674,19 +652,20 @@ let rec pr_atom a =
                             | _ -> str "...") ++ str ")"
   | Aind (mi,i) -> str "Aind(" ++ MutInd.print mi ++ str "#" ++ int i ++ str ")"
   | Asort _ -> str "Asort(")
-and pr_whd w =
-  Pp.(match w with
+and pr_kind w =
+  let open Pp in
+  match w with
   | Vprod _ -> str "Vprod"
   | Vfun _ -> str "Vfun"
   | Vfix _ -> str "Vfix"
   | Vcofix _ -> str "Vcofix"
-  | Vconstr_const i -> str "Vconstr_const(" ++ int i ++ str ")"
-  | Vconstr_block _b -> str "Vconstr_block"
+  | Vconst i -> str "Vconst(" ++ int i ++ str ")"
+  | Vblock _b -> str "Vblock"
   | Vint64 i -> i |> Format.sprintf "Vint64(%LiL)" |> str
   | Vfloat64 f -> str "Vfloat64(" ++ str (Float64.(to_string (of_float f))) ++ str ")"
+  | Vstring s -> Pstring.to_string s |> Format.sprintf "Vstring(%S)" |> str
   | Varray _ -> str "Varray"
-  | Vatom_stk (a,stk) -> str "Vatom_stk(" ++ pr_atom a ++ str ", " ++ pr_stack stk ++ str ")"
-  | Vuniv_level _ -> assert false)
+  | Vaccu (a, stk) -> str "Vaccu(" ++ pr_atom a ++ str ", " ++ pr_stack stk ++ str ")"
 and pr_stack stk =
   Pp.(match stk with
       | [] -> str "[]"
@@ -696,7 +675,7 @@ and pr_zipper z =
   | Zapp args -> str "Zapp(len = " ++ int (nargs args) ++ str ")"
   | Zfix (_f,args) -> str "Zfix(..., len=" ++ int (nargs args) ++ str ")"
   | Zswitch _s -> str "Zswitch(...)"
-  | Zproj c -> str "Zproj(" ++ Projection.Repr.print c ++ str ")")
+  | Zproj n -> str "Zproj(" ++ int n ++ str ")")
 
 (** Primitives implemented in OCaml *)
 
@@ -706,3 +685,11 @@ let parray_get_default = Obj.magic Parray.default
 let parray_set = Obj.magic Parray.set
 let parray_copy = Obj.magic Parray.copy
 let parray_length = Obj.magic Parray.length
+
+let pstring_make = Obj.magic Pstring.make
+let pstring_length = Obj.magic Pstring.length
+let pstring_get = Obj.magic Pstring.get
+let pstring_sub = Obj.magic Pstring.sub
+let pstring_cat = Obj.magic Pstring.cat
+let pstring_compare = Obj.magic @@ fun x y ->
+  match Pstring.compare x y with 0 -> 0 | i when i < 0 -> 1 | _ -> 2

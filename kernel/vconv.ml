@@ -1,12 +1,33 @@
 open Util
-open Names
 open Environ
-open Reduction
+open Conversion
 open Vm
+open Values
 open Vmvalues
 open Vmsymtable
 
 (* Test la structure des piles *)
+
+type 'a fail = { fail : 'r. 'a -> 'r }
+
+exception NotConvertible
+
+let fail_check state check box = match state with
+| Result.Ok state -> (state, check, box)
+| Result.Error None -> raise NotConvertible
+| Result.Error (Some err) -> box.fail err
+
+let convert_instances ~flex u1 u2 (state, check, box) =
+  let state, check = Conversion.convert_instances ~flex u1 u2 (state, check) in
+  fail_check state check box
+
+let sort_cmp_universes env pb s1 s2 (state, check, box) =
+  let state, check = Conversion.sort_cmp_universes env pb s1 s2 (state, check) in
+  fail_check state check box
+
+let table_key_instance env = function
+| ConstKey cst -> Environ.constant_context env cst
+| RelKey _ | VarKey _ | EvarKey _ -> UVars.AbstractContext.empty
 
 let compare_zipper z1 z2 =
   match z1, z2 with
@@ -41,12 +62,6 @@ let rec conv_val env pb k v1 v2 cu =
 and conv_whd env pb k whd1 whd2 cu =
 (*  Pp.(msg_debug (str "conv_whd(" ++ pr_whd whd1 ++ str ", " ++ pr_whd whd2 ++ str ")")) ; *)
   match whd1, whd2 with
-  | Vuniv_level _ , _
-  | _ , Vuniv_level _ ->
-    (** Both of these are invalid since universes are handled via
-     ** special cases in the code.
-     **)
-    assert false
   | Vprod p1, Vprod p2 ->
       let cu = conv_val env CONV k (dom p1) (dom p2) cu in
       conv_fun env pb k (codom p1) (codom p2) cu
@@ -59,9 +74,9 @@ and conv_whd env pb k whd1 whd2 cu =
   | Vcofix (cf1,_,Some args1), Vcofix (cf2,_,Some args2) ->
       if nargs args1 <> nargs args2 then raise NotConvertible
       else conv_arguments env k args1 args2 (conv_cofix env k cf1 cf2 cu)
-  | Vconstr_const i1, Vconstr_const i2 ->
+  | Vconst i1, Vconst i2 ->
       if Int.equal i1 i2 then cu else raise NotConvertible
-  | Vconstr_block b1, Vconstr_block b2 ->
+  | Vblock b1, Vblock b2 ->
       let tag1 = btag b1 and tag2 = btag b2 in
       let sz = bsize b1 in
       if Int.equal tag1 tag2 && Int.equal sz (bsize b2) then
@@ -76,47 +91,60 @@ and conv_whd env pb k whd1 whd2 cu =
   | Vfloat64 f1, Vfloat64 f2 ->
     if Float64.(equal (of_float f1) (of_float f2)) then cu
     else raise NotConvertible
+  | Vstring s1, Vstring s2 ->
+    if Pstring.equal s1 s2 then cu
+    else raise NotConvertible
   | Varray t1, Varray t2 ->
     if t1 == t2 then cu else
     let n = Parray.length_int t1 in
     if not (Int.equal n (Parray.length_int t2)) then raise NotConvertible;
     Parray.fold_left2 (fun cu v1 v2 -> conv_val env CONV k v1 v2 cu) cu t1 t2
-  | Vatom_stk(a1,stk1), Vatom_stk(a2,stk2) ->
+  | Vaccu (a1, stk1), Vaccu (a2, stk2) ->
       conv_atom env pb k a1 stk1 a2 stk2 cu
   | Vfun _, _ | _, Vfun _ ->
      (* on the fly eta expansion *)
       conv_val env CONV (k+1) (apply_whd k whd1) (apply_whd k whd2) cu
 
-  | Vprod _, _ | Vfix _, _ | Vcofix _, _  | Vconstr_const _, _ | Vint64 _, _
-  | Vfloat64 _, _ | Varray _, _ | Vconstr_block _, _ | Vatom_stk _, _ -> raise NotConvertible
+  | Vprod _, _ | Vfix _, _ | Vcofix _, _  | Vconst _, _ | Vint64 _, _
+  | Vfloat64 _, _ | Vstring _, _ | Varray _, _ | Vblock _, _ | Vaccu _, _ -> raise NotConvertible
 
 
 and conv_atom env pb k a1 stk1 a2 stk2 cu =
 (*  Pp.(msg_debug (str "conv_atom(" ++ pr_atom a1 ++ str ", " ++ pr_atom a2 ++ str ")")) ; *)
   match a1, a2 with
   | Aind ((mi,_i) as ind1) , Aind ind2 ->
-    if Ind.CanOrd.equal ind1 ind2 && compare_stack stk1 stk2 then
-      let ulen = Univ.AbstractContext.size (Environ.mind_context env mi) in
-      if ulen = 0 then
+    if Names.Ind.CanOrd.equal ind1 ind2 && compare_stack stk1 stk2 then
+      if UVars.AbstractContext.is_constant (Environ.mind_context env mi) then
+        conv_stack env k stk1 stk2 cu
+      else begin
+        match stk1 , stk2 with
+        | Zapp args1 :: stk1' , Zapp args2 :: stk2' ->
+          assert (0 < nargs args1);
+          assert (0 < nargs args2);
+          let u1 = uni_instance (arg args1 0) in
+          let u2 = uni_instance (arg args2 0) in
+          let cu = convert_instances ~flex:false u1 u2 cu in
+          conv_arguments env ~from:1 k args1 args2
+            (conv_stack env k stk1' stk2' cu)
+        | _, _ -> assert false (* Should not happen if problem is well typed *)
+      end
+    else raise NotConvertible
+  | Aid ik1, Aid ik2 ->
+    if Vmvalues.eq_id_key ik1 ik2 && compare_stack stk1 stk2 then
+      if UVars.AbstractContext.is_constant (table_key_instance env ik1) then
         conv_stack env k stk1 stk2 cu
       else
         match stk1 , stk2 with
         | Zapp args1 :: stk1' , Zapp args2 :: stk2' ->
-          assert (ulen <= nargs args1);
-          assert (ulen <= nargs args2);
-          let u1 = Array.init ulen (fun i -> uni_lvl_val (arg args1 i)) in
-          let u2 = Array.init ulen (fun i -> uni_lvl_val (arg args2 i)) in
-          let u1 = Univ.Instance.of_array u1 in
-          let u2 = Univ.Instance.of_array u2 in
+          assert (0 < nargs args1);
+          assert (0 < nargs args2);
+          let u1 = uni_instance (arg args1 0) in
+          let u2 = uni_instance (arg args2 0) in
           let cu = convert_instances ~flex:false u1 u2 cu in
-          conv_arguments env ~from:ulen k args1 args2
+          conv_arguments env ~from:1 k args1 args2
             (conv_stack env k stk1' stk2' cu)
         | _, _ -> assert false (* Should not happen if problem is well typed *)
     else raise NotConvertible
-  | Aid ik1, Aid ik2 ->
-    if Vmvalues.eq_id_key ik1 ik2 && compare_stack stk1 stk2 then
-        conv_stack env k stk1 stk2 cu
-      else raise NotConvertible
   | Asort s1, Asort s2 ->
     sort_cmp_universes env pb s1 s2 cu
   | Asort _ , _ | Aind _, _ | Aid _, _ -> raise NotConvertible
@@ -141,7 +169,7 @@ and conv_stack env k stk1 stk2 cu =
         conv_stack env k stk1 stk2 !rcu
       else raise NotConvertible
   | Zproj p1 :: stk1, Zproj p2 :: stk2 ->
-    if Projection.Repr.CanOrd.equal p1 p2 then conv_stack env k stk1 stk2 cu
+    if Int.equal p1 p2 then conv_stack env k stk1 stk2 cu
     else raise NotConvertible
   | [], _ | Zapp _ :: _, _ | Zfix _ :: _, _ | Zswitch _ :: _, _
   | Zproj _ :: _, _ -> raise NotConvertible
@@ -186,23 +214,28 @@ and conv_arguments env ?from:(from=0) k args1 args2 cu =
 
 let warn_bytecode_compiler_failed =
   let open Pp in
-  CWarnings.create ~name:"bytecode-compiler-failed" ~category:"bytecode-compiler"
+  CWarnings.create ~name:"bytecode-compiler-failed" ~category:CWarnings.CoreCategories.bytecode_compiler
          (fun () -> strbrk "Bytecode compiler failed, " ++
                       strbrk "falling back to standard conversion")
 
-let vm_conv_gen cv_pb env univs t1 t2 =
+let vm_conv_gen (type err) cv_pb sigma env univs t1 t2 =
   if not (typing_flags env).Declarations.enable_VM then
-    Reduction.generic_conv cv_pb ~l2r:false (fun _ -> None)
+    Conversion.generic_conv cv_pb ~l2r:false ~evars:sigma.Genlambda.evars_val
       TransparentState.full env univs t1 t2
   else
+  let exception Error of err in
+  let box = { fail = fun e -> raise (Error e) } in
   try
-    let sigma _ = assert false in
+    let (state, check) = univs in
     let v1 = val_of_constr env sigma t1 in
     let v2 = val_of_constr env sigma t2 in
-    fst (conv_val env cv_pb (nb_rel env) v1 v2 univs)
-  with Not_found | Invalid_argument _ ->
+    Result.Ok (pi1 (conv_val env cv_pb (nb_rel env) v1 v2 (state, check, box)))
+  with
+  | NotConvertible -> Result.Error None
+  | Error e -> Result.Error (Some e)
+  | Not_found | Invalid_argument _ | Vmerrors.CompileError _ ->
     warn_bytecode_compiler_failed ();
-    Reduction.generic_conv cv_pb ~l2r:false (fun _ -> None)
+    Conversion.generic_conv cv_pb ~l2r:false ~evars:sigma.Genlambda.evars_val
       TransparentState.full env univs t1 t2
 
 let vm_conv cv_pb env t1 t2 =
@@ -211,6 +244,15 @@ let vm_conv cv_pb env t1 t2 =
     if cv_pb = CUMUL then Constr.leq_constr_univs univs t1 t2
     else Constr.eq_constr_univs univs t1 t2
   in
-  if not b then
+  if b then Result.Ok ()
+  else
     let state = (univs, checked_universes) in
-    let _ = vm_conv_gen cv_pb env state t1 t2 in ()
+    let ans : (UGraph.t, 'a option) result =
+      NewProfile.profile "vm_conv" (fun () ->
+          vm_conv_gen cv_pb (Genlambda.empty_evars env) env state t1 t2)
+        ()
+    in
+    match ans with
+    | Result.Ok (_ : UGraph.t)-> Result.Ok ()
+    | Result.Error None -> Result.Error ()
+    | Result.Error (Some e) -> Empty.abort e

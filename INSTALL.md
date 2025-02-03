@@ -1,30 +1,32 @@
 Installing From Sources
 =======================
 
-To install and use Coq, we recommend relying on [the Coq
+To install and use Rocq, we recommend relying on [the Rocq
 platform](https://github.com/coq/platform/) or on a package manager
 (e.g. opam or Nix).
 
 See https://coq.inria.fr/download and
 https://github.com/coq/coq/wiki#coq-installation to learn more.
 
-If you need to build Coq from sources manually (e.g. to
-contribute to Coq or to write a Coq package), the remainder of this
+If you need to build Rocq from sources manually (e.g. to
+contribute to Rocq or to write a Rocq package), the remainder of this
 file explains how to do so.
 
 Build Requirements
 ------------------
 
-To compile Coq yourself, you need:
+To compile Rocq yourself, you need:
 
-- [OCaml](https://ocaml.org/) (version >= 4.05.0)
-  (This version of Coq has been tested up to OCaml 4.12.0)
+- [OCaml](https://ocaml.org/) (version >= 4.09.0)
+  (This version of Rocq has been tested up to OCaml 4.14.1, for the 4.x series)
 
-- The [Dune OCaml build system](https://github.com/ocaml/dune/) >= 2.5.1
+  Support for OCaml 5.x remains experimental.
 
-- The [ZArith library](https://github.com/ocaml/Zarith) >= 1.10
+- The [Dune OCaml build system](https://github.com/ocaml/dune/) >= 3.8
 
-- The [findlib](http://projects.camlcity.org/projects/findlib.html) library (version >= 1.8.0)
+- The [ZArith library](https://github.com/ocaml/Zarith) >= 1.11
+
+- The [findlib](http://projects.camlcity.org/projects/findlib.html) library (version >= 1.8.1)
 
 - a C compiler
 
@@ -32,12 +34,15 @@ To compile Coq yourself, you need:
   ties to even as default rounding mode (most architectures
   should work nowadays)
 
-- for CoqIDE, the
+- for RocqIDE, the
   [lablgtk3-sourceview3](https://github.com/garrigue/lablgtk) library
-  (version >= 3.1.0), and the corresponding GTK 3.x libraries, as
+  (version >= 3.1.2), and the corresponding GTK 3.x libraries, as
   of today (gtk+3 >= 3.18 and gtksourceview3 >= 3.18)
 
 - [optional] GNU Make (version >= 3.81)
+
+See [below](#Known-Problems) for a discussion of platform-specific
+issues with dependencies.
 
 Primitive floating-point numbers require IEEE-754 compliance
 (`Require Import Floats`). Common sources of incompatibility
@@ -47,64 +52,26 @@ would enable proving `False` on this architecture.
 
 Note that OCaml dependencies (`zarith` and `lablgtk3-sourceview3` at
 this moment) must be properly registered with `findlib/ocamlfind`
-since Coq's build system uses `findlib` to locate them.
+since Rocq's build system uses `findlib` to locate them.
 
 Debian / Ubuntu users can get the necessary system packages for
-CoqIDE with:
+RocqIDE with:
 
     $ sudo apt-get install libgtksourceview-3.0-dev
 
 Opam (https://opam.ocaml.org/) is recommended to install OCaml and
 the corresponding packages.
 
-    $ opam switch create coq --packages="ocaml-variants.4.12.0+options,ocaml-option-flambda"
+    $ opam switch create rocq --packages="ocaml-variants.4.14.1+options,ocaml-option-flambda"
     $ eval $(opam env)
     $ opam install dune ocamlfind zarith lablgtk3-sourceview3
 
-should get you a reasonable OCaml environment to compile Coq. See the
+should get you a reasonable OCaml environment to compile Rocq. See the
 OPAM documentation for more help.
 
 Nix users can also get all the required dependencies by running:
 
     $ nix-shell
-
-Advanced users may want to experiment with the OCaml Flambda
-compiler as way to improve the performance of Coq. In order to
-profit from Flambda, a special build of the OCaml compiler that has
-the Flambda optimizer enabled must be installed. For OPAM users,
-this amounts to installing a compiler switch ending in `+flambda`,
-such as `4.07.1+flambda`. For other users, YMMV. Once `ocamlopt -config`
-reports that Flambda is available, some further optimization options
-can be used; see the entry about `-flambda-opts` in the build guide
-for more details.
-
-Choice of Build and Installation Procedure
-------------------------------------------
-
-There are two partially overlapping infrastructures available to build
-Coq. They are available through `Makefile.make` (legacy / hybrid
-build) and `Makefile.dune` (full Dune build).
-
-You can use the `COQ_USE_DUNE` environment variable to change the one
-to use by default. This is useful for Coq development, where we
-recommend to rely mainly on `Makefile.dune`. Note that mixing the two
-systems is not perfectly supported and may lead to confusing behavior.
-
-In both cases, the OCaml parts are built using
-[Dune](https://github.com/ocaml/dune). The main difference between the
-two systems is how the `.vo` files are built.
-
-In the case of `Makefile.make`, `.vo` files are built with a legacy
-Makefile, similar to what `coq_makefile` would do. In the case of
-`Makefile.dune`, `.vo` files are built with Dune, thanks to its
-recently-added, and still experimental, Coq mode.
-
-See the documentation for the two infrastructures:
-
-- [Legacy build](dev/doc/INSTALL.make.md)
-- [Full Dune build](dev/doc/build-system.dune.md)
-
-See also [`dev/doc/README.md`](dev/doc/README.md).
 
 Run-time dependencies of native compilation
 -------------------------------------------
@@ -112,23 +79,45 @@ Run-time dependencies of native compilation
 The OCaml compiler and findlib are build-time dependencies, but also
 run-time dependencies if you wish to use the native compiler.
 
+Build and install procedure
+---------------------------
+
+Note that Rocq supports a faster, but less optimized developer build,
+but final users must always use the release build. See
+[dev/doc/build-system.dune.md](dev/doc/build-system.dune.md)
+for more details.
+
+To build and install Rocq (and RocqIDE if desired) do:
+
+    $ ./configure -prefix <install_prefix> $options
+    $ make dunestrap
+    $ dune build -p rocq-runtime,coq-core,rocq-core,coq,coqide-server,rocqide
+    $ dune install --prefix=<install_prefix> rocq-runtime coq-core rocq-core coq coqide-server rocqide
+
+You can drop the `rocqide` packages if not needed.
+
+Packagers may want to play with `dune install` options as to tweak
+installation path, the `-prefix` argument in `./configure` tells Rocq
+where to find its standard library, but doesn't control any other
+installation path these days.
+
 OCaml toolchain advisory
 ------------------------
 
 When loading plugins or `vo` files, you should make sure that these
 were compiled with the same OCaml setup (version, flags,
-dependencies...) as Coq.  Distribution of pre-compiled plugins and
+dependencies...) as Rocq.  Distribution of pre-compiled plugins and
 `.vo` files is only possible if users are guaranteed to have the same
-Coq version compiled with the same OCaml toolchain.  An OCaml setup
+Rocq version compiled with the same OCaml toolchain.  An OCaml setup
 mismatch is the most probable cause for an `Error while loading ...:
 implementation mismatch on ...`.
 
 coq_environment.txt
 -------------------
-Coq binaries which honor environment variables, such as `COQLIB`, can
+Rocq binaries which honor environment variables, such as `ROCQLIB`, can
 be seeded values for these variables by placing a text file named
 `coq_environment.txt` next to them. The file can contain assignments
-like `COQLIB="some path"`, that is a variable name followed by `=` and
+like `ROCQLIB="some path"`, that is a variable name followed by `=` and
 a string that follows OCaml's escaping conventions. This feature can be
-used by installers of binary package to make Coq aware of its installation
+used by installers of binary package to make Rocq aware of its installation
 path.

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -29,12 +29,12 @@ let generalizable_table = Summary.ref Id.Pred.empty ~name:"generalizable-ident"
 
 let declare_generalizable_ident table {CAst.loc;v=id} =
   if not (Id.equal id (root_of_id id)) then
-    user_err ?loc ~hdr:"declare_generalizable_ident"
+    user_err ?loc
     ((Id.print id ++ str
-      " is not declarable as generalizable identifier: it must have no trailing digits, quote, or _"));
+      " is not declarable as generalizable identifier: it must have no trailing digits, quote, or _."));
   if Id.Pred.mem id table then
-    user_err ?loc ~hdr:"declare_generalizable_ident"
-                ((Id.print id++str" is already declared as a generalizable identifier"))
+    user_err ?loc
+                ((Id.print id++str" is already declared as a generalizable identifier."))
   else Id.Pred.add id table
 
 let add_generalizable gen table =
@@ -44,21 +44,21 @@ let add_generalizable gen table =
   | Some l -> List.fold_left (fun table lid -> declare_generalizable_ident table lid)
       table l
 
-let cache_generalizable_type (_,(local,cmd)) =
+let cache_generalizable_type (local,cmd) =
   generalizable_table := add_generalizable cmd !generalizable_table
 
-let load_generalizable_type _ (_,(local,cmd)) =
+let load_generalizable_type _ (local,cmd) =
   generalizable_table := add_generalizable cmd !generalizable_table
 
 let in_generalizable : bool * lident list option -> obj =
   declare_object {(default_object "GENERALIZED-IDENT") with
     load_function = load_generalizable_type;
     cache_function = cache_generalizable_type;
-    classify_function = (fun (local, _ as obj) -> if local then Dispose else Keep obj)
+    classify_function = (fun (local, _) -> if local then Dispose else Keep)
   }
 
 let declare_generalizable ~local gen =
- Lib.add_anonymous_leaf (in_generalizable (local, gen))
+ Lib.add_leaf (in_generalizable (local, gen))
 
 let find_generalizable_ident id = Id.Pred.mem (root_of_id id) !generalizable_table
 
@@ -77,7 +77,7 @@ let is_freevar ids env x =
 (* Auxiliary functions for the inference of implicitly quantified variables. *)
 
 let ungeneralizable loc id =
-  user_err ?loc ~hdr:"Generalization"
+  user_err ?loc
                (str "Unbound and ungeneralizable variable " ++ Id.print id ++ str ".")
 
 let free_vars_of_constr_expr c ?(bound=Id.Set.empty) l =
@@ -129,7 +129,7 @@ let rec is_class_arg c =
   | Cast (c,_,_)
   | LetIn (_,_,_,c) -> is_class_arg c
   | _ ->
-    let c, _ = decompose_appvect c in
+    let c, _ = decompose_app c in
     match destRef c with
     | exception DestKO -> false
     | r, _ -> is_class r
@@ -189,21 +189,18 @@ let implicit_application env ty =
       if Libnames.idset_mem_qualid qid env then None
       else
         let gr = Nametab.locate qid in
-        if Typeclasses.is_class gr then Some (clapp, gr) else None
+        Option.map (fun cl -> cl, clapp) (Typeclasses.class_info gr)
     with Not_found -> None
   in
   match is_class with
   | None -> ty, env
-  | Some ({CAst.loc;v=(id, par, inst)}, gr) ->
+  | Some (c, {CAst.loc;v=(id, par, inst)}) ->
     let avoid = Id.Set.union env (Id.Set.of_list (free_vars_of_constr_expr ty ~bound:env [])) in
-    let env = Global.env () in
-    let sigma = Evd.from_env env in
-    let c = class_info env sigma gr in
     let args, avoid = combine_params avoid par (List.rev c.cl_context) in
     CAst.make ?loc @@ CAppExpl ((id, inst), args), avoid
 
 let warn_ignoring_implicit_status =
-  CWarnings.create ~name:"ignoring_implicit_status" ~category:"implicits"
+  CWarnings.create ~name:"ignoring-implicit-status" ~category:CWarnings.CoreCategories.implicits
     (fun na ->
        strbrk "Ignoring implicit status of product binder " ++
        Name.print na ++ strbrk " and following binders")
@@ -216,7 +213,7 @@ let implicits_of_glob_constr ?(with_products=true) l =
   in
   let rec aux c =
     match DAst.get c with
-    | GProd (na, bk, t, b) ->
+    | GProd (na, _, bk, t, b) ->
       if with_products then add_impl na bk (aux b)
       else
         let () = match bk with
@@ -224,11 +221,11 @@ let implicits_of_glob_constr ?(with_products=true) l =
           | MaxImplicit -> warn_ignoring_implicit_status na ?loc:c.CAst.loc
           | Explicit -> ()
         in []
-    | GLambda (na, bk, t, b) -> add_impl ?loc:t.CAst.loc na bk (aux b)
-    | GLetIn (na, b, t, c) -> aux c
+    | GLambda (na, _, bk, t, b) -> add_impl ?loc:t.CAst.loc na bk (aux b)
+    | GLetIn (na, _, b, t, c) -> aux c
     | GRec (fix_kind, nas, args, tys, bds) ->
       let nb = match fix_kind with |GFix (_, n) -> n | GCoFix n -> n in
-      List.fold_right (fun (na,bk,t,_) l ->
+      List.fold_right (fun (na,_,bk,t,_) l ->
           match t with
           | Some _ -> l
           | _ -> add_impl ?loc:c.CAst.loc na bk l)

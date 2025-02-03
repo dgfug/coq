@@ -1,6 +1,6 @@
 (executable
  (name doc_grammar)
- (libraries coq-core.clib coqpp))
+ (libraries rocq-runtime.clib coqpp))
 
 (env (_ (binaries doc_grammar.exe)))
 
@@ -25,9 +25,8 @@
    (glob_files %{project_root}/plugins/rtauto/*.mlg)
    (glob_files %{project_root}/plugins/ssr/*.mlg)
    (glob_files %{project_root}/plugins/ssrmatching/*.mlg)
-   (glob_files %{project_root}/plugins/ssrsearch/*.mlg)
    (glob_files %{project_root}/plugins/syntax/*.mlg)
-   (glob_files %{project_root}/user-contrib/Ltac2/*.mlg)
+   (glob_files %{project_root}/plugins/ltac2/*.mlg)
    ; Sphinx files
    (glob_files %{project_root}/doc/sphinx/language/*.rst)
    (glob_files %{project_root}/doc/sphinx/proof-engine/*.rst)

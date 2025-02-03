@@ -30,7 +30,7 @@ type abbreviation.
   structure expressions
 + an application :math:`S~p`, where :math:`S` is a structure expression and :math:`p` an
   access path
-+ a refined structure :math:`S~\with~p := p`′ or :math:`S~\with~p := t:T` where :math:`S` is a
++ a refined structure :math:`S~\with~p := p′` or :math:`S~\with~p := t:T` where :math:`S` is a
   structure expression, :math:`p` and :math:`p′` are access paths, :math:`t` is a term and :math:`T` is
   the type of :math:`t`.
 
@@ -59,12 +59,12 @@ The module system provides a way of packaging related elements
 together, as well as a means of massive abstraction.
 
 
-.. cmd:: Module {? {| Import | Export } } @ident {* @module_binder } {? @of_module_type } {? := {+<+ @module_expr_inl } }
+.. cmd:: Module {? {| Import | Export } {? @import_categories } } @ident {* @module_binder } {? @of_module_type } {? := {+<+ @module_expr_inl } }
 
    .. insertprodn module_binder module_expr_inl
 
    .. prodn::
-      module_binder ::= ( {? {| Import | Export } } {+ @ident } : @module_type_inl )
+      module_binder ::= ( {? {| Import | Export } {? @import_categories } } {+ @ident } : @module_type_inl )
       module_type_inl ::= ! @module_type
       | @module_type {? @functor_app_annot }
       functor_app_annot ::= [ inline at level @natural ]
@@ -76,7 +76,7 @@ together, as well as a means of massive abstraction.
       with_declaration ::= Definition @qualid {? @univ_decl } := @term
       | Module @qualid := @qualid
       module_expr_atom ::= @qualid
-      | ( {+ @module_expr_atom } )
+      | ( @module_expr_atom )
       of_module_type ::= : @module_type_inl
       | {* <: @module_type_inl }
       module_expr_inl ::= ! {+ @module_expr_atom }
@@ -137,10 +137,7 @@ matches the module type.  If the module is not a
 functor, its components (:term:`constants <constant>`, inductive types, submodules etc.)
 are now available through the dot notation.
 
-.. exn:: No such label @ident.
-    :undocumented:
-
-.. exn:: Signature components for label @ident do not match.
+.. exn:: Signature components for field @ident do not match.
     :undocumented:
 
 .. exn:: The field @ident is missing in @qualid.
@@ -174,7 +171,7 @@ are now available through the dot notation.
   #. Assumptions such as :cmd:`Axiom` that include the :n:`Inline` clause will be automatically
      expanded when the functor is applied, except when the function application is prefixed by ``!``.
 
-.. cmd:: Include @module_type_inl {* <+ @module_expr_inl }
+.. cmd:: Include @module_type_inl {* <+ @module_type_inl }
 
    Includes the content of module(s) in the current
    interactive module. Here :n:`@module_type_inl` can be a module expression or a module
@@ -182,7 +179,7 @@ are now available through the dot notation.
    expression then the system tries to instantiate :n:`@module_type_inl` with the current
    interactive module.
 
-   Including multiple modules is a single :cmd:`Include` is equivalent to including each module
+   Including multiple modules in a single :cmd:`Include` is equivalent to including each module
    in a separate :cmd:`Include` command.
 
 .. cmd:: Include Type {+<+ @module_type_inl }
@@ -191,26 +188,24 @@ are now available through the dot notation.
 
       Use :cmd:`Include` instead.
 
-.. cmd:: Declare Module {? {| Import | Export } } @ident {* @module_binder } : @module_type_inl
+.. cmd:: Declare Module {? {| Import | Export } {? @import_categories } } @ident {* @module_binder } : @module_type_inl
 
    Declares a module :token:`ident` of type :token:`module_type_inl`.
 
    If :n:`@module_binder`\s are specified, declares a functor with parameters given by the list of
    :token:`module_binder`\s.
 
-.. cmd:: Import {+ @filtered_import }
+.. cmd:: Import {? @import_categories } {+ @filtered_import }
 
-   .. insertprodn filtered_import filtered_import
-
-   .. prodn::
-      filtered_import ::= @qualid {? ( {+, @qualid {? ( .. ) } } ) }
-
-   If :token:`qualid` denotes a valid basic module (i.e. its module type is a
+   For each module name :n:`@qualid` in :n:`@filtered_import`,
+   if :n:`@qualid` denotes a valid basic module (i.e. its module type is a
    signature), makes its components available by their short names.
+
+   When used inside a section, the effect is local to the section.
 
    .. example::
 
-      .. coqtop:: reset in
+      .. rocqtop:: reset in
 
          Module Mod.
          Definition T:=nat.
@@ -218,7 +213,7 @@ are now available through the dot notation.
          End Mod.
          Check Mod.T.
 
-      .. coqtop:: all
+      .. rocqtop:: all
 
          Fail Check T.
          Import Mod.
@@ -233,7 +228,7 @@ are now available through the dot notation.
 
    .. example::
 
-      .. coqtop:: in
+      .. rocqtop:: in
 
          Module A.
          Module B.
@@ -242,9 +237,14 @@ are now available through the dot notation.
          End A.
          Import A.
 
-      .. coqtop:: all fail
+      .. rocqtop:: all fail
 
          Check B.T.
+
+   .. insertprodn filtered_import filtered_import
+
+   .. prodn::
+      filtered_import ::= @qualid {? ( {+, @qualid {? ( .. ) } } ) }
 
    Appending a module name with a parenthesized list of names will
    make only those names available with short names, not other names
@@ -263,7 +263,7 @@ are now available through the dot notation.
 
    .. example::
 
-      .. coqtop:: reset in
+      .. rocqtop:: reset in
 
          Module A.
          Module B.
@@ -274,7 +274,7 @@ are now available through the dot notation.
          End A.
          Import A(B.T(..), Z).
 
-      .. coqtop:: all
+      .. rocqtop:: all
 
          Check B.T.
          Check B.C.
@@ -282,10 +282,48 @@ are now available through the dot notation.
          Fail Check B.U.
          Check A.B.U.
 
-.. cmd:: Export {+ @filtered_import }
+   .. warn:: Cannot import local constant, it will be ignored.
+
+      This warning is printed when a name in the list of names to
+      import was declared as a local constant, and the name is not imported.
+
+   .. insertprodn import_categories import_categories
+
+   .. prodn::
+      import_categories ::= {? - } ( {+, @qualid } )
+
+
+   Putting a list of :n:`@import_categories` after ``Import`` will
+   restrict activation of features according to those categories.
+   Currently supported categories are:
+
+   - ``coercions`` corresponding to :cmd:`Coercion`.
+
+   - ``hints`` corresponding to the `Hint` commands (e.g. :cmd:`Hint
+     Resolve` or :cmd:`Hint Rewrite`) and :ref:`typeclass
+     <typeclasses>` instances.
+
+   - ``canonicals`` corresponding to :cmd:`Canonical Structure`.
+
+   - ``notations`` corresponding to :cmd:`Notation` (including
+     :cmd:`Reserved Notation`), scope controls (:cmd:`Delimit Scope`,
+     :cmd:`Bind Scope`, :cmd:`Open Scope`) but not :ref:`Abbreviations`.
+
+   - ``options`` for :ref:`flags-options-tables`
+
+   - ``ltac.notations`` corresponding to :cmd:`Tactic Notation`.
+
+   - ``ltac2.notations`` corresponding to :cmd:`Ltac2 Notation`
+     (including Ltac2 abbreviations).
+
+   Plugins may define their own categories.
+
+.. cmd:: Export {? @import_categories } {+ @filtered_import }
 
    Similar to :cmd:`Import`, except that when the module containing this command
    is imported, the :n:`{+ @qualid }` are imported as well.
+
+   When used in a section, the effect is not local to the section.
 
    The selective import syntax also works with Export.
 
@@ -309,6 +347,33 @@ are now available through the dot notation.
    leaving only their names, for the commands :cmd:`Print Module` and
    :cmd:`Print Module Type`.
 
+.. cmd:: Print Namespace @dirpath
+
+   Prints the names and types of all loaded constants whose fully qualified
+   names start with :n:`@dirpath`. For example, the command ``Print Namespace Stdlib.``
+   displays the names and types of all loaded constants in the standard library.
+   The command ``Print Namespace Stdlib.Init`` only shows constants defined in one
+   of the files in the ``Init`` directory. The command ``Print Namespace
+   Stdlib.Init.Nat`` shows what is in the ``Nat`` library file inside the ``Init``
+   directory. Module names may appear in :n:`@dirpath`.
+
+   .. example::
+
+      .. rocqtop:: reset in
+
+         Module A.
+         Definition foo := 0.
+         Module B.
+         Definition bar := 1.
+         End B.
+         End A.
+
+      .. rocqtop:: all
+
+         Print Namespace Top.
+         Print Namespace Top.A.
+         Print Namespace Top.A.B.
+
 .. _module_examples:
 
 Examples
@@ -316,18 +381,18 @@ Examples
 
 .. example:: Defining a simple module interactively
 
-    .. coqtop:: in
+    .. rocqtop:: in
 
        Module M.
        Definition T := nat.
        Definition x := 0.
 
-    .. coqtop:: all
+    .. rocqtop:: all
 
        Definition y : bool.
        exact true.
 
-    .. coqtop:: in
+    .. rocqtop:: in
 
        Defined.
        End M.
@@ -336,7 +401,7 @@ Inside a module one can define :term:`constants <constant>`, prove theorems and 
 else that can be done in the toplevel. Components of a closed
 module can be accessed using the dot notation:
 
-.. coqtop:: all
+.. rocqtop:: all
 
    Print M.x.
 
@@ -344,7 +409,7 @@ module can be accessed using the dot notation:
 
 .. example:: Defining a simple module type interactively
 
-   .. coqtop:: in
+   .. rocqtop:: in
 
       Module Type SIG.
       Parameter T : Set.
@@ -358,7 +423,7 @@ module can be accessed using the dot notation:
    Since :n:`SIG`, the type of the new module :n:`N`, doesn't define :n:`y` or
    give the body of :n:`x`, which are not included in :n:`N`.
 
-   .. coqtop:: all
+   .. rocqtop:: all
 
       Module N : SIG with Definition T := nat := M.
       Print N.T.
@@ -366,7 +431,7 @@ module can be accessed using the dot notation:
       Fail Print N.y.
 
    .. reset to remove N (undo in last coqtop block doesn't seem to do that), invisibly redefine M, SIG
-   .. coqtop:: none reset
+   .. rocqtop:: none reset
 
       Module M.
       Definition T := nat.
@@ -384,7 +449,7 @@ module can be accessed using the dot notation:
 The definition of :g:`N` using the module type expression :g:`SIG` with
 :g:`Definition T := nat` is equivalent to the following one:
 
-.. coqtop:: in
+.. rocqtop:: in
 
    Module Type SIG'.
    Definition T : Set := nat.
@@ -393,21 +458,27 @@ The definition of :g:`N` using the module type expression :g:`SIG` with
 
    Module N : SIG' := M.
 
+.. exn:: No field named @ident in @qualid.
+
+   Raised when the final :n:`@ident` in the left-hand side :n:`@qualid` of
+   a :n:`@with_declaration` is applied to a module type :n:`@qualid` that
+   has no field named this :n:`@ident`.
+
 If we just want to be sure that our implementation satisfies a
 given module type without restricting the interface, we can use a
 transparent constraint
 
-.. coqtop:: in
+.. rocqtop:: in
 
    Module P <: SIG := M.
 
-.. coqtop:: all
+.. rocqtop:: all
 
    Print P.y.
 
 .. example:: Creating a functor (a module with parameters)
 
-   .. coqtop:: in
+   .. rocqtop:: in
 
       Module Two (X Y: SIG).
       Definition T := (X.T * Y.T)%type.
@@ -416,18 +487,18 @@ transparent constraint
 
    and apply it to our modules and do some computations:
 
-   .. coqtop:: in
+   .. rocqtop:: in
 
 
       Module Q := Two M N.
 
-   .. coqtop:: all
+   .. rocqtop:: all
 
       Eval compute in (fst Q.x + snd Q.x).
 
 .. example:: A module type with two sub-modules, sharing some fields
 
-   .. coqtop:: in
+   .. rocqtop:: in
 
       Module Type SIG2.
         Declare Module M1 : SIG.
@@ -437,7 +508,7 @@ transparent constraint
         End M2.
       End SIG2.
 
-   .. coqtop:: in
+   .. rocqtop:: in
 
       Module Mod <: SIG2.
         Module M1.
@@ -449,6 +520,276 @@ transparent constraint
 
 Notice that ``M`` is a correct body for the component ``M2`` since its ``T``
 component is ``nat`` as specified for ``M1.T``.
+
+.. extracted from Gallina extensions chapter
+
+.. _qualified-names:
+
+Qualified names
+---------------
+
+Qualified names (:token:`qualid`\s) are hierarchical names that are used to
+identify items such as definitions, theorems and parameters that may be defined
+inside modules (see :cmd:`Module`).  In addition, they are used to identify
+compiled files.  Syntactically, they have this form:
+
+.. insertprodn qualid qualid
+
+.. prodn::
+   qualid ::= @ident {* .@ident }
+
+*Fully qualified* or *absolute* qualified names uniquely identify files
+(as in the `Require` command) and items within files, such as a single
+:cmd:`Variable` definition.  It's usually possible to use a suffix of the fully
+qualified name (a *short name*) that uniquely identifies an item.
+
+The first part of a fully qualified name identifies a file, which may be followed
+by a second part that identifies a specific item within that file.  Qualified names
+that identify files don't have a second part.
+
+While qualified names always consist of a series of dot-separated :n:`@ident`\s,
+*the following few paragraphs omit the dots for the sake of simplicity.*
+
+**File part.** Files are identified by :gdef:`logical paths <logical path>`,
+which are prefixes in the form :n:`{* @ident__logical } {+ @ident__file }`, such
+as :n:`Stdlib.Init.Logic`, in which:
+
+- :n:`{* @ident__logical }`, the :gdef:`logical name`, maps to one or more
+  directories (or :gdef:`physical paths <physical path>`) in the user's file system.
+  The logical name
+  is used so that Rocq scripts don't depend on where files are installed.
+  For example, the directory associated with :n:`Stdlib` contains Rocq's standard library.
+  The logical name is generally a single :n:`@ident`.
+
+- :n:`{+ @ident__file }` corresponds to the file system path of the file relative
+  to the directory that contains it.  For example, :n:`Init.Logic`
+  corresponds to the file system path :n:`Init/Logic.v` on Linux)
+
+When Rocq is processing a script that hasn't been saved in a file, such as a new
+buffer in RocqIDE or anything in `rocq repl`, definitions in the script are associated
+with the logical name :n:`Top` and there is no associated file system path.
+
+**Item part.** Items are further qualified by a suffix in the form
+:n:`{* @ident__module } @ident__base` in which:
+
+- :n:`{* @ident__module }` gives the names of the nested modules, if any,
+  that syntactically contain the definition of the item.  (See :cmd:`Module`.)
+
+- :n:`@ident__base` is the base name used in the command defining
+  the item.  For example, :n:`eq` in the :cmd:`Inductive` command defining it
+  in `Stdlib.Init.Logic` is the base name for `Stdlib.Init.Logic.eq`, the standard library
+  definition of :term:`Leibniz equality`.
+
+If :n:`@qualid` is the fully qualified name of an item, Rocq
+always interprets :n:`@qualid` as a reference to that item.  If :n:`@qualid` is also a
+partially qualified name for another item, then you must provide a more-qualified
+name to uniquely identify that other item.  For example, if there are two
+fully qualified items named `Foo.Bar` and `Stdlib.X.Foo.Bar`, then `Foo.Bar` refers
+to the first item and `X.Foo.Bar` is the shortest name for referring to the second item.
+
+Definitions with the :attr:`local` attribute are only accessible with
+their fully qualified name (see :ref:`gallina-definitions`).
+
+.. example::
+
+    .. rocqtop:: all
+
+       Check 0.
+
+       Definition nat := bool.
+
+       Check 0.
+
+       Check Datatypes.nat.
+
+       Locate nat.
+
+.. seealso:: Commands :cmd:`Locate`.
+
+:ref:`logical-paths-load-path` describes how :term:`logical paths <logical path>`
+become associated with specific files.
+
+.. _controlling-locality-of-commands:
+
+Controlling the scope of commands with locality attributes
+----------------------------------------------------------
+
+Many commands have effects that apply only within a specific scope,
+typically the section or the module in which the command was
+called. Locality :term:`attributes <attribute>` can alter the scope of
+the effect. Below, we give the semantics of each locality attribute
+while noting a few exceptional commands for which :attr:`local` and
+:attr:`global` attributes are interpreted differently.
+
+.. attr:: local
+
+   This :term:`attribute` limits the effect of the command to the
+   current scope (section or module).
+
+   The ``Local`` prefix is an alternative syntax for the :attr:`local`
+   attribute (see :n:`@legacy_attr`).
+
+   .. note::
+
+      - For some commands, this is the only locality supported within
+        sections (e.g., for :cmd:`Notation`, :cmd:`Ltac` and
+        :ref:`Hint <creating_hints>` commands).
+
+      - For some commands, this is the default locality within
+        sections even though other locality attributes are supported
+        as well (e.g., for the :cmd:`Arguments` command).
+
+   .. warning::
+
+      **Exception:** when :attr:`local` is applied to
+      :cmd:`Definition`, :cmd:`Theorem` or their variants, its
+      semantics are different: it makes the defined objects available
+      only through their fully qualified names rather than their
+      unqualified names after an :cmd:`Import`.
+
+.. attr:: export
+
+   This :term:`attribute` makes the effect of the command
+   persist when the section is closed and applies the effect when the
+   module containing the command is imported.
+
+   Commands supporting this attribute include :cmd:`Set`, :cmd:`Unset`
+   and the :ref:`Hint <creating_hints>` commands, although the latter
+   don't support it within sections.
+
+.. attr:: global
+
+   This :term:`attribute` makes the effect of the command
+   persist even when the current section or module is closed.  Loading
+   the file containing the command (possibly transitively) applies the
+   effect of the command.
+
+   The ``Global`` prefix is an alternative syntax for the
+   :attr:`global` attribute (see :n:`@legacy_attr`).
+
+   .. warning::
+
+      **Exception:** for a few commands (like :cmd:`Notation` and
+      :cmd:`Ltac`), this attribute behaves like :attr:`export`.
+
+   .. warning::
+
+      We strongly discourage using the :attr:`global` locality
+      attribute because the transitive nature of file loading gives
+      the user little control. We recommend using the :attr:`export`
+      locality attribute where it is supported.
+
+.. _visibility-attributes-modules:
+
+Summary of locality attributes in a module
+------------------------------------------
+
+This table sums up the effect of locality attributes on the scope of vernacular
+commands in a module, when outside the module where they were entered. In the
+following table:
+
+* a cross (❌) marks an unsupported attribute (compilation error);
+* “not available” means that the command has no effect outside the :cmd:`Module` it
+  was entered;
+* “when imported” means that the command has effect outside the :cmd:`Module` if, and
+  only if, the :cmd:`Module` (or the command, via :n:`@filtered_import`) is imported
+  (with :cmd:`Import` or :cmd:`Export`).
+* “short name when imported” means that the command has effects outside the
+  :cmd:`Module`; if the :cmd:`Module` (or command, via :n:`@filtered_import`) is not
+  imported, the associated identifiers must be qualified;
+* “qualified name” means that the command has effects outside the :cmd:`Module`, but
+  the corresponding identifier may only be referred to with a qualified name;
+* “always” means that the command always has effects outside the :cmd:`Module` (even
+  if it is not imported).
+
+A similar table for :cmd:`Section` can be found
+:ref:`here<visibility-attributes-sections>`.
+
+.. list-table::
+  :header-rows: 1
+
+  * - ``Command``
+    - no attribute
+    - :attr:`local`
+    - :attr:`export`
+    - :attr:`global`
+
+  * - :cmd:`Definition`, :cmd:`Lemma`,
+
+      :cmd:`Axiom`, ...
+    - :attr:`global`
+    - qualified name
+    - ❌
+    - short name
+
+      when imported
+
+  * - :cmd:`Ltac`
+    - :attr:`global`
+    - not available
+    - ❌
+    - short name
+
+      when imported
+
+  * - :cmd:`Ltac2`
+    - :attr:`global`
+    - not available
+    - ❌
+    - short name
+
+      when imported
+
+  * - :cmd:`Notation (abbreviation)`
+    - :attr:`global`
+    - not available
+    - ❌
+    - short name
+
+      when imported
+
+  * - :cmd:`Notation`
+    - :attr:`global`
+    - not available
+    - ❌
+    - when imported
+
+  * - :cmd:`Tactic Notation`
+    - :attr:`global`
+    - not available
+    - ❌
+    - when imported
+
+  * - :cmd:`Ltac2 Notation`
+    - :attr:`global`
+    - not available
+    - ❌
+    - when imported
+
+  * - :cmd:`Coercion`
+    - :attr:`global`
+    - not available
+    - ❌
+    - when imported
+
+  * - :cmd:`Canonical Structure`
+    - :attr:`global`
+
+    - when imported
+    - ❌
+    - when imported
+
+  * - ``Hints`` (and :cmd:`Instance`)
+    - :attr:`export`
+    - not available
+    - when imported
+    - always
+
+  * - :cmd:`Set` or :cmd:`Unset` a flag
+    - :attr:`local`
+    - not available
+    - when imported
+    - always
 
 Typing Modules
 ------------------
@@ -466,7 +807,7 @@ We also need additional typing judgments:
 + :math:`\WTM{E}{p}{S}`, denoting that the module pointed by :math:`p` has type :math:`S` in
   the global environment :math:`E`.
 + :math:`\WEV{E}{S}{\ovl{S}}`, denoting that a structure :math:`S` is evaluated to a
-  structure :math:`S` in weak head normal form.
+  structure :math:`\ovl{S}` in weak head normal form.
 + :math:`\WS{E}{S_1}{S_2}` , denoting that a structure :math:`S_1` is a subtype of a
   structure :math:`S_2`.
 + :math:`\WS{E}{e_1}{e_2}` , denoting that a structure element :math:`e_1` is more
@@ -496,13 +837,8 @@ Evaluation of structures to weak head normal form:
    \WTM{E}{p}{S_3}~~~~~ \WS{E}{S_3}{\ovl{S_1}}
    \end{array}
    --------------------------
-   \WEV{E}{S~p}{S_2 \{p/X,t_1 /p_1 .c_1 ,…,t_n /p_n.c_n \}}
+   \WEV{E}{S~p}{\subst{S_2}{X}{p}}
 
-
-In the last rule, :math:`\{t_1 /p_1 .c_1 ,…,t_n /p_n .c_n \}` is the resulting
-substitution from the inlining mechanism. We substitute in :math:`S` the
-inlined fields :math:`p_i .c_i` from :math:`\ModS{X}{S_1 }` by the corresponding delta-
-reduced term :math:`t_i` in :math:`p`.
 
 .. inference:: WEVAL-WITH-MOD
 
@@ -514,8 +850,8 @@ reduced term :math:`t_i` in :math:`p`.
    \end{array}
    ----------------------------------
    \begin{array}{c}
-   \WEV{E}{S~\with~x := p}{}\\
-   \Struct~e_1 ;…;e_i ; \ModA{X}{p};e_{i+2} \{p/X\} ;…;e_n \{p/X\} ~\End
+   \WEV{E}{S~\with~X := p}{}\\
+   \Struct~e_1 ;…;e_i ; \ModA{X}{p};\subst{e_{i+2}}{X}{p} ;…;\subst{e_n}{X}{p} ~\End
    \end{array}
 
 .. inference:: WEVAL-WITH-MOD-REC
@@ -527,19 +863,19 @@ reduced term :math:`t_i` in :math:`p`.
    --------------------------
    \begin{array}{c}
    \WEV{E}{S~\with~X_1.p := p_1}{} \\
-   \Struct~e_1 ;…;e_i ; \ModS{X}{\ovl{S_2}};e_{i+2} \{p_1 /X_1.p\} ;…;e_n \{p_1 /X_1.p\} ~\End
+   \Struct~e_1 ;…;e_i ; \ModS{X}{\ovl{S_2}};\subst{e_{i+2}}{X_1.p}{p_1} ;…;\subst{e_n}{X_1.p}{p_1} ~\End
    \end{array}
 
 .. inference:: WEVAL-WITH-DEF
 
    \begin{array}{c}
-   \WEV{E}{S}{\Struct~e_1 ;…;e_i ;\Assum{}{c}{T_1};e_{i+2} ;… ;e_n ~\End} \\
-   \WS{E;e_1 ;…;e_i }{\Def{}{c}{t}{T})}{\Assum{}{c}{T_1}}
+   \WEV{E}{S}{\Struct~e_1 ;…;e_i ;(c:T_1);e_{i+2} ;… ;e_n ~\End} \\
+   \WS{E;e_1 ;…;e_i }{(c:=t:T)}{(c:T_1)}
    \end{array}
    --------------------------
    \begin{array}{c}
    \WEV{E}{S~\with~c := t:T}{} \\
-   \Struct~e_1 ;…;e_i ;\Def{}{c}{t}{T};e_{i+2} ;… ;e_n ~\End
+   \Struct~e_1 ;…;e_i ;(c:=t:T);e_{i+2} ;… ;e_n ~\End
    \end{array}
 
 .. inference:: WEVAL-WITH-DEF-REC
@@ -557,7 +893,7 @@ reduced term :math:`t_i` in :math:`p`.
 .. inference:: WEVAL-PATH-MOD1
 
    \begin{array}{c}
-   \WEV{E}{p}{\Struct~e_1 ;…;e_i ; \Mod{X}{S}{S_1};e_{i+2} ;… ;e_n End} \\
+   \WEV{E}{p}{\Struct~e_1 ;…;e_i ; \Mod{X}{S}{S_1};e_{i+2} ;… ;e_n ~\End} \\
    \WEV{E;e_1 ;…;e_i }{S}{\ovl{S}}
    \end{array}
    --------------------------
@@ -574,7 +910,7 @@ reduced term :math:`t_i` in :math:`p`.
 .. inference:: WEVAL-PATH-ALIAS1
 
    \begin{array}{c}
-   \WEV{E}{p}{~\Struct~e_1 ;…;e_i ; \ModA{X}{p_1};e_{i+2}  ;… ;e_n End} \\
+   \WEV{E}{p}{~\Struct~e_1 ;…;e_i ; \ModA{X}{p_1};e_{i+2}  ;… ;e_n ~\End} \\
    \WEV{E;e_1 ;…;e_i }{p_1}{\ovl{S}}
    \end{array}
    --------------------------
@@ -591,7 +927,7 @@ reduced term :math:`t_i` in :math:`p`.
 .. inference:: WEVAL-PATH-TYPE1
 
    \begin{array}{c}
-   \WEV{E}{p}{~\Struct~e_1 ;…;e_i ; \ModType{Y}{S};e_{i+2} ;… ;e_n End} \\
+   \WEV{E}{p}{~\Struct~e_1 ;…;e_i ; \ModType{Y}{S};e_{i+2} ;… ;e_n ~\End} \\
    \WEV{E;e_1 ;…;e_i }{S}{\ovl{S}}
    \end{array}
    --------------------------
@@ -630,22 +966,22 @@ meaning:
   where :math:`e/p` is defined as follows (note that opaque definitions are processed
   as assumptions):
 
-    + :math:`\Def{}{c}{t}{T}/p = \Def{}{c}{t}{T}`
-    + :math:`\Assum{}{c}{U}/p = \Def{}{c}{p.c}{U}`
+    + :math:`(c:=t:T)/p = (c:=t:T)`
+    + :math:`(c:U)/p = (c:=p.c:U)`
     + :math:`\ModS{X}{S}/p = \ModA{X}{p.X}`
     + :math:`\ModA{X}{p′}/p = \ModA{X}{p′}`
-    + :math:`\Ind{}{Γ_P}{Γ_C}{Γ_I}/p = \Indp{}{Γ_P}{Γ_C}{Γ_I}{p}`
-    + :math:`\Indpstr{}{Γ_P}{Γ_C}{Γ_I}{p'}{p} = \Indp{}{Γ_P}{Γ_C}{Γ_I}{p'}`
+    + :math:`\ind{r}{Γ_I}{Γ_C}/p = \Indp{r}{Γ_I}{Γ_C}{p}`
+    + :math:`\Indpstr{r}{Γ_I}{Γ_C}{p'}{p} = \Indp{r}{Γ_I}{Γ_C}{p'}`
 
 + if :math:`S \lra \Functor(X:S′)~S″` then :math:`S/p=S`
 
 
-The notation :math:`\Indp{}{Γ_P}{Γ_C}{Γ_I}{p}`
+The notation :math:`\Indp{r}{Γ_I}{Γ_C}{p}`
 denotes an inductive definition that is definitionally equal to the
 inductive definition in the module denoted by the path :math:`p`. All rules
-which have :math:`\Ind{}{Γ_P}{Γ_C}{Γ_I}` as premises are also valid for
-:math:`\Indp{}{Γ_P}{Γ_C}{Γ_I}{p}`. We give the formation rule for
-:math:`\Indp{}{Γ_P}{Γ_C}{Γ_I}{p}`
+which have :math:`\ind{r}{Γ_I}{Γ_C}` as premises are also valid for
+:math:`\Indp{r}{Γ_I}{Γ_C}{p}`. We give the formation rule for
+:math:`\Indp{r}{Γ_I}{Γ_C}{p}`
 below as well as the equality rules on inductive types and
 constructors.
 
@@ -674,54 +1010,49 @@ Structure element subtyping rules:
 
    E[] ⊢ T_1 ≤_{βδιζη} T_2
    --------------------------
-   \WS{E}{\Assum{}{c}{T_1 }}{\Assum{}{c}{T_2 }}
+   \WS{E}{(c:T_1)}{(c:T_2)}
 
 .. inference:: DEF-ASSUM
 
    E[] ⊢ T_1 ≤_{βδιζη} T_2
    --------------------------
-   \WS{E}{\Def{}{c}{t}{T_1 }}{\Assum{}{c}{T_2 }}
+   \WS{E}{(c:=t:T_1)}{(c:T_2)}
 
 .. inference:: ASSUM-DEF
 
    E[] ⊢ T_1 ≤_{βδιζη} T_2
    E[] ⊢ c =_{βδιζη} t_2
    --------------------------
-   \WS{E}{\Assum{}{c}{T_1 }}{\Def{}{c}{t_2 }{T_2 }}
+   \WS{E}{(c:T_1)}{(c:=t_2:T_2)}
 
 .. inference:: DEF-DEF
 
    E[] ⊢ T_1 ≤_{βδιζη} T_2
    E[] ⊢ t_1 =_{βδιζη} t_2
    --------------------------
-   \WS{E}{\Def{}{c}{t_1 }{T_1 }}{\Def{}{c}{t_2 }{T_2 }}
+   \WS{E}{(c:=t_1:T_1)}{(c:=t_2:T_2)}
 
 .. inference:: IND-IND
 
-   E[] ⊢ Γ_P =_{βδιζη} Γ_P'
-   E[Γ_P ] ⊢ Γ_C =_{βδιζη} Γ_C'
-   E[Γ_P ;Γ_C ] ⊢ Γ_I =_{βδιζη} Γ_I'
+   E[] ⊢ Γ_I =_{βδιζη} Γ_I'
+   E[Γ_I] ⊢ Γ_C =_{βδιζη} Γ_C'
    --------------------------
-   \WS{E}{\ind{Γ_P}{Γ_C}{Γ_I}}{\ind{Γ_P'}{Γ_C'}{Γ_I'}}
+   \WS{E}{\ind{r}{Γ_I}{Γ_C}}{\ind{r}{Γ_I'}{Γ_C'}}
 
 .. inference:: INDP-IND
 
-   E[] ⊢ Γ_P =_{βδιζη} Γ_P'
-   E[Γ_P ] ⊢ Γ_C =_{βδιζη} Γ_C'
-   E[Γ_P ;Γ_C ] ⊢ Γ_I =_{βδιζη} Γ_I'
+   E[] ⊢ Γ_I =_{βδιζη} Γ_I'
+   E[Γ_I] ⊢ Γ_C =_{βδιζη} Γ_C'
    --------------------------
-   \WS{E}{\Indp{}{Γ_P}{Γ_C}{Γ_I}{p}}{\ind{Γ_P'}{Γ_C'}{Γ_I'}}
+   \WS{E}{\Indp{r}{Γ_I}{Γ_C}{p}}{\ind{r}{Γ_I'}{Γ_C'}}
 
 .. inference:: INDP-INDP
 
-   \begin{array}{c}
-   E[] ⊢ Γ_P =_{βδιζη} Γ_P'
-   E[Γ_P ] ⊢ Γ_C =_{βδιζη} Γ_C' \\
-   E[Γ_P ;Γ_C ] ⊢ Γ_I =_{βδιζη} Γ_I'
+   E[] ⊢ Γ_I =_{βδιζη} Γ_I'
+   E[Γ_I] ⊢ Γ_C =_{βδιζη} Γ_C'
    E[] ⊢ p =_{βδιζη} p'
-   \end{array}
    --------------------------
-   \WS{E}{\Indp{}{Γ_P}{Γ_C}{Γ_I}{p}}{\Indp{}{Γ_P'}{Γ_C'}{Γ_I'}{p'}}
+   \WS{E}{\Indp{r}{Γ_I}{Γ_C}{p}}{\Indp{r}{Γ_I'}{Γ_C'}{p'}}
 
 .. inference:: MOD-MOD
 
@@ -766,7 +1097,7 @@ New environment formation rules
    \WF{E}{}
    \WFT{E}{S}
    --------------------------
-   WF(E; \ModS{X}{S})[]
+   \WF{E; \ModS{X}{S}}{}
 
 .. inference:: WF-MOD2
 
@@ -775,31 +1106,31 @@ New environment formation rules
    \WFT{E}{S_1}
    \WFT{E}{S_2}
    --------------------------
-   \WF{E; \Mod{X}{S_1}{S_2}}{}
+   \WF{E; \ModImp{X}{S_1}{S_2}}{}
 
 .. inference:: WF-ALIAS
 
    \WF{E}{}
    E[] ⊢ p : S
    --------------------------
-   \WF{E, \ModA{X}{p}}{}
+   \WF{E; \ModA{X}{p}}{}
 
 .. inference:: WF-MODTYPE
 
    \WF{E}{}
    \WFT{E}{S}
    --------------------------
-   \WF{E, \ModType{Y}{S}}{}
+   \WF{E; \ModType{Y}{S}}{}
 
 .. inference:: WF-IND
 
    \begin{array}{c}
-   \WF{E;\ind{Γ_P}{Γ_C}{Γ_I}}{} \\
-   E[] ⊢ p:~\Struct~e_1 ;…;e_n ;\ind{Γ_P'}{Γ_C'}{Γ_I'};… ~\End : \\
-   E[] ⊢ \ind{Γ_P'}{Γ_C'}{Γ_I'} <: \ind{Γ_P}{Γ_C}{Γ_I}
+   \WF{E;\ind{r}{Γ_I}{Γ_C}}{} \\
+   E[] ⊢ p:~\Struct~e_1 ;…;e_n ;\ind{r}{Γ_I'}{Γ_C'};… ~\End \\
+   E[] ⊢ \ind{r}{Γ_I'}{Γ_C'} <: \ind{r}{Γ_I}{Γ_C}
    \end{array}
    --------------------------
-   \WF{E; \Indp{}{Γ_P}{Γ_C}{Γ_I}{p} }{}
+   \WF{E; \Indp{r}{Γ_I}{Γ_C}{p} }{}
 
 
 Component access rules
@@ -807,13 +1138,13 @@ Component access rules
 
 .. inference:: ACC-TYPE1
 
-   E[Γ] ⊢ p :~\Struct~e_1 ;…;e_i ;\Assum{}{c}{T};… ~\End
+   E[Γ] ⊢ p :~\Struct~e_1 ;…;e_i ;(c:T);… ~\End
    --------------------------
    E[Γ] ⊢ p.c : T
 
 .. inference:: ACC-TYPE2
 
-   E[Γ] ⊢ p :~\Struct~e_1 ;…;e_i ;\Def{}{c}{t}{T};… ~\End
+   E[Γ] ⊢ p :~\Struct~e_1 ;…;e_i ;(c:=t:T);… ~\End
    --------------------------
    E[Γ] ⊢ p.c : T
 
@@ -821,265 +1152,36 @@ Notice that the following rule extends the delta rule defined in section :ref:`C
 
 .. inference:: ACC-DELTA
 
-    E[Γ] ⊢ p :~\Struct~e_1 ;…;e_i ;\Def{}{c}{t}{U};… ~\End
+    E[Γ] ⊢ p :~\Struct~e_1 ;…;e_i ;(c:=t:U);… ~\End
     --------------------------
     E[Γ] ⊢ p.c \triangleright_δ t
 
 In the rules below we assume
-:math:`Γ_P` is :math:`[p_1 :P_1 ;…;p_r :P_r ]`,
-:math:`Γ_I` is :math:`[I_1 :A_1 ;…;I_k :A_k ]`,
-and :math:`Γ_C` is :math:`[c_1 :C_1 ;…;c_n :C_n ]`.
+:math:`Γ_P` is :math:`[p_1{:}P_1 ; …; p_r {:}P_r ]`,
+:math:`Γ_I` is :math:`[I_1{:}∀ Γ_P, A_1 ; …; I_k{:}∀ Γ_P, A_k ]`,
+and :math:`Γ_C` is :math:`[c_1{:}∀ Γ_P, C_1 ; …; c_n{:}∀ Γ_P, C_n ]`.
+
 
 .. inference:: ACC-IND1
 
-   E[Γ] ⊢ p :~\Struct~e_1 ;…;e_i ;\ind{Γ_P}{Γ_C}{Γ_I};… ~\End
+   E[Γ] ⊢ p :~\Struct~e_1 ;…;e_i ;\ind{r}{Γ_I}{Γ_C};… ~\End
    --------------------------
-   E[Γ] ⊢ p.I_j : (p_1 :P_1 )…(p_r :P_r )A_j
+   E[Γ] ⊢ p.I_j : ∀ Γ_P, A_j
 
 .. inference:: ACC-IND2
 
-   E[Γ] ⊢ p :~\Struct~e_1 ;…;e_i ;\ind{Γ_P}{Γ_C}{Γ_I};… ~\End
+   E[Γ] ⊢ p :~\Struct~e_1 ;…;e_i ;\ind{r}{Γ_I}{Γ_C};… ~\End
    --------------------------
-   E[Γ] ⊢ p.c_m : (p_1 :P_1 )…(p_r :P_r )C_m I_j (I_j~p_1 …p_r )_{j=1… k}
+   E[Γ] ⊢ p.c_m : ∀ Γ_P, C_m
 
 .. inference:: ACC-INDP1
 
-   E[] ⊢ p :~\Struct~e_1 ;…;e_i ; \Indp{}{Γ_P}{Γ_C}{Γ_I}{p'} ;… ~\End
+   E[] ⊢ p :~\Struct~e_1 ;…;e_i ; \Indp{r}{Γ_I}{Γ_C}{p'} ;… ~\End
    --------------------------
    E[] ⊢ p.I_i \triangleright_δ p'.I_i
 
 .. inference:: ACC-INDP2
 
-   E[] ⊢ p :~\Struct~e_1 ;…;e_i ; \Indp{}{Γ_P}{Γ_C}{Γ_I}{p'} ;… ~\End
+   E[] ⊢ p :~\Struct~e_1 ;…;e_i ; \Indp{r}{Γ_I}{Γ_C}{p'} ;… ~\End
    --------------------------
    E[] ⊢ p.c_i \triangleright_δ p'.c_i
-
-.. extracted from Gallina extensions chapter
-
-Libraries and qualified names
----------------------------------
-
-.. _names-of-libraries:
-
-Names of libraries
-~~~~~~~~~~~~~~~~~~
-
-The theories developed in Coq are stored in *library files* which are
-hierarchically classified into *libraries* and *sublibraries*. To
-express this hierarchy, library names are represented by qualified
-identifiers qualid, i.e. as list of identifiers separated by dots (see
-:ref:`qualified-names`). For instance, the library file ``Mult`` of the standard
-Coq library ``Arith`` is named ``Coq.Arith.Mult``. The identifier that starts
-the name of a library is called a *library root*. All library files of
-the standard library of Coq have the reserved root Coq but library
-filenames based on other roots can be obtained by using Coq commands
-(coqc, coqtop, coqdep, …) options ``-Q`` or ``-R`` (see :ref:`command-line-options`).
-Also, when an interactive Coq session starts, a library of root ``Top`` is
-started, unless option ``-top`` or ``-notop`` is set (see :ref:`command-line-options`).
-
-.. _qualified-names:
-
-Qualified identifiers
-~~~~~~~~~~~~~~~~~~~~~
-
-.. insertprodn qualid field_ident
-
-.. prodn::
-   qualid ::= @ident {* @field_ident }
-   field_ident ::= .@ident
-
-Library files are modules which possibly contain submodules which
-eventually contain constructions (axioms, parameters, definitions,
-lemmas, theorems, remarks or facts). The *absolute name*, or *full
-name*, of a construction in some library file is a qualified
-identifier starting with the logical name of the library file,
-followed by the sequence of submodules names encapsulating the
-construction and ended by the proper name of the construction.
-Typically, the absolute name ``Coq.Init.Logic.eq`` denotes Leibniz’
-equality defined in the module Logic in the sublibrary ``Init`` of the
-standard library of Coq.
-
-The proper name that ends the name of a construction is the short name
-(or sometimes base name) of the construction (for instance, the short
-name of ``Coq.Init.Logic.eq`` is ``eq``). Any partial suffix of the absolute
-name is a *partially qualified name* (e.g. ``Logic.eq`` is a partially
-qualified name for ``Coq.Init.Logic.eq``). Especially, the short name of a
-construction is its shortest partially qualified name.
-
-Coq does not accept two constructions (definition, theorem, …) with
-the same absolute name but different constructions can have the same
-short name (or even same partially qualified names as soon as the full
-names are different).
-
-Notice that the notion of absolute, partially qualified and short
-names also applies to library filenames.
-
-**Visibility**
-
-Coq maintains a table called the name table which maps partially qualified
-names of constructions to absolute names. This table is updated by the
-commands :cmd:`Require`, :cmd:`Import` and :cmd:`Export` and
-also each time a new declaration is added to the context. An absolute
-name is called visible from a given short or partially qualified name
-when this latter name is enough to denote it. This means that the
-short or partially qualified name is mapped to the absolute name in
-Coq name table. Definitions with the :attr:`local` attribute are only accessible with
-their fully qualified name (see :ref:`gallina-definitions`).
-
-It may happen that a visible name is hidden by the short name or a
-qualified name of another construction. In this case, the name that
-has been hidden must be referred to using one more level of
-qualification. To ensure that a construction always remains
-accessible, absolute names can never be hidden.
-
-.. example::
-
-    .. coqtop:: all
-
-       Check 0.
-
-       Definition nat := bool.
-
-       Check 0.
-
-       Check Datatypes.nat.
-
-       Locate nat.
-
-.. seealso:: Commands :cmd:`Locate`.
-
-.. _libraries-and-filesystem:
-
-Libraries and filesystem
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. note:: The questions described here have been subject to redesign in Coq 8.5.
-   Former versions of Coq use the same terminology to describe slightly different things.
-
-Compiled files (``.vo`` and ``.vio``) store sub-libraries. In order to refer
-to them inside Coq, a translation from file-system names to Coq names
-is needed. In this translation, names in the file system are called
-*physical* paths while Coq names are contrastingly called *logical*
-names.
-
-A logical prefix Lib can be associated with a physical path using
-the command line option ``-Q`` `path` ``Lib``. All subfolders of path are
-recursively associated with the logical path ``Lib`` extended with the
-corresponding suffix coming from the physical path. For instance, the
-folder ``path/foo/Bar`` maps to ``Lib.foo.Bar``. Subdirectories corresponding
-to invalid Coq identifiers are skipped, and, by convention,
-subdirectories named ``CVS`` or ``_darcs`` are skipped too.
-
-Thanks to this mechanism, ``.vo`` files are made available through the
-logical name of the folder they are in, extended with their own
-basename. For example, the name associated with the file
-``path/foo/Bar/File.vo`` is ``Lib.foo.Bar.File``. The same caveat applies for
-invalid identifiers. When compiling a source file, the ``.vo`` file stores
-its logical name, so that an error is issued if it is loaded with the
-wrong loadpath afterwards.
-
-Some folders have a special status and are automatically put in the
-path. Coq commands automatically associate a logical path to files in
-the repository tree rooted at the directory from where the command is
-launched, ``coqlib/user-contrib/``, the directories listed in the
-``$COQPATH``, ``${XDG_DATA_HOME}/coq/`` and ``${XDG_DATA_DIRS}/coq/``
-environment variables (see `XDG base directory specification
-<http://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html>`_)
-with the same physical-to-logical translation and with an empty logical prefix.
-
-.. todo: Needs a more better explanation of COQPATH and XDG* with example(s)
-   and suggest best practices for their use
-
-The command line option ``-R`` is a variant of ``-Q`` which has the strictly
-same behavior regarding loadpaths, but which also makes the
-corresponding ``.vo`` files available through their short names in a way
-similar to the :cmd:`Import` command. For instance, ``-R path Lib``
-associates the file ``/path/foo/Bar/File.vo`` with the logical name
-``Lib.foo.Bar.File`` but allows this file to be accessed through the
-short names ``foo.Bar.File``, ``Bar.File`` and ``File``. If several files with
-identical base name are present in different subdirectories of a
-recursive loadpath, which of these files is found first may be system-
-dependent and explicit qualification is recommended. The ``From`` argument
-of the ``Require`` command can be used to bypass the implicit shortening
-by providing an absolute root to the required file (see :ref:`compiled-files`).
-
-There also exists another independent loadpath mechanism attached to
-OCaml object files (``.cmo`` or ``.cmxs``) rather than Coq object
-files as described above. The OCaml loadpath is managed using
-the option ``-I`` `path` (in the OCaml world, there is neither a
-notion of logical name prefix nor a way to access files in
-subdirectories of path). See the command :cmd:`Declare ML Module` in
-:ref:`compiled-files` to understand the need of the OCaml loadpath.
-
-See :ref:`command-line-options` for a more general view over the Coq command
-line options.
-
-.. _controlling-locality-of-commands:
-
-Controlling the scope of commands with locality attributes
-----------------------------------------------------------
-
-Many commands have effects that apply only within a specific scope,
-typically the section or the module in which the command was
-called. Locality :term:`attributes <attribute>` can alter the scope of
-the effect. Below, we give the semantics of each locality attribute
-while noting a few exceptional commands for which :attr:`local` and
-:attr:`global` attributes are interpreted differently.
-
-.. attr:: local
-
-   This :term:`attribute` limits the effect of the command to the
-   current scope (section or module).
-
-   The ``Local`` prefix is an alternative syntax for the :attr:`local`
-   attribute (see :n:`@legacy_attr`).
-
-   .. note::
-
-      - For some commands, this is the only locality supported within
-        sections (e.g., for :cmd:`Notation`, :cmd:`Ltac` and
-        :ref:`Hint <creating_hints>` commands).
-
-      - For some commands, this is the default locality within
-        sections even though other locality attributes are supported
-        as well (e.g., for the :cmd:`Arguments` command).
-
-   .. warning::
-
-      **Exception:** when :attr:`local` is applied to
-      :cmd:`Definition`, :cmd:`Theorem` or their variants, its
-      semantics are different: it makes the defined objects available
-      only through their fully-qualified names rather than their
-      unqualified names after an :cmd:`Import`.
-
-.. attr:: export
-
-   This :term:`attribute` makes the effect of the command
-   persist when the section is closed and applies the effect when the
-   module containing the command is imported.
-
-   Commands supporting this attribute include :cmd:`Set`, :cmd:`Unset`
-   and the :ref:`Hint <creating_hints>` commands, although the latter
-   don't support it within sections.
-
-.. attr:: global
-
-   This :term:`attribute` makes the effect of the command
-   persist even when the current section or module is closed.  Loading
-   the file containing the command (possibly transitively) applies the
-   effect of the command.
-
-   The ``Global`` prefix is an alternative syntax for the
-   :attr:`global` attribute (see :n:`@legacy_attr`).
-
-   .. warning::
-
-      **Exception:** for a few commands (like :cmd:`Notation` and
-      :cmd:`Ltac`), this attribute behaves like :attr:`export`.
-
-   .. warning::
-
-      We strongly discourage using the :attr:`global` locality
-      attribute because the transitive nature of file loading gives
-      the user little control. We recommend using the :attr:`export`
-      locality attribute where it is supported.

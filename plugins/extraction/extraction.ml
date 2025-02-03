@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -17,10 +17,8 @@ open Context
 open Declarations
 open Declareops
 open Environ
-open Reduction
 open Reductionops
-open Inductive
-open Termops
+open Retyping
 open Inductiveops
 open Namegen
 open Miniml
@@ -41,15 +39,15 @@ let current_fixpoints = ref ([] : Constant.t list)
 
 let type_of env sg c =
   let polyprop = (lang() == Haskell) in
-  Retyping.get_type_of ~polyprop env sg (strip_outer_cast sg c)
+  Retyping.get_type_of ~polyprop env sg (Termops.strip_outer_cast sg c)
 
 let sort_of env sg c =
   let polyprop = (lang() == Haskell) in
-  Retyping.get_sort_family_of ~polyprop env sg (strip_outer_cast sg c)
+  Retyping.get_sort_family_of ~polyprop env sg (Termops.strip_outer_cast sg c)
 
 (*S Generation of flags and signatures. *)
 
-(* The type [flag] gives us information about any Coq term:
+(* The type [flag] gives us information about any Rocq term:
    \begin{itemize}
    \item [TypeScheme] denotes a type scheme, that is
      something that will become a type after enough applications.
@@ -74,7 +72,7 @@ type flag = info * scheme
 
 let info_of_family = function
   | InSProp | InProp -> Logic
-  | InSet | InType -> Info
+  | InSet | InType | InQSort -> Info
 
 let info_of_sort s = info_of_family (Sorts.family s)
 
@@ -111,9 +109,9 @@ let push_rels_assum assums =
 
 let get_body lconstr = EConstr.of_constr lconstr
 
-let get_opaque env c =
+let get_opaque access env c =
   EConstr.of_constr
-    (fst (Opaqueproof.force_proof Library.indirect_accessor (Environ.opaque_tables env) c))
+    (fst (Global.force_proof access c))
 
 let applistc c args = EConstr.mkApp (c, Array.of_list args)
 
@@ -126,10 +124,10 @@ let push_rec_types (lna,typarray,_) env =
   Array.fold_left (fun e assum -> EConstr.push_rel assum e) env ctxt
 
 (* Same as [Termops.nb_lam], but for [EConstr.t] *)
-let nb_lam sg c = List.length (fst (EConstr.decompose_lam sg c))
+let nb_lam sg c = List.length (fst (EConstr.decompose_lambda sg c))
 
-(* Same as [Term.decompose_lam_n] but for [EConstr.t] *)
-let decompose_lam_n sg n =
+(* Same as [Term.decompose_lambda_n] but for [EConstr.t] *)
+let decompose_lambda_n sg n =
   let rec lamdec_rec l n c =
     if n <= 0 then l,c
     else match EConstr.kind sg c with
@@ -207,7 +205,7 @@ let sign_with_implicits r s nb_params =
 
 (*S Management of type variable contexts. *)
 
-(* A De Bruijn variable context (db) is a context for translating Coq [Rel]
+(* A De Bruijn variable context (db) is a context for translating Rocq [Rel]
    into ML type [Tvar]. *)
 
 (*s From a type signature toward a type variable context (db). *)
@@ -226,12 +224,12 @@ let rec db_from_ind dbmap i =
   if Int.equal i 0 then []
   else (try Int.Map.find i dbmap with Not_found -> 0)::(db_from_ind dbmap (i-1))
 
-(*s [parse_ind_args] builds a map: [i->j] iff the i-th Coq argument
+(*s [parse_ind_args] builds a map: [i->j] iff the i-th Rocq argument
   of a constructor corresponds to the j-th type var of the ML inductive. *)
 
 (* \begin{itemize}
    \item [si] : signature of the inductive
-   \item [i] :  counter of Coq args for [(I args)]
+   \item [i] :  counter of Rocq args for [(I args)]
    \item [j] : counter of ML type vars
    \item [relmax] : total args number of the constructor
    \end{itemize} *)
@@ -246,12 +244,91 @@ let parse_ind_args si args relmax =
          | _ -> parse (i+1) (j+1) s)
   in parse 1 1 si
 
+let check_sort_poly sigma gr u =
+  let u = EConstr.EInstance.kind sigma u in
+  let qs, _ = UVars.Instance.to_array u in
+  if Array.exists (function
+      | Sorts.Quality.QConstant (QSProp|QProp) -> true
+      | QConstant QType | QVar _ -> false)
+      qs
+  then CErrors.user_err
+      Pp.(str "Cannot extract nontrivial sort polymorphism" ++ spc()
+          ++ str "(instantiation of " ++ Nametab.pr_global_env Id.Set.empty gr
+          ++ spc() ++ str "using Prop or SProp).")
+
+let relevance_of_projection_repr mib p =
+  let _mind,i = Names.Projection.Repr.inductive p in
+  match mib.mind_record with
+  | NotRecord | FakeRecord ->
+    CErrors.anomaly ~label:"relevance_of_projection" Pp.(str "not a projection")
+  | PrimRecord infos ->
+    let _,_,rs,_ = infos.(i) in
+    rs.(Names.Projection.Repr.arg p)
+
+(** Because of automatic unboxing the easy way [mk_def c] on the
+   constant body of primitive projections doesn't work. We pretend
+   that they are implemented by matches until someone figures out how
+   to clean it up (test with #4710 when working on this). *)
+let fake_match_projection env p =
+  let ind = Projection.Repr.inductive p in
+  let proj_arg = Projection.Repr.arg p in
+  let mib, mip = Inductive.lookup_mind_specif env ind in
+  let u = UVars.make_abstract_instance (Declareops.inductive_polymorphic_context mib) in
+  let indu = mkIndU (ind,u) in
+  let ctx, paramslet =
+    let subst = List.init mib.mind_ntypes (fun i -> mkIndU ((fst ind, mib.mind_ntypes - i - 1), u)) in
+    let (ctx, cty) = mip.mind_nf_lc.(0) in
+    let cty = Term.it_mkProd_or_LetIn cty ctx in
+    let rctx, _ = decompose_prod_decls (Vars.substl subst cty) in
+    List.chop mip.mind_consnrealdecls.(0) rctx
+  in
+  let ci_pp_info = { style = LetStyle } in
+  let ci = {
+    ci_ind = ind;
+    ci_npar = mib.mind_nparams;
+    ci_cstr_ndecls = mip.mind_consnrealdecls;
+    ci_cstr_nargs = mip.mind_consnrealargs;
+    ci_pp_info;
+  }
+  in
+  let relevance = relevance_of_projection_repr mib p in
+  let x = match mib.mind_record with
+    | NotRecord | FakeRecord -> assert false
+    | PrimRecord info ->
+      let x, _, _, _ = info.(snd ind) in
+      make_annot (Name x) mip.mind_relevance
+  in
+  let indty = mkApp (indu, Context.Rel.instance mkRel 0 paramslet) in
+  let rec fold arg j subst = function
+    | [] -> assert false
+    | LocalAssum (na,ty) :: rem ->
+      let ty = Vars.substl subst (liftn 1 j ty) in
+      if arg != proj_arg then
+        let lab = match na.binder_name with Name id -> Label.of_id id | Anonymous -> assert false in
+        let kn = Projection.Repr.make ind ~proj_npars:mib.mind_nparams ~proj_arg:arg lab in
+        fold (arg+1) (j+1) (mkProj (Projection.make kn false, na.binder_relevance, mkRel 1)::subst) rem
+      else
+        let p = ([|x|], liftn 1 2 ty) in
+        let branch =
+          let nas = Array.of_list (List.rev_map Context.Rel.Declaration.get_annot ctx) in
+          (nas, mkRel (List.length ctx - (j - 1)))
+        in
+        let params = Context.Rel.instance mkRel 1 paramslet in
+        let body = mkCase (ci, u, params, (p,relevance), NoInvert, mkRel 1, [|branch|]) in
+        it_mkLambda_or_LetIn (mkLambda (x,indty,body)) mib.mind_params_ctxt
+    | LocalDef (_,c,t) :: rem ->
+      let c = liftn 1 j c in
+      let c1 = Vars.substl subst c in
+      fold arg (j+1) (c1::subst) rem
+  in
+  fold 0 1 [] (List.rev ctx)
+
 (*S Extraction of a type. *)
 
 (* [extract_type env db c args] is used to produce an ML type from the
-   coq term [(c args)], which is supposed to be a Coq type. *)
+   coq term [(c args)], which is supposed to be a Rocq type. *)
 
-(* [db] is a context for translating Coq [Rel] into ML type [Tvar]. *)
+(* [db] is a context for translating Rocq [Rel] into ML type [Tvar]. *)
 
 (* [j] stands for the next ML type var. [j=0] means we do not
    generate ML type var anymore (in subterms for example). *)
@@ -302,39 +379,30 @@ let rec extract_type env sg db j c args =
                if Int.equal n' 0 then Tunknown else Tvar n')
     | Const (kn,u) ->
         let r = GlobRef.ConstRef kn in
+        let () = check_sort_poly sg r u in
         let typ = type_of env sg (EConstr.mkConstU (kn,u)) in
         (match flag_of_type env sg typ with
            | (Logic,_) -> assert false (* Cf. logical cases above *)
            | (Info, TypeScheme) ->
-               let mlt = extract_type_app env sg db (r, type_sign env sg typ) args in
-               (match (lookup_constant kn env).const_body with
-                 | Undef _ | OpaqueDef _ | Primitive _ -> mlt
-                 | Def _ when is_custom (GlobRef.ConstRef kn) -> mlt
-                 | Def lbody ->
-                      let newc = applistc (get_body lbody) args in
-                      let mlt' = extract_type env sg db j newc [] in
-                      (* ML type abbreviations interact badly with Coq *)
-                      (* reduction, so [mlt] and [mlt'] might be different: *)
-                      (* The more precise is [mlt'], extracted after reduction *)
-                      (* The shortest is [mlt], which use abbreviations *)
-                      (* If possible, we take [mlt], otherwise [mlt']. *)
-                      if eq_ml_type (expand env mlt) (expand env mlt') then mlt else mlt')
+             let mlt = extract_type_app env sg db (r, type_sign env sg typ) args in
+             mlt
            | (Info, Default) ->
                (* Not an ML type, for example [(c:forall X, X->X) Type nat] *)
                (match (lookup_constant kn env).const_body with
-                 | Undef _  | OpaqueDef _ | Primitive _ -> Tunknown (* Brutal approx ... *)
+                 | Undef _  | OpaqueDef _ | Primitive _ | Symbol _ -> Tunknown (* Brutal approx ... *)
                   | Def lbody ->
                       (* We try to reduce. *)
                       let newc = applistc (get_body lbody) args in
                       extract_type env sg db j newc []))
-    | Ind ((kn,i),u) ->
+    | Ind ((kn,i) as ind,u) ->
+        let () = check_sort_poly sg (IndRef ind) u in
         let s = (extract_ind env kn).ind_packets.(i).ip_sign in
         extract_type_app env sg db (GlobRef.IndRef (kn,i),s) args
-    | Proj (p,t) ->
+    | Proj (p,r,t) ->
        (* Let's try to reduce, if it hasn't already been done. *)
        if Projection.unfolded p then Tunknown
        else
-         extract_type env sg db j (EConstr.mkProj (Projection.unfold p, t)) args
+         extract_type env sg db j (EConstr.mkProj (Projection.unfold p, r, t)) args
     | Case _ | Fix _ | CoFix _ -> Tunknown
     | Evar _ | Meta _ -> Taxiom (* only possible during Show Extraction *)
     | Var v ->
@@ -350,7 +418,7 @@ let rec extract_type env sg db j c args =
             | (Info, TypeScheme) ->
               extract_type_app env sg db (r, type_sign env sg ty) args
             | (Info, Default) -> Tunknown))
-    | Cast _ | LetIn _ | Construct _ | Int _ | Float _ | Array _ -> assert false
+    | Cast _ | LetIn _ | Construct _ | Int _ | Float _ | String _ | Array _ -> assert false
 
 (*s Auxiliary function dealing with type application.
   Precondition: [r] is a type scheme represented by the signature [s],
@@ -360,7 +428,7 @@ and extract_type_app env sg db (r,s) args =
   let ml_args =
     List.fold_right
       (fun (b,c) a -> if b == Keep then
-         let p = List.length (fst (splay_prod env sg (type_of env sg c))) in
+         let p = List.length (fst (whd_decompose_prod env sg (type_of env sg c))) in
          let db = iterate (fun l -> 0 :: l) p db in
          (extract_type_scheme env sg db c p) :: a
        else a)
@@ -369,12 +437,12 @@ and extract_type_app env sg db (r,s) args =
 
 (*S Extraction of a type scheme. *)
 
-(* [extract_type_scheme env db c p] works on a Coq term [c] which is
-  an informative type scheme. It means that [c] is not a Coq type, but will
+(* [extract_type_scheme env db c p] works on a Rocq term [c] which is
+  an informative type scheme. It means that [c] is not a Rocq type, but will
   be when applied to sufficiently many arguments ([p] in fact).
   This function decomposes p lambdas, with eta-expansion if needed. *)
 
-(* [db] is a context for translating Coq [Rel] into ML type [Tvar]. *)
+(* [db] is a context for translating Rocq [Rel] into ML type [Tvar]. *)
 
 and extract_type_scheme env sg db c p =
   if Int.equal p 0 then extract_type env sg db 0 c []
@@ -384,7 +452,7 @@ and extract_type_scheme env sg db c p =
       | Lambda (n,t,d) ->
           extract_type_scheme (push_rel_assum (n,t) env) sg db d (p-1)
       | _ ->
-          let rels = fst (splay_prod env sg (type_of env sg c)) in
+          let rels = fst (whd_decompose_prod env sg (type_of env sg c)) in
           let env = push_rels_assum rels env in
           let eta_args = List.rev_map EConstr.mkRel (List.interval 1 p) in
           extract_type env sg db 0 (EConstr.Vars.lift p c) eta_args
@@ -401,9 +469,8 @@ and extract_ind env kn = (* kn is supposed to be in long form *)
   | None ->
      try
        extract_really_ind env kn mib
-     with SingletonInductiveBecomesProp id ->
-       (* TODO : which inductive is concerned in the block ? *)
-       error_singleton_become_prop id (Some (GlobRef.IndRef (kn,0)))
+     with SingletonInductiveBecomesProp ind ->
+       error_singleton_become_prop ind
 
 (* Then the real function *)
 
@@ -461,10 +528,10 @@ and extract_really_ind env kn mib =
     for i = 0 to mib.mind_ntypes - 1 do
       let p,u = packets.(i) in
       if not p.ip_logical then
-        let types = arities_of_constructors env ((kn,i),u) in
+        let types = Inductive.arities_of_constructors ((kn,i),u) (mib, mib.mind_packets.(i)) in
         for j = 0 to Array.length types - 1 do
-          let t = snd (decompose_prod_n_assum ndecls types.(j)) in
-          let prods,head = dest_prod epar t in
+          let t = snd (decompose_prod_n_decls ndecls types.(j)) in
+          let prods,head = Reduction.whd_decompose_prod epar t in
           let nprods = List.length prods in
           let args = match Constr.kind head with
             | App (f,args) -> args (* [Constr.kind f = Ind ip] *)
@@ -489,11 +556,11 @@ and extract_really_ind env kn mib =
         if not (Int.equal (Array.length p.ip_types) 1) then raise (I Standard);
         let typ = p.ip_types.(0) in
         let l = if conservative_types () then [] else List.filter (fun t -> not (isTdummy (expand env t))) typ in
-        if not (keep_singleton ()) &&
-            Int.equal (List.length l) 1 && not (type_mem_kn kn (List.hd l))
-        then raise (I Singleton);
         if List.is_empty l then raise (I Standard);
-        if mib.mind_record == Declarations.NotRecord then raise (I Standard);
+        if mib.mind_record == Declarations.NotRecord then
+          if not (keep_singleton ()) && Int.equal (List.length l) 1 && not (type_mem_kn kn (List.hd l))
+          then raise (I Singleton)
+          else raise (I Standard);
         (* Now we're sure it's a record. *)
         (* First, we find its field names. *)
         let rec names_prod t = match Constr.kind t with
@@ -505,9 +572,10 @@ and extract_really_ind env kn mib =
         let field_names =
           List.skipn mib.mind_nparams (names_prod mip0.mind_user_lc.(0)) in
         assert (Int.equal (List.length field_names) (List.length typ));
-        let projs = ref Cset.empty in
         let mp = MutInd.modpath kn in
         let implicits = implicits_of_global (GlobRef.ConstructRef (ip,1)) in
+        let ty = Inductive.type_of_inductive ((mib,mip0),u) in
+        let nparams = nb_default_params env sg (EConstr.of_constr ty) in
         let rec select_fields i l typs = match l,typs with
           | [],[] -> []
           | _::l, typ::typs when isTdummy (expand env typ) || Int.Set.mem i implicits ->
@@ -518,23 +586,14 @@ and extract_really_ind env kn mib =
               let knp = Constant.make2 mp (Label.of_id id) in
               (* Is it safe to use [id] for projections [foo.id] ? *)
               if List.for_all ((==) Keep) (type2signature env typ)
-              then projs := Cset.add knp !projs;
+              then (* for OCaml inlining: *) add_projection nparams knp ip;
               Some (GlobRef.ConstRef knp) :: (select_fields (i+1) l typs)
           | _ -> assert false
         in
-        let field_glob = select_fields (1+npar) field_names typ
-        in
-        (* Is this record officially declared with its projections ? *)
-        (* If so, we use this information. *)
-        begin try
-          let ty = Inductive.type_of_inductive ((mib,mip0),u) in
-          let n = nb_default_params env sg (EConstr.of_constr ty) in
-          let check_proj kn = if Cset.mem kn !projs then add_projection n kn ip
-          in
-          List.iter (Option.iter check_proj) (Structures.Structure.find_projections ip)
-        with Not_found -> ()
-        end;
-        Record field_glob
+        let field_glob = select_fields (1+npar) field_names typ in
+        if not (keep_singleton ()) && Int.equal (List.length l) 1 && not (type_mem_kn kn (List.hd l))
+        then Singleton (* in passing, we registered the (identity) projection *)
+        else Record field_glob
       with (I info) -> info
     in
     let i = {ind_kind = ind_info;
@@ -549,7 +608,7 @@ and extract_really_ind env kn mib =
 (*s [extract_type_cons] extracts the type of an inductive
   constructor toward the corresponding list of ML types.
 
-   - [db] is a context for translating Coq [Rel] into ML type [Tvar]
+   - [db] is a context for translating Rocq [Rel] into ML type [Tvar]
    - [dbmap] is a translation map (produced by a call to [parse_in_args])
    - [i] is the rank of the current product (initially [params_nb+1])
 *)
@@ -563,14 +622,14 @@ and extract_type_cons env sg db dbmap c i =
         (extract_type env sg db 0 t []) :: l
     | _ -> []
 
-(*s Recording the ML type abbreviation of a Coq type scheme constant. *)
+(*s Recording the ML type abbreviation of a Rocq type scheme constant. *)
 
 and mlt_env env r = let open GlobRef in match r with
   | IndRef _ | ConstructRef _ | VarRef _ -> None
   | ConstRef kn ->
      let cb = Environ.lookup_constant kn env in
      match cb.const_body with
-     | Undef _ | OpaqueDef _ | Primitive _ -> None
+     | Undef _ | OpaqueDef _ | Primitive _ | Symbol _ -> None
      | Def l_body ->
         match lookup_typedef kn cb with
         | Some _ as o -> o
@@ -660,13 +719,19 @@ let rec extract_term env sg mle mlt c args =
         with NotDefault d ->
           let mle' = Mlenv.push_std_type mle (Tdummy d) in
           ast_pop (extract_term env' sg mle' mlt c2 args'))
-    | Const (kn,_) ->
+    | Const (kn,u) ->
+        let () = check_sort_poly sg (ConstRef kn) u in
         extract_cst_app env sg mle mlt kn args
-    | Construct (cp,_) ->
+    | Construct (cp,u) ->
+        let () = check_sort_poly sg (ConstructRef cp) u in
         extract_cons_app env sg mle mlt cp args
-    | Proj (p, c) ->
-        let term = Retyping.expand_projection env (Evd.from_env env) p c [] in
-        extract_term env sg mle mlt term args
+    | Proj (p, _, c) ->
+        let p = Projection.repr p in
+        let term = fake_match_projection env p in
+        let ind = Inductiveops.find_rectype env sg (Retyping.get_type_of env sg c) in
+        let indf,_ = Inductiveops.dest_ind_type ind in
+        let _,indargs = Inductiveops.dest_ind_family indf in
+        extract_term env sg mle mlt (beta_applist sg (EConstr.of_constr term,indargs@[c])) args
     | Rel n ->
         (* As soon as the expected [mlt] for the head is known, *)
         (* we unify it with an fresh copy of the stored type of [Rel n]. *)
@@ -682,7 +747,7 @@ let rec extract_term env sg mle mlt c args =
     | CoFix (i,recd) ->
         extract_app env sg mle mlt (extract_fix env sg mle i recd) args
     | Cast (c,_,_) -> extract_term env sg mle mlt c args
-    | Evar _ | Meta _ -> MLaxiom
+    | Evar _ | Meta _ -> MLaxiom "evar"
     | Var v ->
        (* Only during Show Extraction *)
        let open Context.Named.Declaration in
@@ -695,6 +760,7 @@ let rec extract_term env sg mle mlt c args =
        extract_app env sg mle mlt extract_var args
     | Int i -> assert (args = []); MLuint i
     | Float f -> assert (args = []); MLfloat f
+    | String s -> assert (args = []); MLstring s
     | Array (_u,t,def,_ty) ->
       assert (args = []);
       let a = new_meta () in
@@ -743,7 +809,7 @@ and extract_cst_app env sg mle mlt kn args =
   (* Can we instantiate types variables for this constant ? *)
   (* In Ocaml, inside the definition of this constant, the answer is no. *)
   let instantiated =
-    if lang () == Ocaml && List.mem_f Constant.CanOrd.equal kn !current_fixpoints
+    if lang () == Ocaml && List.exists (fun c -> QConstant.equal env kn c) !current_fixpoints
     then var2var' (snd schema)
     else instantiation schema
   in
@@ -793,7 +859,7 @@ and extract_cst_app env sg mle mlt kn args =
    \item In ML, constructor arguments are uncurryfied.
    \item We managed to suppress logical parts inside inductive definitions,
    but they must appears outside (for partial applications for instance)
-   \item We also suppressed all Coq parameters to the inductives, since
+   \item We also suppressed all Rocq parameters to the inductives, since
    they are fixed, and thus are not used for the computation.
    \end{itemize} *)
 
@@ -926,9 +992,8 @@ and extract_fix env sg mle i (fi,ti,ci as recd) mlt =
    and decompose the term [c] in [n] lambdas, with eta-expansion if needed. *)
 
 let decomp_lams_eta_n n m env sg c t =
-  let rels = fst (splay_prod_n env sg n t) in
-  let rels = List.map (fun (LocalAssum (id,c) | LocalDef (id,_,c)) -> (id,c)) rels in
-  let rels',c = EConstr.decompose_lam sg c in
+  let rels = fst (whd_decompose_prod_n env sg n t) in
+  let rels',c = EConstr.decompose_lambda sg c in
   let d = n - m in
   (* we'd better keep rels' as long as possible. *)
   let rels = (List.firstn d rels) @ rels' in
@@ -968,12 +1033,12 @@ let extract_std_constant env sg kn body typ =
   let rels, c =
     let n = List.length s
     and m = nb_lam sg body in
-    if n <= m then decompose_lam_n sg n body
+    if n <= m then decompose_lambda_n sg n body
     else
       let s,s' = List.chop m s in
       if List.for_all ((==) Keep) s' &&
         (lang () == Haskell || sign_kind s != UnsafeLogicalSig)
-      then decompose_lam_n sg m body
+      then decompose_lambda_n sg m body
       else decomp_lams_eta_n n m env sg body typ
   in
   (* Should we do one eta-expansion to avoid non-generalizable '_a ? *)
@@ -995,7 +1060,7 @@ let extract_std_constant env sg kn body typ =
   let mle = List.fold_left Mlenv.push_std_type Mlenv.empty l in
   (* The lambdas names. *)
   let ids = List.map (fun (n,_) -> Id (id_of_name n.binder_name)) rels in
-  (* The according Coq environment. *)
+  (* The according Rocq environment. *)
   let env = push_rels_assum rels env in
   (* The real extraction: *)
   let e = extract_term env sg mle t' c [] in
@@ -1023,7 +1088,11 @@ let extract_fixpoint env sg vkn (fi,ti,ci) =
   let kns = Array.to_list vkn in
   current_fixpoints := kns;
   (* for replacing recursive calls [Rel ..] by the corresponding [Const]: *)
-  let sub = List.rev_map EConstr.mkConst kns in
+  let sg, sub = CList.fold_left_map (fun sg con ->
+      Evd.fresh_global env sg (ConstRef con))
+      sg
+      (List.rev kns)
+  in
   for i = 0 to n-1 do
     if info_of_family (sort_of env sg ti.(i)) != Logic then
       try
@@ -1031,71 +1100,13 @@ let extract_fixpoint env sg vkn (fi,ti,ci) =
                    (EConstr.Vars.substl sub ci.(i)) ti.(i) in
         terms.(i) <- e;
         types.(i) <- t;
-      with SingletonInductiveBecomesProp id ->
-        error_singleton_become_prop id (Some (GlobRef.ConstRef vkn.(i)))
+      with SingletonInductiveBecomesProp ind ->
+        error_singleton_become_prop ind
   done;
   current_fixpoints := [];
   Dfix (Array.map (fun kn -> GlobRef.ConstRef kn) vkn, terms, types)
 
-(** Because of automatic unboxing the easy way [mk_def c] on the
-   constant body of primitive projections doesn't work. We pretend
-   that they are implemented by matches until someone figures out how
-   to clean it up (test with #4710 when working on this). *)
-let fake_match_projection env p =
-  let ind = Projection.Repr.inductive p in
-  let proj_arg = Projection.Repr.arg p in
-  let mib, mip = Inductive.lookup_mind_specif env ind in
-  let u = Univ.make_abstract_instance (Declareops.inductive_polymorphic_context mib) in
-  let indu = mkIndU (ind,u) in
-  let ctx, paramslet =
-    let subst = List.init mib.mind_ntypes (fun i -> mkIndU ((fst ind, mib.mind_ntypes - i - 1), u)) in
-    let (ctx, cty) = mip.mind_nf_lc.(0) in
-    let cty = Term.it_mkProd_or_LetIn cty ctx in
-    let rctx, _ = decompose_prod_assum (Vars.substl subst cty) in
-    List.chop mip.mind_consnrealdecls.(0) rctx
-  in
-  let ci_pp_info = { ind_tags = []; cstr_tags = [|Context.Rel.to_tags ctx|]; style = LetStyle } in
-  let ci = {
-    ci_ind = ind;
-    ci_npar = mib.mind_nparams;
-    ci_cstr_ndecls = mip.mind_consnrealdecls;
-    ci_cstr_nargs = mip.mind_consnrealargs;
-    ci_relevance = Declareops.relevance_of_projection_repr mib p;
-    ci_pp_info;
-  }
-  in
-  let x = match mib.mind_record with
-    | NotRecord | FakeRecord -> assert false
-    | PrimRecord info ->
-      let x, _, _, _ = info.(snd ind) in
-      make_annot (Name x) mip.mind_relevance
-  in
-  let indty = mkApp (indu, Context.Rel.instance mkRel 0 paramslet) in
-  let rec fold arg j subst = function
-    | [] -> assert false
-    | LocalAssum (na,ty) :: rem ->
-      let ty = Vars.substl subst (liftn 1 j ty) in
-      if arg != proj_arg then
-        let lab = match na.binder_name with Name id -> Label.of_id id | Anonymous -> assert false in
-        let kn = Projection.Repr.make ind ~proj_npars:mib.mind_nparams ~proj_arg:arg lab in
-        fold (arg+1) (j+1) (mkProj (Projection.make kn false, mkRel 1)::subst) rem
-      else
-        let p = ([|x|], liftn 1 2 ty) in
-        let branch =
-          let nas = Array.of_list (List.rev_map Context.Rel.Declaration.get_annot ctx) in
-          (nas, mkRel (List.length ctx - (j - 1)))
-        in
-        let params = Context.Rel.instance mkRel 1 paramslet in
-        let body = mkCase (ci, u, params, p, NoInvert, mkRel 1, [|branch|]) in
-        it_mkLambda_or_LetIn (mkLambda (x,indty,body)) mib.mind_params_ctxt
-    | LocalDef (_,c,t) :: rem ->
-      let c = liftn 1 j c in
-      let c1 = Vars.substl subst c in
-      fold arg (j+1) (c1::subst) rem
-  in
-  fold 0 1 [] (List.rev ctx)
-
-let extract_constant env kn cb =
+let extract_constant access env kn cb =
   let sg = Evd.from_env env in
   let r = GlobRef.ConstRef kn in
   let typ = EConstr.of_constr cb.const_type in
@@ -1115,7 +1126,7 @@ let extract_constant env kn cb =
   in
   let mk_ax () =
     let t = extract_axiom env sg kn typ in
-    Dterm (r, MLaxiom, t)
+    Dterm (r, MLaxiom (Constant.to_string kn), t)
   in
   let mk_def c =
     let e,t = extract_std_constant env sg kn c typ in
@@ -1129,6 +1140,7 @@ let extract_constant env kn cb =
     | (Logic,Default) -> warn_log (); Dterm (r, MLdummy Kprop, Tdummy Kprop)
     | (Info,TypeScheme) ->
         (match cb.const_body with
+          | Symbol _ -> add_symbol r; mk_typ_ax ()
           | Primitive _ | Undef _ -> warn_info (); mk_typ_ax ()
           | Def c ->
              (match Structures.PrimitiveProjections.find_opt kn with
@@ -1138,10 +1150,11 @@ let extract_constant env kn cb =
                 mk_typ (EConstr.of_constr body))
           | OpaqueDef c ->
             add_opaque r;
-            if access_opaque () then mk_typ (get_opaque env c)
+            if access_opaque () then mk_typ (get_opaque access env c)
             else mk_typ_ax ())
     | (Info,Default) ->
         (match cb.const_body with
+          | Symbol _ -> add_symbol r; mk_ax ()
           | Primitive _ | Undef _ -> warn_info (); mk_ax ()
           | Def c ->
              (match Structures.PrimitiveProjections.find_opt kn with
@@ -1151,10 +1164,10 @@ let extract_constant env kn cb =
                 mk_def (EConstr.of_constr body))
           | OpaqueDef c ->
             add_opaque r;
-            if access_opaque () then mk_def (get_opaque env c)
+            if access_opaque () then mk_def (get_opaque access env c)
             else mk_ax ())
-  with SingletonInductiveBecomesProp id ->
-    error_singleton_become_prop id (Some (GlobRef.ConstRef kn))
+  with SingletonInductiveBecomesProp ind ->
+    error_singleton_become_prop ind
 
 let extract_constant_spec env kn cb =
   let sg = Evd.from_env env in
@@ -1169,7 +1182,7 @@ let extract_constant_spec env kn cb =
     | (Info, TypeScheme) ->
         let s,vl = type_sign_vl env sg typ in
         (match cb.const_body with
-          | Undef _ | OpaqueDef _ | Primitive _ -> Stype (r, vl, None)
+          | Undef _ | OpaqueDef _ | Primitive _ | Symbol _ -> Stype (r, vl, None)
           | Def body ->
               let db = db_from_sign s in
               let body = get_body body in
@@ -1178,8 +1191,8 @@ let extract_constant_spec env kn cb =
     | (Info, Default) ->
         let t = snd (record_constant_type env sg kn (Some typ)) in
         Sval (r, type_expunge env t)
-  with SingletonInductiveBecomesProp id ->
-    error_singleton_become_prop id (Some (GlobRef.ConstRef kn))
+  with SingletonInductiveBecomesProp ind ->
+    error_singleton_become_prop ind
 
 let extract_with_type env sg c =
   try
@@ -1191,8 +1204,8 @@ let extract_with_type env sg c =
         let t = extract_type_scheme env sg db c (List.length s) in
         Some (vl, t)
     | _ -> None
-  with SingletonInductiveBecomesProp id ->
-    error_singleton_become_prop id None
+  with SingletonInductiveBecomesProp ind ->
+    error_singleton_become_prop ind
 
 let extract_constr env sg c =
   reset_meta_count ();
@@ -1204,8 +1217,8 @@ let extract_constr env sg c =
     | (Info,Default) ->
        let mlt = extract_type env sg [] 1 typ [] in
        extract_term env sg Mlenv.empty mlt c [], mlt
-  with SingletonInductiveBecomesProp id ->
-    error_singleton_become_prop id None
+  with SingletonInductiveBecomesProp ind ->
+    error_singleton_become_prop ind
 
 let extract_inductive env kn =
   let ind = extract_ind env kn in

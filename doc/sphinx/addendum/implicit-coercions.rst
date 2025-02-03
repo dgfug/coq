@@ -8,7 +8,7 @@ Implicit Coercions
 General Presentation
 ---------------------
 
-This section describes the inheritance mechanism of Coq. In Coq with
+This section describes one inheritance mechanism of the Rocq Prover. With
 inheritance, we are not interested in adding any expressive power to
 our theory, but only convenience. Given a term, possibly not typable,
 we are interested in the problem of determining if it can be well
@@ -21,14 +21,16 @@ typed modulo insertion of appropriate coercions. We allow to write:
  * :g:`f a` when ``f`` is not a function, but can be seen in a certain sense
    as a function: bijection, functor, any structure morphism etc.
 
+.. _classes-implicit-coercions:
 
-Classes
--------
+Coercion Classes
+----------------
 
 A class with :math:`n` parameters is any defined name with a type
 :n:`forall (@ident__1 : @type__1)..(@ident__n:@type__n), @sort`.  Thus a class with
 parameters is considered as a single class and not as a family of
-classes.  An object of a class is any term of type :n:`@class @term__1 .. @term__n`.
+classes.  An object of a coercion class is any term of type
+:n:`@coercion_class @term__1 .. @term__n`.
 In addition to these user-defined classes, we have two built-in classes:
 
 
@@ -39,14 +41,17 @@ In addition to these user-defined classes, we have two built-in classes:
 
 Formally, the syntax of classes is defined as:
 
-   .. insertprodn class class
+   .. insertprodn coercion_class coercion_class
 
    .. prodn::
-      class ::= Funclass
+      coercion_class ::= Funclass
       | Sortclass
       | @reference
 
 
+.. note::
+   Don't confuse coercion classes with typeclasses, which are records with
+   special properties defined with the :cmd:`Class` command.
 
 Coercions
 ---------
@@ -56,51 +61,66 @@ A name ``f`` can be declared as a coercion between a source user-defined class
 conditions holds:
 
  * ``D`` is a user-defined class, then the type of ``f`` must have the form
-   :g:`forall (x₁:A₁)..(xₙ:Aₙ)(y:C x₁..xₙ), D u₁..uₘ` where :math:`m`
+   :g:`forall (x₁:A₁)..(xₖ:Aₖ)(y:C v₁..vₙ), D u₁..uₘ` where :math:`m`
    is the number of parameters of ``D``.
  * ``D`` is ``Funclass``, then the type of ``f`` must have the form
-   :g:`forall (x₁:A₁)..(xₙ:Aₙ)(y:C x₁..xₙ)(x:A), B`.
+   :g:`forall (x₁:A₁)..(xₖ:Aₖ)(y:C v₁..vₙ)(x:A), B`.
  * ``D`` is ``Sortclass``, then the type of ``f`` must have the form
-   :g:`forall (x₁:A₁)..(xₙ:Aₙ)(y:C x₁..xₙ), s` with ``s`` a sort.
+   :g:`forall (x₁:A₁)..(xₖ:Aₖ)(y:C v₁..vₙ), s` with ``s`` a sort.
 
-We then write :g:`f : C >-> D`. The restriction on the type
-of coercions is called *the uniform inheritance condition*.
+We then write :g:`f : C >-> D`.
+
+.. _ambiguous-paths:
+
+When you declare a new coercion (e.g. with :cmd:`Coercion`), new coercion
+paths with the same classes as existing ones are ignored. Rocq will generate
+a warning when the two paths may be non convertible. When the :g:`x₁..xₖ` are exactly
+the :g:`v₁..vₙ` (in the same order), the coercion is said to satisfy
+the :gdef:`uniform inheritance condition`. When possible, we recommend
+using coercions that satisfy this condition. This guarantees that
+no spurious warning will be generated.
 
 .. note:: The built-in class ``Sortclass`` can be used as a source class, but
           the built-in class ``Funclass`` cannot.
 
 To coerce an object :g:`t:C t₁..tₙ` of ``C`` towards ``D``, we have to
-apply the coercion ``f`` to it; the obtained term :g:`f t₁..tₙ t` is
+apply the coercion ``f`` to it; the obtained term :g:`f _.._ t` is
 then an object of ``D``.
 
+Reversible Coercions
+--------------------
+
+When a term cannot be coerced (directly) to its expected type, Rocq tries to
+use a :gdef:`reversible coercion` (see the :attr:`reversible` attribute). Intuitively,
+Rocq synthesizes a new term of the right type that can be coerced
+to the original one. The new term is obtained by reversing the coercion, that
+is guessing its input given the output.
+
+More precisely, in order to coerce a term :g:`a : A` to type :g:`B`, Rocq
+finds a reversible coercion :g:`f : B >-> A`, then synthesizes some :g:`?x : B`
+such that :g:`f ?x = a` (typically through :ref:`canonicalstructures` or
+:ref:`typeclasses`) and finally replaces :g:`a` with the value of :g:`?x`.
+
+If Rocq doesn't find a reversible coercion :g:`f : B >-> A`, then it
+looks for a coercion class :g:`C` equipped with an incoming reversible coercion
+:g:`g : B >-> C` and a coercion :g:`h : A >-> C` (not necessarily reversible),
+then synthesizes some :g:`?x : B` such that :g:`g ?x = h a`, and finally
+replaces :g:`a` with the value of :g:`?x`.
+If there's another class :g:`D` with a coercion from :g:`C` to :g:`D` and
+incoming coercions from :g:`A` and :g:`B`, Rocq tries :g:`C` before :g:`D`.
+This ordering is well defined only if the coercion graph happens to be a semi
+lattice.  The intuition behind this ordering is that since coercions forget
+information, :g:`D` has less information that :g:`C`, and hence
+inferring :g:`?x : B` from :g:`h a : D` would be harder.
+
+See the :ref:`example below <example-reversible-coercion>`.
 
 Identity Coercions
 -------------------
 
-Identity coercions are special cases of coercions used to go around
-the uniform inheritance condition. Let ``C`` and ``D`` be two classes
-with respectively `n` and `m` parameters and
-:g:`f:forall (x₁:T₁)..(xₖ:Tₖ)(y:C u₁..uₙ), D v₁..vₘ` a function which
-does not verify the uniform inheritance condition. To declare ``f`` as
-coercion, one has first to declare a subclass ``C'`` of ``C``:
-
-  :g:`C' := fun (x₁:T₁)..(xₖ:Tₖ) => C u₁..uₙ`
-
-We then define an *identity coercion* between ``C'`` and ``C``:
-
-  :g:`Id_C'_C  := fun (x₁:T₁)..(xₖ:Tₖ)(y:C' x₁..xₖ) => (y:C u₁..uₙ)`
-
-We can now declare ``f`` as coercion from ``C'`` to ``D``, since we can
-"cast" its type as
-:g:`forall (x₁:T₁)..(xₖ:Tₖ)(y:C' x₁..xₖ),D v₁..vₘ`.
-
-The identity coercions have a special status: to coerce an object
-:g:`t:C' t₁..tₖ`
-of ``C'`` towards ``C``, we do not have to insert explicitly ``Id_C'_C``
-since :g:`Id_C'_C t₁..tₖ t` is convertible with ``t``.  However we
-"rewrite" the type of ``t`` to become an object of ``C``; in this case,
-it becomes :g:`C uₙ'..uₖ'` where each ``uᵢ'`` is the result of the
-substitution in ``uᵢ`` of the variables ``xⱼ`` by ``tⱼ``.
+To make coercions work for both a named class and for
+``Sortclass`` or ``Funclass``, use the :cmd:`Identity Coercion` command.
+There is an example :ref:`here <example-identity-coercion>`.
 
 Inheritance Graph
 ------------------
@@ -122,57 +142,90 @@ by the coercions ``f₁..fₖ``.  The application of a coercion path to a
 term consists of the successive application of its coercions.
 
 
-Declaring Coercions
--------------------------
+Coercion Classes
+----------------
 
-.. cmd:: Coercion @reference : @class >-> @class
-         Coercion @ident {? @univ_decl } @def_body
-
-   :name: Coercion; _
+.. cmd:: Coercion @reference {? : @coercion_class >-> @coercion_class }
+         Coercion @ident_decl @def_body
 
   The first form declares the construction denoted by :token:`reference` as a coercion between
-  the two given classes.  The second form defines :token:`ident`
-  just like :cmd:`Definition` :n:`@ident {? @univ_decl } @def_body`
-  and then declares :token:`ident` as a coercion between it source and its target.
+  the two given classes.  The second form defines :token:`ident_decl`
+  just like :cmd:`Definition` :n:`@ident_decl @def_body`
+  and then declares :token:`ident_decl` as a coercion between it source and its target.
   Both forms support the :attr:`local` attribute, which makes the coercion local to the current section.
 
+  :n:`{? : @coercion_class >-> @coercion_class }`
+    The source and target classes of the coercion.
+    If unspecified, :n:`@reference` must already be a coercion, which
+    enables modifying the :attr:`reversible` attribute of :n:`@reference`.
+    See the :ref:`example <example-reversible-coercion-attribute>` below.
+
+  .. attr:: reversible{? = {| yes | no } }
+     :name: reversible
+
+     This :term:`attribute` allows the coercion to be used as a
+     :term:`reversible coercion`. By default coercions are not reversible except for
+     :cmd:`Record` fields specified using :g:`:>`.
+
+  .. attr:: nonuniform
+
+     Silence the non uniform inheritance warning.
+
+     .. deprecated:: 8.18
+
+        Use the :attr:`warnings` attribute instead with "-uniform-inheritance".
+
   .. exn:: @qualid not declared.
-     :undocumented:
+
+     :token:`qualid` is not defined globally.
 
   .. exn:: @qualid is already a coercion.
-     :undocumented:
+
+     :token:`qualid` is already registered as a coercion.
 
   .. exn:: Funclass cannot be a source class.
-     :undocumented:
+
+     Funclass as a source class is currently not supported. This may change in
+     the future.
 
   .. exn:: @qualid is not a function.
-     :undocumented:
+
+     :token:`qualid` is not a function, so it cannot be used as a coercion.
 
   .. exn:: Cannot find the source class of @qualid.
-     :undocumented:
 
-  .. exn:: Cannot recognize @class as a source class of @qualid.
-     :undocumented:
+     Rocq can not infer a valid source class.
+
+  .. exn:: Cannot recognize @coercion_class as a source class of @qualid.
+
+     The inferred source class of the coercion differs from the one specified.
+
+  .. exn:: Cannot find the target class
+
+     The target class of the coercion is not specified and cannot be inferred.
+     Make sure that the target is not a variable.
+
+  .. exn:: Found target class @coercion_class instead of @coercion_class
+
+     The inferred target class of the coercion differs from the one specified.
 
   .. warn:: @qualid does not respect the uniform inheritance condition.
-     :undocumented:
 
-  .. exn:: Found target class ... instead of ...
-     :undocumented:
+     The :ref:`test for ambiguous coercion paths <ambiguous-paths>`
+     may yield false positives involving the coercion :token:`qualid`.
+     Use the :attr:`warnings` attribute with "-uniform-inheritance" to silence this warning.
 
   .. warn:: New coercion path ... is ambiguous with existing ...
 
-     When the coercion :token:`qualid` is added to the inheritance graph, new
-     coercion paths which have the same classes as existing ones are ignored.
-     The :cmd:`Coercion` command tries to check the convertibility of new ones and
-     existing ones. The paths for which this check fails are displayed by a warning
+     The check for :ref:`ambiguous paths <ambiguous-paths>` failed.
+     The paths for which this check fails are displayed by a warning
      in the form :g:`[f₁;..;fₙ] : C >-> D`.
 
      The convertibility checking procedure for coercion paths is complete for
-     paths consisting of coercions satisfying the uniform inheritance condition,
+     paths consisting of coercions satisfying the :term:`uniform inheritance condition`,
      but some coercion paths could be reported as ambiguous even if they are
      convertible with existing ones when they have coercions that don't satisfy
-     the uniform inheritance condition.
+     this condition.
 
   .. warn:: ... is not definitionally an identity function.
 
@@ -184,29 +237,30 @@ Some objects can be declared as coercions when they are defined.
 This applies to :ref:`assumptions<gallina-assumptions>` and
 constructors of :ref:`inductive types and record fields<gallina-inductive-definitions>`.
 Use :n:`:>` instead of :n:`:` before the
-:n:`@type` of the assumption to do so.  See :n:`@of_type`.
+type of the assumption to do so.  See :n:`@of_type`.
 
 
-.. cmd:: Identity Coercion @ident : @class >-> @class
+.. cmd:: Identity Coercion @ident : @coercion_class__src >-> @coercion_class__dest
 
-   If ``C`` is the source `class` and ``D`` the destination, we check
-   that ``C`` is a :term:`constant` with a :term:`body` of the form
-   :g:`fun (x₁:T₁)..(xₙ:Tₙ) => D t₁..tₘ` where `m` is the
-   number of parameters of ``D``.  Then we define an identity
+
+   Checks that :n:`@coercion_class__src` is a :term:`constant` with a :term:`body` of the form
+   :n:`fun (x₁:T₁)..(xₙ:Tₙ) => @coercion_class__dest t₁..tₘ` where `m` is the
+   number of parameters of :n:`@coercion_class__dest`.  Then we define an identity
    function with type :g:`forall (x₁:T₁)..(xₙ:Tₙ)(y:C x₁..xₙ),D t₁..tₘ`,
    and we declare it as an identity coercion between ``C`` and ``D``.
+   See below for an :ref:`example <example-identity-coercion>`.
 
    This command supports the :attr:`local` attribute, which makes the coercion local to the current section.
 
-   .. exn:: @class must be a transparent constant.
+   .. exn:: @coercion_class must be a transparent constant.
       :undocumented:
 
    .. cmd:: SubClass @ident_decl @def_body
 
-      If :n:`@type` is a class :n:`@ident'` applied to some arguments then
+      If :n:`@type` is a coercion class :n:`@ident'` applied to some arguments then
       :n:`@ident` is defined and an identity coercion of name
       :n:`Id_@ident_@ident'` is
-      declared. Otherwise said, this is an abbreviation for
+      declared. In other words, this is an abbreviation for
 
       :n:`Definition @ident := @type.`
       :n:`Identity Coercion Id_@ident_@ident' : @ident >-> @ident'`.
@@ -219,7 +273,7 @@ Displaying Available Coercions
 
 .. cmd:: Print Classes
 
-   Print the list of declared classes in the current context.
+   Print the list of declared coercion classes in the current context.
 
 .. cmd:: Print Coercions
 
@@ -229,7 +283,7 @@ Displaying Available Coercions
 
    Print the list of valid coercion paths in the current context.
 
-.. cmd:: Print Coercion Paths @class @class
+.. cmd:: Print Coercion Paths @coercion_class @coercion_class
 
    Print the list of valid coercion paths between the two given classes.
 
@@ -256,12 +310,12 @@ Classes as Records
 *Structures with Inheritance* may be defined using the :cmd:`Record` command.
 
 Use `>` before the record name to declare the constructor name as
-a coercion from the class of the last field type to the record name
-(this may fail if the uniform inheritance condition is not
-satisfied).  See :token:`record_definition`.
+a coercion from the class of the last field type to the record name.
+See :token:`record_definition`.
 
-Use `:>` in the field type to declare the field as a coercion from the record name
-to the class of the field type.  See :token:`of_type`.
+Use `:>` in the field type to declare the field as a coercion from the
+record name to the class of the field type. For these coercions, the
+:attr:`reversible` attribute defaults to :g:`yes`. See :token:`of_type`.
 
 Coercions and Sections
 ----------------------
@@ -271,8 +325,7 @@ mechanism. The global classes and coercions defined inside a section
 are redefined after its closing, using their new value and new
 type. The classes and coercions which are local to the section are
 simply forgotten.
-Coercions with a local source class or a local target class, and
-coercions which do not verify the uniform inheritance condition any longer
+Coercions with a local source class or a local target class
 are also forgotten.
 
 Coercions and Modules
@@ -286,138 +339,195 @@ Examples
 
 There are three situations:
 
-Coercion at function application
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. example:: Coercion at function application
 
-:g:`f a` is ill-typed where :g:`f:forall x:A,B` and :g:`a:A'`. If there is a
-coercion path between ``A'`` and ``A``, then :g:`f a` is transformed into
-:g:`f a'` where ``a'`` is the result of the application of this
-coercion path to ``a``.
+  :g:`f a` is ill-typed where :g:`f:forall x:A,B` and :g:`a:A'`. If there is a
+  coercion path between ``A'`` and ``A``, then :g:`f a` is transformed into
+  :g:`f a'` where ``a'`` is the result of the application of this
+  coercion path to ``a``.
 
-We first give an example of coercion between atomic inductive types
+  We first give an example of coercion between atomic inductive types
 
-.. coqtop:: all
+  .. rocqtop:: all
 
-  Definition bool_in_nat (b:bool) := if b then 0 else 1.
-  Coercion bool_in_nat : bool >-> nat.
-  Check (0 = true).
-  Set Printing Coercions.
-  Check (0 = true).
-  Unset Printing Coercions.
+    Definition bool_in_nat (b:bool) := if b then 0 else 1.
+    Coercion bool_in_nat : bool >-> nat.
+    Check (0 = true).
+    Set Printing Coercions.
+    Check (0 = true).
+    Unset Printing Coercions.
 
+  .. warning::
 
-.. warning::
+    Note that ``Check (true = O)`` would fail. This is "normal" behavior of
+    coercions. To validate ``true=O``, the coercion is searched from
+    ``nat`` to ``bool``. There is none.
 
-  Note that ``Check (true = O)`` would fail. This is "normal" behavior of
-  coercions. To validate ``true=O``, the coercion is searched from
-  ``nat`` to ``bool``. There is none.
+  We give an example of coercion between classes with parameters.
 
-We give an example of coercion between classes with parameters.
+  .. rocqtop:: all
 
-.. coqtop:: all
+    Parameters (C : nat -> Set) (D : nat -> bool -> Set) (E : bool -> Set).
+    Parameter f : forall n:nat, C n -> D (S n) true.
+    Coercion f : C >-> D.
+    Parameter g : forall (n:nat) (b:bool), D n b -> E b.
+    Coercion g : D >-> E.
+    Parameter c : C 0.
+    Parameter T : E true -> nat.
+    Check (T c).
+    Set Printing Coercions.
+    Check (T c).
+    Unset Printing Coercions.
 
-  Parameters (C : nat -> Set) (D : nat -> bool -> Set) (E : bool -> Set).
-  Parameter f : forall n:nat, C n -> D (S n) true.
-  Coercion f : C >-> D.
-  Parameter g : forall (n:nat) (b:bool), D n b -> E b.
-  Coercion g : D >-> E.
-  Parameter c : C 0.
-  Parameter T : E true -> nat.
-  Check (T c).
-  Set Printing Coercions.
-  Check (T c).
-  Unset Printing Coercions.
+  In the case of functional arguments, we use the monotonic rule of
+  sub-typing. To coerce :g:`t : forall x : A, B` towards
+  :g:`forall x : A', B'`, we have to coerce ``A'`` towards ``A`` and ``B``
+  towards ``B'``. An example is given below:
 
-We give now an example using identity coercions.
+  .. rocqtop:: all
 
-.. coqtop:: all
+    Parameters (A B : Set) (h : A -> B).
+    Coercion h : A >-> B.
+    Parameter U : (A -> E true) -> nat.
+    Parameter t : B -> C 0.
+    Check (U t).
+    Set Printing Coercions.
+    Check (U t).
+    Unset Printing Coercions.
 
-  Definition D' (b:bool) := D 1 b.
-  Identity Coercion IdD'D : D' >-> D.
-  Print IdD'D.
-  Parameter d' : D' true.
-  Check (T d').
-  Set Printing Coercions.
-  Check (T d').
-  Unset Printing Coercions.
+  Remark the changes in the result following the modification of the
+  previous example.
 
+  .. rocqtop:: all
 
-In the case of functional arguments, we use the monotonic rule of
-sub-typing. To coerce :g:`t : forall x : A, B` towards
-:g:`forall x : A', B'`, we have to coerce ``A'`` towards ``A`` and ``B``
-towards ``B'``. An example is given below:
+    Parameter U' : (C 0 -> B) -> nat.
+    Parameter t' : E true -> A.
+    Check (U' t').
+    Set Printing Coercions.
+    Check (U' t').
+    Unset Printing Coercions.
 
-.. coqtop:: all
+.. example:: Coercion to a type
 
-  Parameters (A B : Set) (h : A -> B).
-  Coercion h : A >-> B.
-  Parameter U : (A -> E true) -> nat.
-  Parameter t : B -> C 0.
-  Check (U t).
-  Set Printing Coercions.
-  Check (U t).
-  Unset Printing Coercions.
+  An assumption ``x:A`` when ``A`` is not a type, is ill-typed.  It is
+  replaced by ``x:A'`` where ``A'`` is the result of the application to
+  ``A`` of the coercion path between the class of ``A`` and
+  ``Sortclass`` if it exists.  This case occurs in the abstraction
+  :g:`fun x:A => t`, universal quantification :g:`forall x:A,B`, global
+  variables and parameters of (co)inductive definitions and
+  functions. In :g:`forall x:A,B`, such a coercion path may also be applied
+  to ``B`` if necessary.
 
-Remark the changes in the result following the modification of the
-previous example.
+  .. rocqtop:: all
 
-.. coqtop:: all
+    Parameter Graph : Type.
+    Parameter Node : Graph -> Type.
+    Coercion Node : Graph >-> Sortclass.
+    Parameter G : Graph.
+    Parameter Arrows : G -> G -> Type.
+    Check Arrows.
+    Parameter fg : G -> G.
+    Check fg.
+    Set Printing Coercions.
+    Check fg.
+    Unset Printing Coercions.
 
-  Parameter U' : (C 0 -> B) -> nat.
-  Parameter t' : E true -> A.
-  Check (U' t').
-  Set Printing Coercions.
-  Check (U' t').
-  Unset Printing Coercions.
+.. example:: Coercion to a function
 
+  ``f a`` is ill-typed because ``f:A`` is not a function. The term
+  ``f`` is replaced by the term obtained by applying to ``f`` the
+  coercion path between ``A`` and ``Funclass`` if it exists.
 
-Coercion to a type
-~~~~~~~~~~~~~~~~~~
+  .. rocqtop:: all
 
-An assumption ``x:A`` when ``A`` is not a type, is ill-typed.  It is
-replaced by ``x:A'`` where ``A'`` is the result of the application to
-``A`` of the coercion path between the class of ``A`` and
-``Sortclass`` if it exists.  This case occurs in the abstraction
-:g:`fun x:A => t`, universal quantification :g:`forall x:A,B`, global
-variables and parameters of (co-)inductive definitions and
-functions. In :g:`forall x:A,B`, such a coercion path may also be applied
-to ``B`` if necessary.
+    Parameter bij : Set -> Set -> Set.
+    Parameter ap : forall A B:Set, bij A B -> A -> B.
+    Coercion ap : bij >-> Funclass.
+    Parameter b : bij nat nat.
+    Check (b 0).
+    Set Printing Coercions.
+    Check (b 0).
+    Unset Printing Coercions.
 
-.. coqtop:: all
+.. _example-reversible-coercion:
 
-  Parameter Graph : Type.
-  Parameter Node : Graph -> Type.
-  Coercion Node : Graph >-> Sortclass.
-  Parameter G : Graph.
-  Parameter Arrows : G -> G -> Type.
-  Check Arrows.
-  Parameter fg : G -> G.
-  Check fg.
-  Set Printing Coercions.
-  Check fg.
-  Unset Printing Coercions.
+.. example:: Reversible coercions
 
+  Notice the :n:`:>` on `ssort` making it a :term:`reversible coercion`.
 
-Coercion to a function
-~~~~~~~~~~~~~~~~~~~~~~
+  .. rocqtop:: in
 
-``f a`` is ill-typed because ``f:A`` is not a function. The term
-``f`` is replaced by the term obtained by applying to ``f`` the
-coercion path between ``A`` and ``Funclass`` if it exists.
+    Structure S := {
+      ssort :> Type;
+      sstuff : ssort;
+    }.
+    Definition test (s : S) := sstuff s.
+    Canonical Structure S_nat := {| ssort := nat; sstuff := 0; |}.
 
-.. coqtop:: all
+  .. rocqtop:: all
 
-  Parameter bij : Set -> Set -> Set.
-  Parameter ap : forall A B:Set, bij A B -> A -> B.
-  Coercion ap : bij >-> Funclass.
-  Parameter b : bij nat nat.
-  Check (b 0).
-  Set Printing Coercions.
-  Check (b 0).
-  Unset Printing Coercions.
+    Check test (nat : Type).
 
-Let us see the resulting graph after all these examples.
+.. _example-reversible-coercion-attribute:
 
-.. coqtop:: all
+.. example:: Reversible coercions using the :attr:`reversible` attribute
 
-  Print Graph.
+  Notice there is no `:>` on `ssort'` and the added :cmd:`Coercion` compared
+  to the previous example.
+
+  .. rocqtop:: in
+
+    Structure S' := {
+      ssort' : Type;
+      sstuff' : ssort';
+    }.
+    Coercion ssort' : S' >-> Sortclass.
+    Definition test' (s : S') := sstuff' s.
+    Canonical Structure S_nat' := {| ssort' := nat; sstuff' := 0; |}.
+
+  Since there's no `:>` on the definition of `ssort'`, the :attr:`reversible` attribute is not set:
+
+  .. rocqtop:: all
+
+    Fail Check test' (nat : Type).
+
+  The attribute can be set after declaring the coercion:
+
+  .. rocqtop:: all
+
+    #[reversible] Coercion ssort'.
+    Check test' (nat : Type).
+
+.. _example-identity-coercion:
+
+.. example:: Identity coercions.
+
+  .. rocqtop:: in
+
+    Definition fct := nat -> nat.
+    Parameter incr_fct : Set.
+    Parameter fct_of_incr_fct : incr_fct -> fct.
+
+  .. rocqtop:: all
+
+    Fail Coercion fct_of_incr_fct : incr_fct >-> Funclass.
+
+  .. rocqtop:: in
+
+    Coercion fct_of_incr_fct : incr_fct >-> fct.
+    Parameter f' : incr_fct.
+
+  .. rocqtop:: all
+
+    Check f' : fct.
+    Fail Check f' 0.
+    Identity Coercion Id_fct_Funclass : fct >-> Funclass.
+    Check f' 0.
+
+.. example:: Inheritance Graph
+
+  Let us see the resulting graph after all these examples.
+
+  .. rocqtop:: all
+
+    Print Graph.

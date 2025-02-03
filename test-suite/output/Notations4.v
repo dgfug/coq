@@ -29,6 +29,16 @@ Notation "x" := x (in custom myconstr at level 0, x global).
 Check [ b + c ].
 Check fun a => [ a + a ].
 
+Module NonCoercions.
+
+(* Should we forbid extra coercions in constr (knowing the "( x )" is hard-wiree)? *)
+Notation "[[ x ]]" := x (at level 0, x at level 42).
+
+(* Check invalid coercions (thus not used for printing) *)
+Notation "[[[ x ]]]" := x (in custom myconstr at level 5, x custom myconstr at level 5).
+
+End NonCoercions.
+
 End A.
 
 Module B.
@@ -94,7 +104,7 @@ Check r 2 3.
 
 End I.
 
-Require Import Coq.Numbers.Cyclic.Int63.Uint63.
+Require Import PrimInt63.
 Module NumberNotations.
   Module Test17.
     (** Test uint63 *)
@@ -273,6 +283,36 @@ Check fun x => <{ x ; (S x) }>.
 
 End CoercionEntryTransitivity.
 
+Module CoercionEntryOnlyParsing.
+
+(* bug #15335 *)
+Declare Custom Entry ent.
+Notation "ent:( x )" := x (x custom ent, only parsing).
+Notation "!" := Set (in custom ent at level 0).
+Check ent:( ! ).
+
+End CoercionEntryOnlyParsing.
+
+Module CustomIdentOnlyParsing.
+
+Declare Custom Entry ent2.
+Notation "ent:( x )" := x (x custom ent2, format "ent:( x )").
+Notation "# x" := (S x) (in custom ent2 at level 0, x at level 0).
+Notation "x" := x (in custom ent2 at level 0, x ident, only parsing).
+Check fun x : nat => ent:(# x).
+
+End CustomIdentOnlyParsing.
+
+Module CustomGlobalOnlyParsing.
+
+Declare Custom Entry ent3.
+Notation "ent:( x )" := x (x custom ent3, format "ent:( x )").
+Notation "# x" := (S x) (in custom ent3 at level 0, x at level 0).
+Notation "x" := x (in custom ent3 at level 0, x global, only parsing).
+Check ent:(True).
+
+End CustomGlobalOnlyParsing.
+
 (* Some corner cases *)
 
 Module P.
@@ -286,7 +326,6 @@ Module P.
 
   Module NotationMixedTermBinderAsIdent.
 
-  Set Warnings "-deprecated-ident-entry". (* We do want ident! *)
   Notation "▢_ n P" := (pseudo_force n (fun n => P))
     (at level 0, n ident, P at level 9, format "▢_ n  P").
   Check exists p, ▢_p (p >= 1).
@@ -450,7 +489,7 @@ End MorePrecise3.
 
 Module TypedPattern.
 
-Notation "## x P" := (forall x:nat*nat, P) (x pattern, at level 0).
+Notation "## x P" := (forall x:nat*nat, P) (x pattern, at level 1).
 Check ## (x,y) (x=0).
 Fail Check ## ((x,y):bool*bool) (x=y).
 
@@ -458,7 +497,7 @@ End TypedPattern.
 
 Module SingleBinder.
 
-Notation "## x P" := (forall x, x = x -> P) (x binder, at level 0).
+Notation "## x P" := (forall x, x = x -> P) (x binder, at level 1).
 Check ## '(x,y) (x+y=0).
 Check ## (x:nat) (x=0).
 Check ## '((x,y):nat*nat) (x=0).
@@ -498,3 +537,87 @@ Check 0+.
 Check 0.
 
 End LeadingNumber.
+
+Module Incompatibility.
+
+Notation "'func' x .. y , P" := (fun x => .. (fun y => P) ..) (x binder, y binder, at level 200).
+Fail Notation "'func' x .. y , P" := (pair x .. (pair y P) ..) (at level 200).
+
+Declare Custom Entry foo.
+Declare Custom Entry bar.
+Notation "[[ x ]]" := x (x custom foo) : nat_scope.
+Fail Notation "[[ x ]]" := x (x custom bar) : type_scope.
+
+End Incompatibility.
+
+Module RecursivePatternsArgumentsInRecursiveNotations.
+
+Notation "'λ' x .. y , t" := (fun x => .. (fun y => t) ..)
+  (at level 200, x binder, y binder, right associativity,
+  format "'[  ' '[  ' 'λ'  x  ..  y ']' ,  '/' t ']'").
+
+Notation "'lambda' x .. y , t" := (λ x .. y, t) (at level 200, x binder, y binder).
+
+Check lambda x y, x+y=0.
+
+End RecursivePatternsArgumentsInRecursiveNotations.
+
+Module CyclicNotations.
+
+Notation "! x" := (list x) (at level 0, x at level 50, right associativity, format "! x").
+Check ((!!nat) + bool)%type.
+
+End CyclicNotations.
+
+Module CustomCyclicNotations.
+
+Declare Custom Entry myconstr2.
+Notation "[ x ]" := x (x custom myconstr2 at level 6).
+Notation "! x" := (x,1) (in custom myconstr2 at level 0, x at level 2, format "! x").
+Notation "x + y" := (x,y,2) (in custom myconstr2 at level 2, left associativity).
+Notation "x" := x (in custom myconstr2 at level 0, x ident).
+
+(* Check that the custom notation is not used, because parentheses are
+    missing in the entry *)
+Check fun z:nat => ((z,1),z,2).
+
+Notation "( x )" := x (in custom myconstr2 at level 0, x at level 2).
+
+(* Check that parentheses are preserved when an entry refers on the
+   right on a higher level than where it is *)
+Check fun z:nat => [(!! z) + z].
+
+End CustomCyclicNotations.
+
+Module RecursivePatternsInMatch.
+
+Remove Printing Let prod.
+Unset Printing Matching.
+
+Notation "'uncurryλ' x1 .. xn => body"
+  := (fun x => match x with (pair x x1) => .. (match x with (pair x xn) => let 'tt := x in body end) .. end)
+     (at level 200, x1 binder, xn binder, right associativity).
+
+Check uncurryλ a b c => a + b + c.
+
+(* Check other forms of binders, but too complex interaction
+    with pattern-matching compaction for printing *)
+Check uncurryλ '(a,b) (d:=1) c => a + b + c + d.
+
+Set Printing Matching.
+Check uncurryλ '(a,b) (d:=1) c => a + b + c + d.
+
+(* This is a case where printing is easy though, relying on pattern-matching compaction *)
+Check uncurryλ '(a,b) => a + b.
+
+Notation "'lets' x1 .. xn := c 'in' body"
+  := (let x1 := c in .. (let xn := c in body) ..)
+     (at level 200, x1 binder, xn binder, right associativity).
+
+Check lets a b c := 0 in a + b + c.
+
+(* Check other forms of binders, but too complex interaction
+    with pattern-matching factorization for printing *)
+Check lets '(a,b) (d:=1) '(c,e) := (0,0) in a + b + c + d + e.
+
+End RecursivePatternsInMatch.

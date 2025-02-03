@@ -182,7 +182,7 @@ Record wrap (A : Type) := { unwrap : A; unwrap2 : A }.
 Definition term (x : wrap nat) := x.(unwrap).
 Definition term' (x : wrap nat) := let f := (@unwrap2 nat) in f x.
 
-Require Coq.extraction.Extraction.
+Require Corelib.extraction.Extraction.
 Recursive Extraction term term'.
 Extraction TestCompile term term'.
 (*Unset Printing Primitive Projection Parameters.*)
@@ -202,11 +202,23 @@ Qed.
 Abort.
 
 (* Primitive projection match compilation *)
-Require Import List.
+
 Set Primitive Projections.
 
 Record prod (A B : Type) := pair { fst : A ; snd : B }.
 Arguments pair {_ _} _ _.
+
+Definition snd' := @snd.
+
+(* a match which is just a projection doesn't produce a bunch of letins *)
+Goal True.
+  assert (v : prod nat bool) by admit.
+
+  let unfolded_snd := eval cbv beta delta [snd' snd] in (snd' v) in
+  let matched_snd := constr:(let 'pair _ x := v in x) in
+  constr_eq unfolded_snd matched_snd.
+
+Abort.
 
 Fixpoint split_at {A} (l : list A) (n : nat) : prod (list A) (list A) :=
   match n with
@@ -214,9 +226,20 @@ Fixpoint split_at {A} (l : list A) (n : nat) : prod (list A) (list A) :=
   | S n =>
     match l with
     | nil => pair nil nil
-    | x :: l => let 'pair l1 l2 := split_at l n in pair (x :: l1) l2
+    | cons x l => let 'pair l1 l2 := split_at l n in pair (cons x l1) l2
     end
   end.
+
+Section Repeat.
+
+  Variable A : Type.
+  Fixpoint repeat (x : A) (n: nat ) :=
+    match n with
+      | O => nil
+      | S k => cons x (repeat x k)
+    end.
+
+End Repeat.
 
 Time Eval vm_compute in split_at (repeat 0 20) 10. (* Takes 0s *)
 Time Eval vm_compute in split_at (repeat 0 40) 20. (* Takes 0.001s *)
@@ -227,3 +250,24 @@ Fail Check (@eq_refl _ 0 <: 0 = snd (pair 0 1)).
 
 Check (@eq_refl _ 0 <<: 0 = fst (pair 0 1)).
 Fail Check (@eq_refl _ 0 <<: 0 = snd (pair 0 1)).
+
+(* [unfold] tactic *)
+Module Unfold.
+  Record rec (P: Prop) := REC { v: unit }.
+  Set Printing All.
+  Set Printing Unfolded Projection As Match.
+
+  (* Testing that [unfold] can unfold compatibility constants. *)
+  Goal forall r: rec True, @v True r = tt.
+  Proof.
+    intros.
+    lazymatch goal with
+    | |- context C [@v _ ?r] =>
+        (* Carefully construct a term that definitely contains the compatibility constant. *)
+        let t := constr:(@v True) in
+        let g := context C [t r] in
+        change g
+    end.
+    progress unfold v.
+  Abort.
+End Unfold.

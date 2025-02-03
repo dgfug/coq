@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -10,7 +10,6 @@
 
 (* This file is (C) Copyright 2006-2015 Microsoft Corporation and Inria. *)
 
-open Tacmach
 open Names
 open Environ
 open Evd
@@ -18,7 +17,6 @@ open Constrexpr
 open Ssrast
 
 open Ltac_plugin
-open Genarg
 
 open Ssrmatching_plugin
 
@@ -28,8 +26,8 @@ val allocc : ssrocc
 
 val hyp_id : ssrhyp -> Id.t
 val hyps_ids : ssrhyps -> Id.t list
-val check_hyp_exists : ('a, 'b) Context.Named.pt -> ssrhyp -> unit
-val test_hyp_exists : ('a, 'b) Context.Named.pt -> ssrhyp -> bool
+val check_hyp_exists : ('a, 'b, 'r) Context.Named.pt -> ssrhyp -> unit
+val test_hyp_exists : ('a, 'b, 'r) Context.Named.pt -> ssrhyp -> bool
 val check_hyps_uniq : Id.t list -> ssrhyps -> unit
 val not_section_id : Id.t -> bool
 val hyp_err : ?loc:Loc.t -> string -> Id.t -> 'a
@@ -54,42 +52,6 @@ val array_fold_right_from : int -> ('a -> 'b -> 'b) -> 'a array -> 'b -> 'b
 
 val option_assert_get : 'a option -> Pp.t -> 'a
 
-(**************************** lifted tactics ******************************)
-
-(* tactics with extra data attached to each goals, e.g. the list of
- * temporary variables to be cleared *)
-type 'a tac_a = (goal * 'a) sigma -> (goal * 'a) list sigma
-
-(* Thread around names to be cleared or generalized back, and the speed *)
-type tac_ctx = {
-  tmp_ids : (Id.t * Name.t ref) list;
-  wild_ids : Id.t list;
-  (* List of variables to be cleared at the end of the sentence *)
-  delayed_clears : Id.t list;
-}
-
-val new_ctx : unit -> tac_ctx (* REMOVE *)
-val pull_ctxs : ('a * tac_ctx) list  sigma -> 'a list sigma * tac_ctx list (* REMOVE *)
-
-val with_fresh_ctx : tac_ctx tac_a -> tactic
-
-val pull_ctx : ('a * tac_ctx) sigma -> 'a sigma * tac_ctx
-val push_ctx : tac_ctx -> 'a sigma -> ('a * tac_ctx) sigma
-val push_ctxs : tac_ctx -> 'a list sigma -> ('a * tac_ctx) list sigma
-val tac_ctx : tactic -> tac_ctx tac_a
-val with_ctx :
-  (tac_ctx -> 'b * tac_ctx) -> ('a * tac_ctx) sigma -> 'b * ('a * tac_ctx) sigma
-val without_ctx : ('a sigma -> 'b) -> ('a * tac_ctx) sigma -> 'b
-
-(* Standard tacticals lifted to the tac_a type *)
-val tclTHENLIST_a : tac_ctx tac_a list -> tac_ctx tac_a
-val tclTHEN_i_max :
-  tac_ctx tac_a -> (int -> int -> tac_ctx tac_a) -> tac_ctx tac_a
-val tclTHEN_a : tac_ctx tac_a -> tac_ctx tac_a -> tac_ctx tac_a
-val tclTHENS_a : tac_ctx tac_a -> tac_ctx tac_a list -> tac_ctx tac_a
-
-val tac_on_all :
-  (goal * tac_ctx) list sigma -> tac_ctx tac_a -> (goal * tac_ctx) list sigma
 (************************ ssr tactic arguments ******************************)
 
 
@@ -126,38 +88,27 @@ val intern_term :
   Tacinterp.interp_sign -> env ->
     ssrterm -> Glob_term.glob_constr
 
-val pf_intern_term :
-  Tacinterp.interp_sign -> Goal.goal Evd.sigma ->
-    ssrterm -> Glob_term.glob_constr
-
 val interp_term :
   Environ.env -> Evd.evar_map ->
   Tacinterp.interp_sign ->
     ssrterm -> evar_map * EConstr.t
 
-val interp_wit :
-  ('a, 'b, 'c) genarg_type -> ist -> goal sigma -> 'b -> evar_map * 'c
-
-val interp_hyp : ist -> goal sigma -> ssrhyp -> evar_map * ssrhyp
-val interp_hyps : ist -> goal sigma -> ssrhyps -> evar_map * ssrhyps
+val interp_hyp : ist -> env -> evar_map -> ssrhyp -> ssrhyp
+val interp_hyps : ist -> env -> evar_map -> ssrhyps -> ssrhyps
 
 val interp_refine :
-  Tacinterp.interp_sign -> Goal.goal Evd.sigma ->
-    Glob_term.glob_constr -> evar_map * (evar_map * EConstr.constr)
+  Environ.env -> Evd.evar_map -> Tacinterp.interp_sign -> concl:EConstr.constr ->
+    Glob_term.glob_constr -> evar_map * EConstr.constr
 
 val interp_open_constr :
   Environ.env -> Evd.evar_map ->
   Tacinterp.interp_sign ->
-    Genintern.glob_constr_and_expr -> evar_map * (evar_map * EConstr.t)
-
-val pf_e_type_of :
-  Goal.goal Evd.sigma ->
-  EConstr.constr -> Goal.goal Evd.sigma * EConstr.types
+    Genintern.glob_constr_and_expr -> evar_map * EConstr.t
 
 val splay_open_constr :
            Environ.env ->
            evar_map * EConstr.t ->
-           (Names.Name.t Context.binder_annot * EConstr.t) list * EConstr.t
+           (Names.Name.t EConstr.binder_annot * EConstr.t) list * EConstr.t
 val isAppInd : Environ.env -> Evd.evar_map -> EConstr.types -> bool
 
 val mk_term : ssrtermkind -> constr_expr -> ssrterm
@@ -166,8 +117,7 @@ val mk_lterm : constr_expr -> ssrterm
 val mk_ast_closure_term :
   [ `None | `Parens | `DoubleParens | `At ] ->
   Constrexpr.constr_expr -> ast_closure_term
-val interp_ast_closure_term : Geninterp.interp_sign -> Goal.goal
-Evd.sigma -> ast_closure_term -> Evd.evar_map * ast_closure_term
+val interp_ast_closure_term : Geninterp.interp_sign -> env -> evar_map -> ast_closure_term -> ast_closure_term
 val subst_ast_closure_term : Mod_subst.substitution -> ast_closure_term -> ast_closure_term
 val glob_ast_closure_term : Genintern.glob_sign -> ast_closure_term -> ast_closure_term
 val ssrterm_of_ast_closure_term : ast_closure_term -> ssrterm
@@ -182,85 +132,29 @@ val mk_tagged_id : string -> int -> Id.t
 val mk_evar_name : int -> Name.t
 val ssr_anon_hyp : string
 val type_id : Environ.env -> Evd.evar_map -> EConstr.types -> Id.t
-val pf_type_id :  Goal.goal Evd.sigma -> EConstr.types -> Id.t
 
 val abs_evars :
-           Environ.env -> Evd.evar_map ->
+           Environ.env -> Evd.evar_map -> ?rigid:Evar.t list ->
            evar_map * EConstr.t ->
-           int * EConstr.t * Evar.t list *
-           UState.t
-val abs_evars2 : (* ssr2 *)
-           Environ.env -> Evd.evar_map -> Evar.t list ->
-           evar_map * EConstr.t ->
-           int * EConstr.t * Evar.t list *
+           EConstr.t * Evar.t list *
            UState.t
 val abs_cterm :
            Environ.env -> Evd.evar_map -> int -> EConstr.t -> EConstr.t
 
-
-val pf_abs_evars :
-           Goal.goal Evd.sigma ->
-           evar_map * EConstr.t ->
-           int * EConstr.t * Evar.t list *
-           UState.t
-val pf_abs_evars2 : (* ssr2 *)
-           Goal.goal Evd.sigma -> Evar.t list ->
-           evar_map * EConstr.t ->
-           int * EConstr.t * Evar.t list *
-           UState.t
-val pf_abs_cterm :
-           Goal.goal Evd.sigma -> int -> EConstr.t -> EConstr.t
-
-val pf_merge_uc :
-           UState.t -> 'a Evd.sigma -> 'a Evd.sigma
-val pf_merge_uc_of :
-           evar_map -> 'a Evd.sigma -> 'a Evd.sigma
 val constr_name : evar_map -> EConstr.t -> Name.t
-val pf_type_of :
-           Goal.goal Evd.sigma ->
-           Constr.constr -> Goal.goal Evd.sigma * Constr.types
-val pfe_type_of :
-           Goal.goal Evd.sigma ->
-           EConstr.t -> Goal.goal Evd.sigma * EConstr.types
-val pfe_new_type : Goal.goal Evd.sigma -> Goal.goal Evd.sigma * EConstr.types
-val pfe_type_relevance_of :
-           Goal.goal Evd.sigma ->
-           EConstr.t -> Goal.goal Evd.sigma * EConstr.types * Sorts.relevance
-val pf_abs_prod :
-           Name.t ->
-           Goal.goal Evd.sigma ->
-           EConstr.t ->
-           EConstr.t -> Goal.goal Evd.sigma * EConstr.types
 
+val mkSsrRef : string -> GlobRef.t
 val mkSsrRRef : string -> Glob_term.glob_constr * 'a option
-
-val new_wild_id : tac_ctx -> Names.Id.t * tac_ctx
-
-val pf_fresh_global :
-           GlobRef.t ->
-           Goal.goal Evd.sigma ->
-           Constr.constr * Goal.goal Evd.sigma
+val mkSsrConst : Environ.env -> Evd.evar_map -> string -> Evd.evar_map * EConstr.t
 
 val is_discharged_id : Id.t -> bool
 val mk_discharged_id : Id.t -> Id.t
 val is_tagged : string -> string -> bool
 val has_discharged_tag : string -> bool
 val ssrqid : string -> Libnames.qualid
-val new_tmp_id :
-  tac_ctx -> (Names.Id.t * Name.t ref) * tac_ctx
 val mk_anon_id : string -> Id.t list -> Id.t
-val abs_evars_pirrel :
-           Environ.env -> Evd.evar_map ->
-           evar_map * Constr.constr -> int * Constr.constr
-val pf_abs_evars_pirrel :
-           Goal.goal Evd.sigma ->
-           evar_map * Constr.constr -> int * Constr.constr
 val nbargs_open_constr : Environ.env -> Evd.evar_map * EConstr.t -> int
 val pf_nbargs : Environ.env -> Evd.evar_map -> EConstr.t -> int
-val gen_tmp_ids :
-           ?ist:Geninterp.interp_sign ->
-           (Goal.goal * tac_ctx) Evd.sigma ->
-           (Goal.goal * tac_ctx) list Evd.sigma
 
 val ssrevaltac :
   Tacinterp.interp_sign -> Tacinterp.Value.t -> unit Proofview.tactic
@@ -279,37 +173,35 @@ val ssrautoprop_tac :
            unit Proofview.tactic ref
 
 val mkProt :
+  Environ.env ->
+  Evd.evar_map ->
   EConstr.t ->
   EConstr.t ->
-  Goal.goal Evd.sigma ->
-  EConstr.t * Goal.goal Evd.sigma
+  Evd.evar_map * EConstr.t
 
 val mkEtaApp : EConstr.t -> int -> int -> EConstr.t
 
 val mkRefl :
+  Environ.env ->
+  Evd.evar_map ->
   EConstr.t ->
   EConstr.t ->
-  Goal.goal Evd.sigma -> EConstr.t * Goal.goal Evd.sigma
+  Evd.evar_map * EConstr.t
 
 val discharge_hyp :
-           Id.t * (Id.t * string) ->
-           Goal.goal Evd.sigma -> Evar.t list Evd.sigma
+           Id.t * (Id.t * string) -> unit Proofview.tactic
 
-val clear_wilds_and_tmp_and_delayed_ids :
-           (Goal.goal * tac_ctx) Evd.sigma ->
-           (Goal.goal * tac_ctx) list Evd.sigma
-
-val view_error : string -> ssrterm -> 'a
+val view_error : string -> ssrterm -> 'a Proofview.tactic
 
 
 val top_id : Id.t
 
-val pf_abs_ssrterm :
+val abs_ssrterm :
            ?resolve_typeclasses:bool ->
            ist ->
-           Goal.goal Evd.sigma ->
+           Environ.env -> Evd.evar_map ->
            ssrterm ->
-           evar_map * EConstr.t * UState.t * int
+           Evd.evar_map * EConstr.t * int
 
 val pf_interp_ty :
            ?resolve_typeclasses:bool ->
@@ -318,28 +210,12 @@ val pf_interp_ty :
            Tacinterp.interp_sign ->
            Ssrast.ssrtermkind *
            (Glob_term.glob_constr * Constrexpr.constr_expr option) ->
-           int * EConstr.t * EConstr.t * UState.t
+           Evd.evar_map * int * EConstr.t * EConstr.t
 
 val ssr_n_tac : string -> int -> unit Proofview.tactic
 val donetac : int -> unit Proofview.tactic
 
-val applyn :
-           with_evars:bool ->
-           ?beta:bool ->
-           ?with_shelve:bool ->
-           ?first_goes_last:bool ->
-           int ->
-           EConstr.t -> unit Proofview.tactic
 exception NotEnoughProducts
-val pf_saturate :
-           ?beta:bool ->
-           ?bi_types:bool ->
-           Goal.goal Evd.sigma ->
-           EConstr.constr ->
-           ?ty:EConstr.types ->
-           int ->
-           EConstr.constr * EConstr.types * (int * EConstr.constr) list *
-           Goal.goal Evd.sigma
 val saturate :
            ?beta:bool ->
            ?bi_types:bool ->
@@ -348,21 +224,19 @@ val saturate :
            EConstr.constr ->
            ?ty:EConstr.types ->
            int ->
-           EConstr.constr * EConstr.types * (int * EConstr.constr) list * evar_map
+           EConstr.constr * EConstr.types * (int * EConstr.constr * EConstr.types) list * evar_map
 val refine_with :
            ?first_goes_last:bool ->
            ?beta:bool ->
            ?with_evars:bool ->
            evar_map * EConstr.t -> unit Proofview.tactic
 
-val pf_resolve_typeclasses :
-  where:EConstr.t ->
-  fail:bool -> Goal.goal Evd.sigma -> Goal.goal Evd.sigma
 val resolve_typeclasses :
+  Environ.env -> Evd.evar_map ->
   where:EConstr.t ->
-  fail:bool -> Environ.env -> Evd.evar_map -> Evd.evar_map
+  fail:bool -> Evd.evar_map
 
-(*********************** Wrapped Coq  tactics *****************************)
+(*********************** Wrapped Rocq tactics *****************************)
 
 val rewritetac : ?under:bool -> ssrdir -> EConstr.t -> unit Proofview.tactic
 
@@ -377,31 +251,26 @@ val genstac :
     list * Ssrast.ssrhyp list ->
   unit Proofview.tactic
 
-val pf_interp_gen :
+val interp_gen :
+  Environ.env ->
+  Evd.evar_map ->
+  concl:EConstr.t ->
   bool ->
   (Ssrast.ssrhyp list option * Ssrmatching.occ) *
     Ssrmatching.cpattern ->
-  Goal.goal Evd.sigma ->
-  (EConstr.t * EConstr.t * Ssrast.ssrhyp list) *
-    Goal.goal Evd.sigma
-
-(* HACK: use to put old pf_code in the tactic monad *)
-val pfLIFT
-  :  (Goal.goal Evd.sigma -> 'a * Goal.goal Evd.sigma)
-  -> 'a Proofview.tactic
+  Evd.evar_map * (EConstr.t * EConstr.t * Ssrast.ssrhyp list)
 
 (** Basic tactics *)
 
 val introid : ?orig:Name.t ref -> Id.t -> unit Proofview.tactic
-val intro_anon : v82tac
+val intro_anon : unit Proofview.tactic
 
 val interp_clr :
   evar_map -> ssrhyps option * (ssrtermkind * EConstr.t) -> ssrhyps
 
 val genclrtac :
   EConstr.constr ->
-  EConstr.constr list -> Ssrast.ssrhyp list -> Tacmach.tactic
-val old_cleartac : ssrhyps -> v82tac
+  EConstr.constr list -> Ssrast.ssrhyp list -> unit Proofview.tactic
 val cleartac : ssrhyps -> unit Proofview.tactic
 
 val tclMULT : int * ssrmmod -> unit Proofview.tactic -> unit Proofview.tactic
@@ -410,14 +279,16 @@ val unprotecttac : unit Proofview.tactic
 val is_protect : EConstr.t -> Environ.env -> Evd.evar_map -> bool
 
 val abs_wgen :
+  Environ.env ->
+  Evd.evar_map ->
   bool ->
   (Id.t -> Id.t) ->
   'a *
     ((Ssrast.ssrhyp_or_id * string) *
        Ssrmatching.cpattern option)
       option ->
-  Goal.goal Evd.sigma * EConstr.t list * EConstr.t ->
-  Goal.goal Evd.sigma * EConstr.t list * EConstr.t
+  EConstr.t list * EConstr.t ->
+  Evd.evar_map * EConstr.t list * EConstr.t
 
 val clr_of_wgen :
   ssrhyps * ((ssrhyp_or_id * 'a) * 'b option) option ->
@@ -426,19 +297,10 @@ val clr_of_wgen :
 
 val unfold : EConstr.t list -> unit Proofview.tactic
 
-val apply_type : EConstr.types -> EConstr.t list -> Proofview.V82.tac
-
 (* New code ****************************************************************)
-
-(* To call old code *)
-val tacSIGMA : Goal.goal Evd.sigma Proofview.tactic
 
 val tclINTERP_AST_CLOSURE_TERM_AS_CONSTR :
   ast_closure_term -> EConstr.t list Proofview.tactic
-
-val tacREDUCE_TO_QUANTIFIED_IND :
-  EConstr.types ->
-    ((Names.inductive * EConstr.EInstance.t) * EConstr.types) Proofview.tactic
 
 val tacTYPEOF : EConstr.t -> EConstr.types Proofview.tactic
 
@@ -486,6 +348,7 @@ val tacMK_SSR_CONST : string -> EConstr.t Proofview.tactic
 module type StateType = sig
   type state
   val init : state
+  val name : string
 end
 
 module MakeState(S : StateType) : sig
@@ -499,6 +362,6 @@ module MakeState(S : StateType) : sig
 
 end
 
-val is_ind_ref : Evd.evar_map -> EConstr.t -> Names.GlobRef.t -> bool
-val is_construct_ref : Evd.evar_map -> EConstr.t -> Names.GlobRef.t -> bool
-val is_const_ref : Evd.evar_map -> EConstr.t -> Names.GlobRef.t -> bool
+val is_ind_ref : Environ.env -> Evd.evar_map -> EConstr.t -> Names.GlobRef.t -> bool
+val is_construct_ref : Environ.env -> Evd.evar_map -> EConstr.t -> Names.GlobRef.t -> bool
+val is_const_ref : Environ.env -> Evd.evar_map -> EConstr.t -> Names.GlobRef.t -> bool

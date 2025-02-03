@@ -1,6 +1,6 @@
 (* -*- coding: utf-8 -*- *)
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -17,10 +17,10 @@
    Institution: LRI, CNRS UMR 8623 - University Paris Sud
 *)
 
-Require Export Coq.Classes.Init.
-Require Import Coq.Program.Basics.
-Require Import Coq.Program.Tactics.
-Require Import Coq.Relations.Relation_Definitions.
+Require Export Corelib.Classes.Init.
+Require Import Corelib.Program.Basics.
+Require Import Corelib.Program.Tactics.
+Require Import Corelib.Relations.Relation_Definitions.
 
 Generalizable Variables A B C D R S T U l eqA eqB eqC eqD.
 
@@ -60,14 +60,14 @@ Section Defs.
   (** A [PreOrder] is both Reflexive and Transitive. *)
   
   Class PreOrder (R : relation A) : Prop := {
-    PreOrder_Reflexive :> Reflexive R | 2 ;
-    PreOrder_Transitive :> Transitive R | 2 }.
+    #[global] PreOrder_Reflexive :: Reflexive R | 2 ;
+    #[global] PreOrder_Transitive :: Transitive R | 2 }.
 
   (** A [StrictOrder] is both Irreflexive and Transitive. *)
 
   Class StrictOrder (R : relation A) : Prop := {
-    StrictOrder_Irreflexive :> Irreflexive R ;
-    StrictOrder_Transitive :> Transitive R }.
+    #[global] StrictOrder_Irreflexive :: Irreflexive R ;
+    #[global] StrictOrder_Transitive :: Transitive R }.
 
   (** By definition, a strict order is also asymmetric *)
   Global Instance StrictOrder_Asymmetric `(StrictOrder R) : Asymmetric R.
@@ -76,15 +76,15 @@ Section Defs.
   (** A partial equivalence relation is Symmetric and Transitive. *)
   
   Class PER (R : relation A) : Prop := {
-    PER_Symmetric :> Symmetric R | 3 ;
-    PER_Transitive :> Transitive R | 3 }.
+    #[global] PER_Symmetric :: Symmetric R | 3 ;
+    #[global] PER_Transitive :: Transitive R | 3 }.
 
   (** Equivalence relations. *)
 
   Class Equivalence (R : relation A) : Prop := {
-    Equivalence_Reflexive :> Reflexive R ;
-    Equivalence_Symmetric :> Symmetric R ;
-    Equivalence_Transitive :> Transitive R }.
+    #[global] Equivalence_Reflexive :: Reflexive R ;
+    #[global] Equivalence_Symmetric :: Symmetric R ;
+    #[global] Equivalence_Transitive :: Transitive R }.
 
   (** An Equivalence is a PER plus reflexivity. *)
   
@@ -126,7 +126,7 @@ Section Defs.
     Program Definition flip_Transitive `(Transitive R) : Transitive (flip R) :=
       fun x y z H H' => transitivity (R:=R) H' H.
 
-    Program Definition flip_Antisymmetric `(Antisymmetric eqA R) :
+    Program Lemma flip_Antisymmetric `(Antisymmetric eqA R) :
       Antisymmetric eqA (flip R).
     Proof. firstorder. Qed.
 
@@ -148,11 +148,11 @@ Section Defs.
 
   Section complement.
 
-    Definition complement_Irreflexive `(Reflexive R)
+    Lemma complement_Irreflexive `(Reflexive R)
       : Irreflexive (complement R).
     Proof. firstorder. Qed.
 
-    Definition complement_Symmetric `(Symmetric R) : Symmetric (complement R).
+    Lemma complement_Symmetric `(Symmetric R) : Symmetric (complement R).
     Proof. firstorder. Qed.
   End complement.
 
@@ -162,16 +162,12 @@ Section Defs.
    It helps choosing if a rewrite should be handled
    by the generalized or the regular rewriting tactic using leibniz equality.
    Users can declare an [RewriteRelation A RA] anywhere to declare default
-   relations. This is also done automatically by the [Declare Relation A RA]
-   commands. *)
+   relations on a given type `A`. This is also done automatically by
+   the [Declare Relation A RA] commands. It has no mode declaration:
+   it will assign `?A := Prop, ?R := iff` on an entirely unspecified query
+   `RewriteRelation ?A ?R`, or any prefered rewrite relation of priority < 2. *)
 
   Class RewriteRelation (RA : relation A).
-
-  (** Any [Equivalence] declared in the context is automatically considered
-   a rewrite relation. *)
-    
-  Global Instance equivalence_rewrite_relation `(Equivalence eqA) : RewriteRelation eqA.
-  Defined.
 
   (** Leibniz equality. *)
   Section Leibniz.
@@ -186,15 +182,34 @@ Section Defs.
     Global Program Instance eq_equivalence : Equivalence (@eq A) | 10.
   End Leibniz.
   
+  (** Leibniz disequality. *)
+  Section LeibnizNot.
+    (** Disequality is symmetric. *)
+    Global Instance neq_Symmetric : Symmetric (fun x y : A => x <> y) := (@not_eq_sym A).
+  End LeibnizNot.
 End Defs.
 
-(** Default rewrite relations handled by [setoid_rewrite]. *)
+(** Default rewrite relations handled by [setoid_rewrite] on Prop. *)
 #[global]
-Instance: RewriteRelation impl.
-Defined.
+Instance inverse_impl_rewrite_relation : RewriteRelation (flip impl) | 3 := {}.
 #[global]
-Instance: RewriteRelation iff.
-Defined.
+Instance impl_rewrite_relation : RewriteRelation impl | 3 := {}.
+#[global]
+Instance iff_rewrite_relation : RewriteRelation iff | 2 := {}.
+
+(** Any [Equivalence] declared in the context is automatically considered
+  a rewrite relation. This only applies if the relation is at least partially
+  defined: setoid_rewrite won't try to infer arbitrary user rewrite relations. *)
+
+Definition equivalence_rewrite_relation `(eqa : Equivalence A eqA) : RewriteRelation eqA :=
+  Build_RewriteRelation _.
+
+Ltac equiv_rewrite_relation R :=
+  tryif is_evar R then fail
+  else class_apply equivalence_rewrite_relation.
+
+#[global]
+Hint Extern 10 (@RewriteRelation ?A ?R) => equiv_rewrite_relation R : typeclass_instances.
 
 (** Hints to drive the typeclass resolution avoiding loops
  due to the use of full unification. *)
@@ -272,7 +287,7 @@ Tactic Notation "apply" "*" constr(t) :=
 
 Ltac simpl_relation :=
   unfold flip, impl, arrow ; try reduce ; program_simpl ;
-    try ( solve [ dintuition ]).
+    try ( solve [ dintuition auto with relations ]).
 
 Local Obligation Tactic := try solve [ simpl_relation ].
 
@@ -456,8 +471,7 @@ Section Binary.
   Definition relation_equivalence : relation (relation A) :=
     @predicate_equivalence (_::_::Tnil).
 
-  Global Instance: RewriteRelation relation_equivalence.
-  Defined.
+  Global Instance relation_equivalence_rewrite_relation: RewriteRelation relation_equivalence := {}.
   
   Definition relation_conjunction (R : relation A) (R' : relation A) : relation A :=
     @predicate_intersection (A::A::Tnil) R R'.
@@ -512,5 +526,16 @@ Proof.
   unfold relation_equivalence in *. compute; firstorder.
 Qed.
 
-Typeclasses Opaque arrows predicate_implication predicate_equivalence
+Global Typeclasses Opaque arrows predicate_implication predicate_equivalence
             relation_equivalence pointwise_lifting.
+
+(* Register bindings for the generalized rewriting tactic *)
+
+Register relation as rewrite.prop.relation.
+Register subrelation as rewrite.prop.subrelation.
+Register Reflexive as rewrite.prop.Reflexive.
+Register reflexivity as rewrite.prop.reflexivity.
+Register Symmetric as rewrite.prop.Symmetric.
+Register symmetry as rewrite.prop.symmetry.
+Register Transitive as rewrite.prop.Transitive.
+Register transitivity as rewrite.prop.transitivity.

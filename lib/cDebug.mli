@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -34,6 +34,8 @@ val create : name:string -> unit -> t
 val create_full : name:string -> unit -> flag * t
 
 val get_flag : flag -> bool
+
+val set_flag : flag -> bool -> unit
 
 (** [get_flags] and [set_flags] use the user syntax: a comma separated
     list of activated "component" and "-component"s. [get_flags] starts

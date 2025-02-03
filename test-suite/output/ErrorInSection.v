@@ -1,4 +1,4 @@
-(* -*- mode: coq; coq-prog-args: ("-vio") -*- *)
+(* -*- mode: coq; coq-prog-args: ("-vos") -*- *)
 Section S.
-  Definition foo := nonexistent.
+  Fail Definition foo := nonexistent.
 End S.

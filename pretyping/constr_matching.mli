@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -16,6 +16,12 @@ open EConstr
 open Environ
 open Pattern
 open Ltac_pretype
+
+type instantiated_pattern
+
+val instantiate_pattern : Environ.env ->
+  Evd.evar_map -> extended_patvar_map ->
+  constr_pattern -> instantiated_pattern
 
 type binding_bound_vars = Id.Set.t
 
@@ -47,7 +53,7 @@ val matches_head : env -> Evd.evar_map -> constr_pattern -> constr -> patvar_map
    variables or metavariables have the same name, the metavariable,
    or else the rightmost bound variable, takes precedence *)
 val extended_matches :
-  env -> Evd.evar_map -> binding_bound_vars * constr_pattern ->
+  env -> Evd.evar_map -> binding_bound_vars * instantiated_pattern ->
   constr -> bound_ident_map * extended_patvar_map
 
 (** [is_matching pat c] just tells if [c] matches against [pat] *)
@@ -57,17 +63,23 @@ val is_matching : env -> Evd.evar_map -> constr_pattern -> constr -> bool
     prefix of it matches against [pat] *)
 val is_matching_head : env -> Evd.evar_map -> constr_pattern -> constr -> bool
 
+type context
+
+val empty_context : context
+val repr_context : context -> EConstr.t
+val instantiate_context : context -> EConstr.t -> EConstr.t
+
 (** The type of subterm matching results: a substitution + a context
    (whose hole is denoted here with [special_meta]) *)
 type matching_result =
     { m_sub : bound_ident_map * patvar_map;
-      m_ctx : EConstr.t Lazy.t }
+      m_ctx : context }
 
 (** [match_subterm pat c] returns the substitution and the context
    corresponding to each **closed** subterm of [c] matching [pat],
    considering application contexts as well. *)
 val match_subterm : env -> Evd.evar_map ->
-  binding_bound_vars * constr_pattern -> constr ->
+  binding_bound_vars * instantiated_pattern -> constr ->
   matching_result IStream.t
 
 (** [is_matching_appsubterm pat c] tells if a subterm of [c] matches

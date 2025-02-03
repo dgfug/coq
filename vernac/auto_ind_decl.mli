@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -18,7 +18,7 @@ open Ind_tables
 
 (** {6 Build boolean equality of a block of mutual inductive types } *)
 
-exception EqNotFound of inductive * inductive
+exception EqNotFound of inductive
 exception EqUnknown of string
 exception UndefinedCst of string
 exception InductiveWithProduct
@@ -29,13 +29,9 @@ exception DecidabilityMutualNotSupported
 exception NoDecidabilityCoInductive
 exception ConstructorWithNonParametricInductiveType of inductive
 exception DecidabilityIndicesNotSupported
+exception InternalDependencies
 
 val beq_scheme_kind : mutual scheme_kind
-
-(** {6 Build equivalence between boolean equality and Leibniz equality } *)
-
-val lb_scheme_kind : mutual scheme_kind
-val bl_scheme_kind : mutual scheme_kind
 
 (** {6 Build decidability of equality } *)
 

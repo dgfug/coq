@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -28,6 +28,7 @@ Primitive float := #float64_type.
 Register float as num.float.type.
 
 Record float_wrapper := wrap_float { float_wrap : float }.
+Register float_wrapper as num.float.float_wrapper.
 Register wrap_float as num.float.wrap_float.
 Definition printer (x : float_wrapper) : float := float_wrap x.
 Definition parser (x : float) : float := x.
@@ -49,6 +50,8 @@ Primitive sqrt := #float64_sqrt.
 
 Primitive opp := #float64_opp.
 
+(** For the record: this is the IEEE754 equality
+    (eqb nan nan = false and eqb +0 -0 = true) *)
 Primitive eqb := #float64_eq.
 
 Primitive ltb := #float64_lt.
@@ -56,6 +59,12 @@ Primitive ltb := #float64_lt.
 Primitive leb := #float64_le.
 
 Primitive compare := #float64_compare.
+
+(** Boolean Leibniz equality *)
+Module Leibniz.
+Primitive eqb := #float64_equal.
+Register eqb as num.float.leibniz.eqb.
+End Leibniz.
 
 Primitive mul := #float64_mul.
 
@@ -139,15 +148,6 @@ Definition get_sign f :=
 
 Module Export PrimFloatNotations.
   Local Open Scope float_scope.
-  #[deprecated(since="8.13",note="use infix <? instead")]
-   Notation "x < y" := (x <? y) (at level 70, no associativity) : float_scope.
-  #[deprecated(since="8.13",note="use infix <=? instead")]
-   Notation "x <= y" := (x <=? y) (at level 70, no associativity) : float_scope.
-  #[deprecated(since="8.13",note="use infix =? instead")]
-   Notation "x == y" := (x =? y) (at level 70, no associativity) : float_scope.
   Export PrimFloatNotationsInternalA.
   Export PrimFloatNotationsInternalB.
 End PrimFloatNotations.
-
-#[deprecated(since="8.14",note="Use of_uint63 instead.")]
-Notation of_int63 := of_uint63 (only parsing).

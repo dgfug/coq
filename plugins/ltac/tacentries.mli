@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -15,8 +15,7 @@ open Tacexpr
 
 (** {5 Tactic Definitions} *)
 
-val register_ltac : locality_flag -> ?deprecation:Deprecation.t ->
-  Tacexpr.tacdef_body list -> unit
+val register_ltac : Attributes.vernac_flags -> Tacexpr.tacdef_body list -> unit
 (** Adds new Ltac definitions to the environment. *)
 
 (** {5 Tactic Notations} *)
@@ -24,6 +23,8 @@ val register_ltac : locality_flag -> ?deprecation:Deprecation.t ->
 type 'a grammar_tactic_prod_item_expr = 'a Pptactic.grammar_tactic_prod_item_expr =
 | TacTerm of string
 | TacNonTerm of ('a * Names.Id.t option) Loc.located
+
+type tactic_grammar_obj
 
 type raw_argument = string * string option
 (** An argument type as provided in Tactic notations, i.e. a string like
@@ -35,11 +36,16 @@ type argument = Genarg.ArgT.any Extend.user_symbol
     leaves. *)
 
 val add_tactic_notation :
-  locality_flag -> int -> ?deprecation:Deprecation.t -> raw_argument
-  grammar_tactic_prod_item_expr list -> raw_tactic_expr -> unit
+  ?deprecation:Deprecation.t -> tactic_grammar_obj ->
+  raw_tactic_expr -> unit
 (** [add_tactic_notation local level prods expr] adds a tactic notation in the
     environment at level [level] with locality [local] made of the grammar
     productions [prods] and returning the body [expr] *)
+
+val add_tactic_notation_syntax :
+  locality_flag -> int -> ?deprecation:Deprecation.t -> raw_argument
+  grammar_tactic_prod_item_expr list ->
+  tactic_grammar_obj
 
 val register_tactic_notation_entry : string -> ('a, 'b, 'c) Genarg.genarg_type -> unit
 (** Register an argument under a given entry name for tactic notations. When
@@ -55,8 +61,8 @@ val add_ml_tactic_notation : ml_tactic_name -> level:int -> ?deprecation:Depreca
 
 (** {5 Tactic Quotations} *)
 
-val create_ltac_quotation : string ->
-  ('grm Loc.located -> raw_tactic_arg) -> ('grm Pcoq.Entry.t * int option) -> unit
+val create_ltac_quotation : plugin:string -> string ->
+  ('grm Loc.located -> raw_tactic_arg) -> ('grm Procq.Entry.t * int option) -> unit
 (** [create_ltac_quotation name f e] adds a quotation rule to Ltac, that is,
     Ltac grammar now accepts arguments of the form ["name" ":" "(" <e> ")"], and
     generates an argument using [f] on the entry parsed by [e]. *)
@@ -82,7 +88,7 @@ val ml_tactic_extend : plugin:string -> name:string -> local:locality_flag ->
   ?deprecation:Deprecation.t -> ('r, unit Proofview.tactic) ml_ty_sig -> 'r -> unit
 (** Helper function to define directly an Ltac function in OCaml without any
     associated parsing rule nor further shenanigans. The Ltac function will be
-    defined as [name] in the Coq file that loads the ML plugin where this
+    defined as [name] in the Rocq file that loads the ML plugin where this
     function is called. It will have the arity given by the [ml_ty_sig]
     argument. *)
 
@@ -149,15 +155,15 @@ type ('a, 'b) argument_intern =
 | ArgInternWit : ('a, 'b, 'c) Genarg.genarg_type -> ('a, 'b) argument_intern
 
 type 'b argument_subst =
-| ArgSubstFun : 'b Genintern.subst_fun -> 'b argument_subst
+| ArgSubstFun : 'b Gensubst.subst_fun -> 'b argument_subst
 | ArgSubstWit : ('a, 'b, 'c) Genarg.genarg_type -> 'b argument_subst
 
 type ('b, 'c) argument_interp =
 | ArgInterpRet : ('c, 'c) argument_interp
 | ArgInterpFun : ('b, Geninterp.Val.t) Geninterp.interp_fun -> ('b, 'c) argument_interp
 | ArgInterpWit : ('a, 'b, 'r) Genarg.genarg_type -> ('b, 'c) argument_interp
-| ArgInterpLegacy :
-  (Geninterp.interp_sign -> Goal.goal Evd.sigma -> 'b -> Evd.evar_map * 'c) -> ('b, 'c) argument_interp
+| ArgInterpSimple :
+  (Geninterp.interp_sign -> Environ.env -> Evd.evar_map -> 'b -> 'c) -> ('b, 'c) argument_interp
 
 type ('a, 'b, 'c) tactic_argument = {
   arg_parsing : 'a Vernacextend.argument_rule;
@@ -168,5 +174,5 @@ type ('a, 'b, 'c) tactic_argument = {
   arg_printer : ('a, 'b, 'c) argument_printer;
 }
 
-val argument_extend : name:string -> ('a, 'b, 'c) tactic_argument ->
-  ('a, 'b, 'c) Genarg.genarg_type * 'a Pcoq.Entry.t
+val argument_extend : plugin:string -> name:string -> ('a, 'b, 'c) tactic_argument ->
+  ('a, 'b, 'c) Genarg.genarg_type * 'a Procq.Entry.t

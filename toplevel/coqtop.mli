@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -14,27 +14,22 @@
 *)
 
 type ('a,'b) custom_toplevel =
-  { parse_extra : string list -> 'a * string list
-  ; usage : Usage.specific_usage
+  { parse_extra : Coqargs.t -> string list -> 'a * string list
+  ; usage : Boot.Usage.specific_usage
   ; init_extra : 'a -> Coqargs.injection_command list -> opts:Coqargs.t -> 'b
   ; initial_args : Coqargs.t
   ; run : 'a -> opts:Coqargs.t -> 'b -> unit
   }
 
-(** The generic Coq main module. [start custom] will parse the command line,
+(** The generic Rocq main module. [start custom] will parse the command line,
    print the banner, initialize the load path, load the input state,
    load the files given on the command line, load the resource file,
    produce the output state if any, and finally will launch
-   [custom.run]. *)
-val start_coq : ('a * Stm.AsyncOpts.stm_opt,'b) custom_toplevel -> unit
+   [custom.run].
 
-(** Initializer color for output *)
-
-type color = [`ON | `AUTO | `EMACS | `OFF]
-
-val init_color : color -> unit
-val parse_extra_colors : string list -> color * string list
-val print_style_tags : color -> unit
+    The [string list] argument is typically [List.tl (Array.to_list Sys.argv)].
+*)
+val start_coq : ('a * Stm.AsyncOpts.stm_opt,'b) custom_toplevel -> string list -> unit
 
 (** Prepare state for interactive loop *)
 
@@ -47,7 +42,7 @@ type run_mode = Interactive | Batch | Query of query
 
 type toplevel_options = {
   run_mode : run_mode;
-  color_mode : color;
+  color_mode : Colors.color;
 }
 
 val coqtop_toplevel : (toplevel_options * Stm.AsyncOpts.stm_opt,Vernac.State.t) custom_toplevel

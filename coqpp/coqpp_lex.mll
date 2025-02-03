@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -73,7 +73,7 @@ let end_ocaml lexbuf =
   else if !num_braces = 0 then
     let s = Buffer.contents ocaml_buf in
     let () = Buffer.reset ocaml_buf in
-    let loc = {
+    let loc = Some {
       Coqpp_ast.loc_start = !ocaml_start_pos;
       Coqpp_ast.loc_end = lexeme_end_p lexbuf
     } in
@@ -115,6 +115,7 @@ rule extend = parse
 | "ARGUMENT" { ARGUMENT }
 | "RAW_PRINTED" { RAW_PRINTED }
 | "GLOB_PRINTED" { GLOB_PRINTED }
+| "SYNTERP" { SYNTERP }
 | "BY" { BY }
 | "AS" { AS }
 (** Camlp5 specific keywords *)

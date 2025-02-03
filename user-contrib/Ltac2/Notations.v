@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -9,7 +9,7 @@
 (************************************************************************)
 
 Require Import Ltac2.Init.
-Require Ltac2.Control Ltac2.Pattern Ltac2.Array Ltac2.Int Ltac2.Std.
+Require Ltac2.Control Ltac2.Option Ltac2.Pattern Ltac2.Array Ltac2.Int Ltac2.Std Ltac2.Constr.
 
 (** Constr matching *)
 
@@ -95,6 +95,8 @@ Ltac2 do0 n t :=
 Ltac2 Notation do := do0.
 
 Ltac2 Notation once := Control.once.
+
+Ltac2 Notation unshelve := Control.unshelve.
 
 Ltac2 progress0 tac := Control.enter (fun _ => Control.progress tac).
 
@@ -228,12 +230,12 @@ Ltac2 apply0 adv ev cb cl :=
   Std.apply adv ev cb cl.
 
 Ltac2 Notation "eapply"
-  cb(list1(thunk(seq(constr, with_bindings)), ","))
+  cb(list1(thunk(seq(open_constr, with_bindings)), ","))
   cl(opt(seq("in", ident, opt(seq("as", intropattern))))) :=
   apply0 true true cb cl.
 
 Ltac2 Notation "apply"
-  cb(list1(thunk(seq(constr, with_bindings)), ","))
+  cb(list1(thunk(seq(open_constr, with_bindings)), ","))
   cl(opt(seq("in", ident, opt(seq("as", intropattern))))) :=
   apply0 true false cb cl.
 
@@ -244,7 +246,7 @@ match cl with
 end.
 
 Ltac2 pose0 ev p :=
-  enter_h ev (fun ev (na, p) => Std.pose na p) p.
+  enter_h ev (fun _ (na, p) => Std.pose na p) p.
 
 Ltac2 Notation "pose" p(thunk(pose)) :=
   pose0 false p.
@@ -445,6 +447,13 @@ Ltac2 Notation "rewrite"
   tac(opt(seq("by", thunk(tactic)))) :=
   rewrite0 false rw cl tac.
 
+Ltac2 Notation "setoid_rewrite"
+  ori(orient)
+  c(thunk(seq(open_constr, with_bindings)))
+  occs(occurrences)
+  id(opt(seq("in", ident))) :=
+  Std.setoid_rewrite (Option.default Std.LTR ori) c occs id.
+
 Ltac2 Notation "erewrite"
   rw(list1(rewriting, ","))
   cl(opt(clause))
@@ -453,6 +462,8 @@ Ltac2 Notation "erewrite"
 
 (** coretactics *)
 
+(** Provided for backwards compat *)
+#[deprecated(since="8.19")]
 Ltac2 exact0 ev c :=
   Control.enter (fun _ =>
     match ev with
@@ -464,8 +475,20 @@ Ltac2 exact0 ev c :=
     end
   ).
 
-Ltac2 Notation "exact" c(thunk(open_constr)) := exact0 false c.
-Ltac2 Notation "eexact" c(thunk(open_constr)) := exact0 true c.
+Ltac2 exact1 ev c :=
+  Control.enter (fun () =>
+    let c :=
+      Constr.Pretype.pretype
+        (if ev then Constr.Pretype.Flags.open_constr_flags_with_tc else Constr.Pretype.Flags.constr_flags)
+        (Constr.Pretype.expected_oftype (Control.goal()))
+        c
+    in
+    Std.exact_no_check c).
+
+Ltac2 Notation "exact" c(preterm) := exact1 false c.
+
+Ltac2 Notation "eexact" c(preterm) := exact1 true c.
+(** Like [refine] but new evars are shelved instead of becoming subgoals. *)
 
 Ltac2 Notation "intro" id(opt(ident)) mv(opt(move_location)) := Std.intro id mv.
 Ltac2 Notation intro := intro.
@@ -549,7 +572,7 @@ Ltac2 trivial0 use dbs :=
   Std.trivial Std.Off use dbs.
 
 Ltac2 Notation "trivial"
-  use(opt(seq("using", list1(thunk(constr), ","))))
+  use(opt(seq("using", list1(reference, ","))))
   dbs(opt(seq("with", hintdb))) := trivial0 use dbs.
 
 Ltac2 Notation trivial := trivial.
@@ -560,19 +583,19 @@ Ltac2 auto0 n use dbs :=
   Std.auto Std.Off n use dbs.
 
 Ltac2 Notation "auto" n(opt(tactic(0)))
-  use(opt(seq("using", list1(thunk(constr), ","))))
+  use(opt(seq("using", list1(reference, ","))))
   dbs(opt(seq("with", hintdb))) := auto0 n use dbs.
 
 Ltac2 Notation auto := auto.
 
-Ltac2 eauto0 n p use dbs :=
+Ltac2 eauto0 n use dbs :=
   let dbs := default_db dbs in
   let use := default_list use in
-  Std.eauto Std.Off n p use dbs.
+  Std.eauto Std.Off n use dbs.
 
-Ltac2 Notation "eauto" n(opt(tactic(0))) p(opt(tactic(0)))
-  use(opt(seq("using", list1(thunk(constr), ","))))
-  dbs(opt(seq("with", hintdb))) := eauto0 n p use dbs.
+Ltac2 Notation "eauto" n(opt(tactic(0)))
+  use(opt(seq("using", list1(reference, ","))))
+  dbs(opt(seq("with", hintdb))) := eauto0 n use dbs.
 
 Ltac2 Notation eauto := eauto.
 
@@ -588,10 +611,20 @@ Ltac2 Notation "unify" x(constr) y(constr) := Std.unify x y.
 
 (** Congruence *)
 
+Ltac2 Notation "congruence" n(opt(tactic(0))) l(opt(seq("with", list1(constr)))) := Std.congruence n l.
+
+Ltac2 Notation "simple" "congruence" n(opt(tactic(0))) l(opt(seq("with", list1(constr)))) := Std.simple_congruence n l.
+
 Ltac2 f_equal0 () := ltac1:(f_equal).
 Ltac2 Notation f_equal := f_equal0 ().
 
 (** now *)
 
 Ltac2 now0 t := t (); ltac1:(easy).
-Ltac2 Notation "now" t(thunk(self)) := now0 t.
+Ltac2 Notation "now" t(thunk(self)) : 6 := now0 t.
+
+(** profiling *)
+
+Ltac2 start_profiling () := ltac1:(start ltac profiling).
+Ltac2 stop_profiling () := ltac1:(stop ltac profiling).
+Ltac2 show_profile () := ltac1:(show ltac profile).

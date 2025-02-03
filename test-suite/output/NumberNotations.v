@@ -83,7 +83,7 @@ Module Test4.
 
   Polymorphic Definition pto_punits := pto_punit_all@{Set}.
   Polymorphic Definition pof_punits := pof_punit@{Set}.
-  Number Notation punit pto_punits pof_punits (abstract after 1) : ppps.
+  Number Notation punit pto_punits pof_punits (abstract after 0) : ppps.
   Delimit Scope ppps with ppps.
   Universe u.
   Constraint Set < u.
@@ -121,7 +121,7 @@ Module Test6.
   End Scopes.
   Module Export Notations.
     Export Scopes.
-    Number Notation wnat of_uint to_uint (abstract after 5000) : wnat_scope.
+    Number Notation wnat of_uint to_uint (abstract after 4999) : wnat_scope.
   End Notations.
   Set Printing Coercions.
   Check let v := 0%wnat in v : wnat.
@@ -200,12 +200,12 @@ Module Test10.
   Declare Scope unit2_scope.
   Delimit Scope unit_scope with unit.
   Delimit Scope unit2_scope with unit2.
-  Number Notation unit of_uint to_uint (abstract after 1) : unit_scope.
+  Number Notation unit of_uint to_uint (abstract after 0) : unit_scope.
   Local Set Warnings Append "+abstract-large-number-no-op".
   (* Check that there is actually a warning here *)
-  Fail Number Notation unit of_uint to_uint (abstract after 1) : unit2_scope.
+  Fail Number Notation unit of_uint to_uint (abstract after 0) : unit2_scope.
   (* Check that there is no warning here *)
-  Number Notation unit of_any_uint to_uint (abstract after 1) : unit2_scope.
+  Number Notation unit of_any_uint to_uint (abstract after 0) : unit2_scope.
 End Test10.
 
 Module Test12.
@@ -320,7 +320,7 @@ Module Test16.
   Fail Check let v := 0%test16 in v : Foo.
 End Test16.
 
-Require Import Coq.Numbers.Cyclic.Int63.Uint63.
+Require Import PrimInt63.
 Module Test17.
   (** Test uint63 *)
   Declare Scope test17_scope.
@@ -373,15 +373,27 @@ Module Test18.
   Compute let v := 4%Q in (num v, den v).
 End Test18.
 
-Require Import Coq.Lists.List.
-Require Import Coq.ZArith.ZArith.
+Require Import Corelib.Lists.ListDef.
+Require Import BinNums IntDef.
 Module Test19.
   (** Test another thing related to https://github.com/coq/coq/issues/9840 *)
   Record Zlike := { summands : list Z }.
   Declare Scope Zlike_scope.
   Delimit Scope Zlike_scope with Zlike.
 
-  Definition Z_of_Zlike (x : Zlike) := List.fold_right Z.add 0%Z (summands x).
+  Section Fold_Right_Recursor.
+    Variables (A : Type) (B : Type).
+    Variable f : B -> A -> A.
+    Variable a0 : A.
+
+    Fixpoint fold_right (l:list B) : A :=
+      match l with
+      | nil => a0
+      | cons b t => f b (fold_right t)
+      end.
+    End Fold_Right_Recursor.
+
+  Definition Z_of_Zlike (x : Zlike) := fold_right _ _ Z.add Z0 (summands x).
   Definition Zlike_of_Z (x : Z) := {| summands := cons x nil |}.
 
   Number Notation Zlike Zlike_of_Z Z_of_Zlike : Zlike_scope.
@@ -392,7 +404,7 @@ Module Test19.
   Check let v := 2%Zlike in v : Zlike.
   Check let v := 3%Zlike in v : Zlike.
   Check let v := 4%Zlike in v : Zlike.
-  Check {| summands := (cons 1 (cons 2 (cons (-1) nil)))%Z |}.
+  Check {| summands := cons (Zpos xH) (cons (Zpos (xO xH)) (cons (Zneg xH) nil)) |}.
   Check {| summands := nil |}.
 End Test19.
 
@@ -467,7 +479,7 @@ End Test20.
 Module Test21.
 
   Check 00001.
-  Check (-1_000)%Z.
+  Check 1_000.
 
 End Test21.
 
@@ -588,7 +600,7 @@ Number Notation nSet of_uint to_uint (via I
 (* incompatibility with abstract (but warning is fine) *)
 Fail Number Notation nSet of_uint to_uint (via I
   mapping [Empty_set => Iempty, unit => Iunit, sum => Isum],
-  abstract after 12)
+  abstract after 11)
   : type_scope.
 Number Notation nSet of_uint to_uint (via I
   mapping [Empty_set => Iempty, unit => Iunit, sum => Isum],
@@ -633,10 +645,7 @@ Number Notation foo'' foo''_of_uint foo''_to_uint (via foo'' mapping [bar'' => b
 End Test23.
 
 (* Test the via ... mapping ... option with implicit arguments *)
-Require Vector.
 Module Test24.
-
-Import Vector.
 
 Inductive I :=
 | I1 : I
@@ -659,6 +668,12 @@ Definition to_uint (x : I) : Number.uint :=
   Nat.to_num_uint (f x).
 
 Local Open Scope type_scope.
+
+Module Fin.
+Inductive t : nat -> Set :=
+|F1 : forall {n}, t (S n)
+|FS : forall {n}, t n -> t (S n).
+End Fin.
 
 (* ignoring implicit arguments doesn't work *)
 Number Notation Fin.t of_uint to_uint (via I
@@ -782,11 +797,15 @@ Number Notation eqO eqO_of_uint eqO_to_uint : nat_scope.
 
 Check 42.
 Check eq_refl (S O).  (* doesn't match eq _ O, printer not called *)
+Check eq_refl O. (* matches eq _ O, printer called *)
+Check eq_refl (id O). (* doesn't match eq _ O, printer not called *)
 
 Notation eq_ := (eq _ _) (only parsing).
 Number Notation eq_ eqO_of_uint eqO_to_uint : nat_scope.
 
-Check eq_refl (S O).  (* matches eq _ _, printer called *)
+Check eq_refl (S O).  (* matches eq _ _, printer called, but type incorrect *)
+Check eq_refl O. (* matches eq _ _, printer called *)
+Check eq_refl (id O). (* matches eq _ _, but contains a global constant, printer not called *)
 
 Inductive extra_list : Type -> Type :=
 | nil (n : nat) (v : Type) : extra_list v
@@ -979,7 +998,7 @@ Unset Printing All.
 
 End Test28.
 
-Require Import Floats.
+Require Import PrimFloat.
 
 Module Test29.
 
@@ -998,3 +1017,42 @@ Check neg_infinity.
 Check nan.
 
 End Test29.
+
+Module Test30.
+
+Inductive nunit : nat -> Type := NUnit n : nunit n.
+
+Definition printer2 (x : nunit 2) : Number.uint :=
+  Number.UIntDecimal (Decimal.D2 Decimal.Nil).
+
+Definition parser2 (_ : Number.uint) : nunit 2 := NUnit 2.
+
+Notation nunit2 := (nunit 2).
+Number Notation nunit2 parser2 printer2 : nat_scope.
+
+Check 2.
+Check NUnit (S (S O)).
+Check NUnit (S (S (S O))).
+Check NUnit O.
+
+Check NUnit (S O + S O).
+(* doesn't print as 2, because (S O + S O) is not syntactically equal
+   to (S (S O)), we could want to use a convertibility test rather
+   than a syntactic equality, but this could be more costly *)
+
+End Test30.
+
+Module Bug10878.
+
+Definition Zto_pos_opt (v : Z) : option positive
+  := match v with
+     | Zpos v => Some v
+     | _ => None
+     end.
+Declare Scope mypos_scope.
+Declare Scope mypos_scope2.
+Number Notation positive Zto_pos_opt Zpos : mypos_scope. (* success *)
+Arguments option {_}.
+Number Notation positive Zto_pos_opt Zpos : mypos_scope2. (* was failing *)
+
+End Bug10878.

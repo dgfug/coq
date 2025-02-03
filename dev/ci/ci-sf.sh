@@ -7,6 +7,8 @@ ci_dir="$(dirname "$0")"
 
 git_download sf
 
+if [ "$DOWNLOAD_ONLY" ]; then exit 0; fi
+
 cd "$CI_BUILD_DIR/sf"
 
 ( cd lf-current
@@ -18,6 +20,10 @@ cd "$CI_BUILD_DIR/sf"
 )
 
 ( cd vfa-current
+  make
+)
+
+( cd slf-current
   make
 )
 

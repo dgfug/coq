@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -18,25 +18,25 @@ open Pp
 open CErrors
 open Libnames
 open Globnames
-open Syntax_def
+open Abbreviation
 open Notation_term
 
 let global_of_extended_global_head = function
   | TrueGlobal ref -> ref
-  | SynDef kn ->
-      let _, syn_def = search_syntactic_definition kn in
+  | Abbrev kn ->
+      let _, syn_def = search_abbreviation kn in
       let rec head_of = function
         | NRef (ref,None) -> ref
         | NApp (rc, _) -> head_of rc
-        | NCast (rc, _) -> head_of rc
+        | NCast (rc, _, _) -> head_of rc
         | NLetIn (_, _, _, rc) -> head_of rc
         | _ -> raise Not_found in
       head_of syn_def
 
 let global_of_extended_global_exn = function
   | TrueGlobal ref -> ref
-  | SynDef kn ->
-  match search_syntactic_definition kn with
+  | Abbrev kn ->
+  match search_abbreviation kn with
   | [],NRef (ref,None) -> ref
   | [],NApp (NRef (ref,None),[]) -> ref
   | _ -> raise Not_found
@@ -58,7 +58,7 @@ let global_constant_with_alias qid  =
   try match locate_global_with_alias qid with
   | Names.GlobRef.ConstRef c -> c
   | ref ->
-      user_err ?loc:qid.CAst.loc ~hdr:"global_inductive"
+      user_err ?loc:qid.CAst.loc
         (pr_qualid qid ++ spc () ++ str "is not a reference to a constant.")
   with Not_found as exn ->
     let _, info = Exninfo.capture exn in
@@ -68,7 +68,7 @@ let global_inductive_with_alias qid  =
   try match locate_global_with_alias qid with
   | Names.GlobRef.IndRef ind -> ind
   | ref ->
-      user_err ?loc:qid.CAst.loc ~hdr:"global_inductive"
+      user_err ?loc:qid.CAst.loc
         (pr_qualid qid ++ spc () ++ str "is not an inductive type.")
   with Not_found as exn ->
     let _, info = Exninfo.capture exn in
@@ -78,7 +78,7 @@ let global_constructor_with_alias qid  =
   try match locate_global_with_alias qid with
   | Names.GlobRef.ConstructRef c -> c
   | ref ->
-      user_err ?loc:qid.CAst.loc ~hdr:"global_inductive"
+      user_err ?loc:qid.CAst.loc
         (pr_qualid qid ++ spc () ++ str "is not a constructor of an inductive type.")
   with Not_found as exn ->
     let _, info = Exninfo.capture exn in

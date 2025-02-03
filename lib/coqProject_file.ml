@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -13,27 +13,29 @@
    bootstrapped. *)
 
 type arg_source = CmdLine | ProjectFile
+(* items from expansion of directories are labelled ProjectFile *)
 
 type 'a sourced = { thing : 'a; source : arg_source }
 
-type project = {
+type meta_file = Absent | Present of string | Generate of string
+
+type 'a project = {
   project_file  : string option;
   makefile : string option;
   native_compiler : native_compiler option;
   docroot : string option;
 
-  v_files : string sourced list;
-  mli_files : string sourced list;
-  mlg_files : string sourced list;
-  ml_files : string sourced list;
-  mllib_files : string sourced list;
-  mlpack_files : string sourced list;
+  files : string sourced list; (* .v, .ml, .mlg, .mli, .mllib, .mlpack files *)
+  cmd_line_files : string sourced list;
+  meta_file : meta_file;
 
   ml_includes : path sourced list;
   r_includes  : (path * logic_path) sourced list;
   q_includes  : (path * logic_path) sourced list;
   extra_args : string sourced list;
   defs : (string * string) sourced list;
+
+  extra_data : 'a;
 }
 and logic_path = string
 and path = { path : string; canonical_path : string }
@@ -43,23 +45,22 @@ and native_compiler =
 | NativeOndemand
 
 (* TODO generate with PPX *)
-let mk_project project_file makefile native_compiler = {
+let mk_project project_file makefile native_compiler extra_data = {
   project_file;
   makefile;
   native_compiler;
   docroot = None;
 
-  v_files = [];
-  mli_files = [];
-  mlg_files = [];
-  ml_files = [];
-  mllib_files = [];
-  mlpack_files = [];
+  files = [];
+  cmd_line_files = [];
   ml_includes = [];
+  meta_file = Absent;
   r_includes = [];
   q_includes = [];
   extra_args = [];
   defs = [];
+
+  extra_data;
 }
 
 (********************* utils ********************************************)
@@ -79,30 +80,30 @@ let buffer buf =
   let () = Buffer.clear buf in
   ans
 
-let rec parse_string buf s = match Stream.next s with
-| ' ' | '\n' | '\t' -> buffer buf
+let rec parse_string buf s = match input_char s with
+| ' ' | '\n' | '\r' | '\t' -> buffer buf
 | '#' ->
   parse_skip_comment s;
   buffer buf
 | c ->
   let () = Buffer.add_char buf c in
   parse_string buf s
-| exception Stream.Failure -> buffer buf
+| exception End_of_file -> buffer buf
 
-and parse_string2 buf s = match Stream.next s with
+and parse_string2 buf s = match input_char s with
 | '"' -> buffer buf
 | c ->
   let () = Buffer.add_char buf c in
   parse_string2 buf s
-| exception Stream.Failure -> raise (Parsing_error "unterminated string")
+| exception End_of_file -> raise (Parsing_error "unterminated string")
 
-and parse_skip_comment s = match Stream.next s with
+and parse_skip_comment s = match input_char s with
 | '\n' -> ()
 | _ -> parse_skip_comment s
-| exception Stream.Failure -> ()
+| exception End_of_file -> ()
 
-and parse_args buf accu s = match Stream.next s with
-| ' ' | '\n' | '\t' -> parse_args buf accu s
+and parse_args buf accu s = match input_char s with
+| ' ' | '\n' | '\r' | '\t' -> parse_args buf accu s
 | '#' ->
   let () = parse_skip_comment s in
   parse_args buf accu s
@@ -113,14 +114,14 @@ and parse_args buf accu s = match Stream.next s with
   let () = Buffer.add_char buf c in
   let str = parse_string buf s in
   parse_args buf (str :: accu) s
-| exception Stream.Failure -> accu
+| exception End_of_file -> accu
 
 exception UnableToOpenProjectFile of string
 
 let parse f =
   let c = try open_in f with Sys_error msg -> raise (UnableToOpenProjectFile msg) in
   let buf = Buffer.create 64 in
-  let res = parse_args buf [] (Stream.of_channel c) in
+  let res = parse_args buf [] c in
   close_in c;
   List.rev res
 
@@ -139,6 +140,7 @@ let escape_char c =
   match c with
   | '\'' -> "\'"
   | '\n' -> "\\n"
+  | '\r' -> "\\r"
   | '\t' -> "\\t"
   | c -> String.make 1 c
 
@@ -146,7 +148,7 @@ let check_filename f =
   let a = ref None in
   let check_char c =
     match c with
-    | '\n' | '\t' | '\\' | '\'' | '"' | ' ' | '#' | '$' | '%' -> a := Some c
+    | '\n' | '\r' | '\t' | '\\' | '\'' | '"' | ' ' | '#' | '$' | '%' -> a := Some c
     | _ -> ()
   in
   String.iter check_char f;
@@ -182,7 +184,32 @@ let process_extra_args arg =
     out_list := buffer buf :: !out_list;
   List.rev !out_list
 
-let process_cmd_line ~warning_fn orig_dir proj args =
+let expand_paths project =
+  let orig_dir = Filename.current_dir_name in
+  let orig_dir = if orig_dir = "." then "" else orig_dir in
+  let abs_f f = CUnix.correct_path f orig_dir in  (* need a better function name *)
+  let rec expand_dir path rv =
+    let add_file f =
+      if List.mem (Filename.extension f)
+               [".v"; ".mli"; ".ml"; ".mlg"; ".mlpack"; ".mllib"] then
+        rv := {thing=abs_f f; source=ProjectFile} :: !rv
+    in
+    if Sys.file_exists path && Sys.is_directory path then
+      System.process_directory (fun fname ->
+        match fname with
+        | FileRegular f -> add_file (if path <> "." then Filename.concat path f else f)
+        | FileDir (p,_) -> expand_dir p rv
+      ) path
+    else
+      add_file path
+  in
+  List.fold_left (fun rv path ->
+      let exp = ref [] in
+      expand_dir path.thing exp;
+      (List.sort (fun a b -> String.compare a.thing b.thing) !exp) @ rv)
+    [] project.files
+
+let process_cmd_line ~warning_fn orig_dir parse_extra proj args =
   let parsing_project_file = ref (proj.project_file <> None) in
   let sourced x = { thing = x; source = if !parsing_project_file then ProjectFile else CmdLine } in
   let orig_dir = (* avoids turning foo.v in ./foo.v *)
@@ -198,10 +225,15 @@ let process_cmd_line ~warning_fn orig_dir proj args =
     error "Use \"-arg -impredicative-set\" instead of \"-impredicative-set\""
 
   | "-Q" :: d :: lp :: r ->
+    let lp = if String.equal lp "Coq" then "Corelib" else lp in
     aux { proj with q_includes = proj.q_includes @ [sourced (mk_path d,lp)] } r
   | "-I" :: d :: r ->
     aux { proj with ml_includes = proj.ml_includes @ [sourced (mk_path d)] } r
   | "-R" :: d :: lp :: r ->
+    let lp = if String.equal lp "Coq" then "Corelib" else lp in
+    (* -R Coq ... is only used by Dune in conjunction with the -boot
+       option. The above line should be removed once we require an
+       updated version of Dune. *)
     aux { proj with r_includes = proj.r_includes @ [sourced (mk_path d,lp)] } r
 
   | "-native-compiler" :: flag :: r ->
@@ -236,36 +268,47 @@ let process_cmd_line ~warning_fn orig_dir proj args =
       error "Option -docroot given more than once";
     aux { proj with docroot = Some p } r
 
+  | "-generate-meta-for-package" :: m :: r ->
+    if proj.meta_file <> Absent then
+      error "Option -generate-meta-for-package cannot be repeated";
+    aux { proj with meta_file = Generate m } r
+
+
   | v :: "=" :: def :: r ->
     aux { proj with defs = proj.defs @ [sourced (v,def)] } r
   | "-arg" :: a :: r ->
     aux { proj with extra_args = proj.extra_args @ List.map sourced (process_extra_args a) } r
-  | f' :: r ->
-      let f = CUnix.correct_path f' orig_dir in
+  | f :: r when CString.is_prefix "-" f -> begin match parse_extra f r proj.extra_data with
+      | None -> raise (Parsing_error ("Unknown option " ^ f))
+      | Some (r,extra_data) -> aux { proj with extra_data } r
+    end
+  | f :: r ->
+      let abs_f = CUnix.correct_path f orig_dir in
+      let ext = Filename.extension abs_f in
       let proj =
-        match Filename.extension f with
-        | ".v" ->
-          check_filename f;
-          { proj with v_files = proj.v_files @ [sourced f] }
-        | ".ml" ->
-          check_filename f;
-          { proj with ml_files = proj.ml_files @ [sourced f] }
-        | ".ml4" ->
-          let msg = Printf.sprintf "camlp5 macro files not supported anymore, please port %s to coqpp" f in
-          raise (Parsing_error msg)
-        | ".mlg" ->
-          check_filename f;
-          { proj with mlg_files = proj.mlg_files @ [sourced f] }
-        | ".mli" ->
-          check_filename f;
-          { proj with mli_files = proj.mli_files @ [sourced f] }
-        | ".mllib" ->
-          check_filename f;
-          { proj with mllib_files = proj.mllib_files @ [sourced f] }
+        match ext with
+        | ".v"
+        | ".ml"
+        | ".mli"
+        | ".mlg"
+        | ".mllib"
         | ".mlpack" ->
           check_filename f;
-          { proj with mlpack_files = proj.mlpack_files @ [sourced f] }
-        | _ -> raise (Parsing_error ("Unknown option "^f')) in
+          { proj with files = (sourced abs_f) :: proj.files }
+        | ".ml4" ->
+          let msg = Printf.sprintf "camlp5 macro files not supported anymore, please port %s to coqpp" abs_f in
+          raise (Parsing_error msg)
+        | _ ->
+          if CString.is_prefix "META." (Filename.basename abs_f) then
+            if proj.meta_file = Absent then
+              { proj with meta_file = Present abs_f }
+            else
+              raise (Parsing_error "only one META.package file can be specified")
+          else if ext = "" && not (CString.is_prefix "-" f) then begin
+            check_filename f; (* consider it a directory *)
+            { proj with files = (sourced abs_f) :: proj.files }
+          end else
+              raise (Parsing_error ("Unknown option " ^ f)) in
       aux proj r
  in
   let proj = aux proj args in
@@ -279,16 +322,21 @@ let process_cmd_line ~warning_fn orig_dir proj args =
     let proj = filter_extra proj r in
     { proj with extra_args = extra :: proj.extra_args }
   in
-  filter_extra proj proj.extra_args
+  let project = filter_extra proj proj.extra_args in
+  let cmd_line_files = CList.rev (CList.map_filter
+                       (function {thing; source=CmdLine} -> Some {thing; source=CmdLine}
+                               | {source=ProjectFile}    -> None)
+                     project.files) in
+  { project with cmd_line_files; files = expand_paths project }
 
  (******************************* API ************************************)
 
-let cmdline_args_to_project ~warning_fn ~curdir args =
-  process_cmd_line ~warning_fn curdir (mk_project None None None) args
+let cmdline_args_to_project ~warning_fn ~curdir ~parse_extra extra args =
+  process_cmd_line ~warning_fn curdir parse_extra (mk_project None None None extra) args
 
 let read_project_file ~warning_fn f =
-  process_cmd_line ~warning_fn (Filename.dirname f)
-    (mk_project (Some f) None None) (parse f)
+  process_cmd_line ~warning_fn (Filename.dirname f) (fun _ _ () -> None)
+    (mk_project (Some f) None None ()) (parse f)
 
 let rec find_project_file ~from ~projfile_name =
   let fname = Filename.concat from projfile_name in
@@ -297,14 +345,13 @@ let rec find_project_file ~from ~projfile_name =
     let newdir = Filename.dirname from in
     if newdir = from then None
     else find_project_file ~from:newdir ~projfile_name
-;;
 
-let all_files { v_files; ml_files; mli_files; mlg_files;
-                mllib_files; mlpack_files } =
-  v_files @ mli_files @ mlg_files @ ml_files @ mllib_files @ mlpack_files
+let all_files { files } = files
+
+let files_by_suffix files suffixes =
+  List.filter (fun file -> List.mem (Filename.extension file.thing) suffixes) files
 
 let map_sourced_list f l = List.map (fun x -> f x.thing) l
-;;
 
 let map_cmdline f l = CList.map_filter (function
     | {thing=x; source=CmdLine} -> Some (f x)
@@ -320,12 +367,6 @@ let coqtop_args_from_project
     map (fun ({ canonical_path = p }, l) -> ["-R"; p; l]) r_includes @
     [map (fun x -> x) extra_args] in
   List.flatten args
-;;
-
-let filter_cmdline l = CList.map_filter
-    (function {thing; source=CmdLine} -> Some thing | {source=ProjectFile} -> None)
-    l
-;;
 
 let forget_source {thing} = thing
 

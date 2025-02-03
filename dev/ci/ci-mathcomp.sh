@@ -7,8 +7,9 @@ ci_dir="$(dirname "$0")"
 
 git_download mathcomp
 
-( cd "${CI_BUILD_DIR}/mathcomp/mathcomp"
+if [ "$DOWNLOAD_ONLY" ]; then exit 0; fi
+
+( cd "${CI_BUILD_DIR}/mathcomp"
   make
-  make test-suite
   make install
 )

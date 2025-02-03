@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -31,7 +31,7 @@ let to_int64 = to_uint64
 let of_float = int_of_float
 
 external to_float : int -> (float [@unboxed])
-  = "coq_uint63_to_float_byte" "coq_uint63_to_float"
+  = "rocq_uint63_to_float_byte" "rocq_uint63_to_float"
 [@@noalloc]
 
 let hash i = i
@@ -136,9 +136,7 @@ let div21 xh xl y =
     nh := Int64.logor (Int64.shift_left !nh 1) (Int64.of_int (!nl lsr 62));
     nl := !nl lsl 1;
     q := !q lsl 1;
-    (* TODO: use "Int64.unsigned_compare !nh y >= 0",
-       once OCaml 4.08 becomes the minimal required version *)
-    if Int64.compare !nh 0L < 0 || Int64.compare !nh y >= 0 then
+    if Int64.unsigned_compare !nh y >= 0 then
       begin q := !q lor 1; nh := Int64.sub !nh y; end
   done;
   !q, Int64.to_int !nh

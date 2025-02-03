@@ -404,3 +404,69 @@ Proof.
 Qed.
 
 End EvarNames.
+
+Module LocalRedef.
+  Ltac thetac := idtac.
+  Ltac thetac' := idtac.
+
+  Module Inner.
+    Ltac thetac ::= fail.
+    Local Ltac thetac' ::= fail.
+    Goal False.
+      Fail thetac.
+      Fail thetac'.
+    Abort.
+  End Inner.
+  Goal False.
+    Fail thetac.
+    thetac'.
+  Abort.
+
+  Section S.
+    Variable f : False.
+    Fail Global Ltac thetac' ::= exact f.
+    Ltac thetac' ::= exact f.
+    Goal False.
+    Proof. thetac'. Qed.
+  End S.
+  Goal False.
+  Proof.
+    thetac'.
+    Fail Qed.
+  Abort.
+End LocalRedef.
+
+Module MatchCastInPattern.
+
+  Goal let x := True in True.
+  Proof.
+    intro x.
+    lazymatch goal with
+    | [ H := ?v : ?T |- _ ] => constr_eq T Prop
+    end.
+
+    Fail lazymatch goal with
+    | [ H := ?v <: ?T |- _ ] => constr_eq T Prop
+    end. (* Warning: Casts are ignored in patterns [cast-in-pattern,automation] *)
+
+    Set Warnings "+cast-in-pattern".
+    Fail lazymatch goal with
+    | [ H := ?v <: _ |- _ ] => idtac
+    end.
+    Fail lazymatch goal with
+    | [ H := [ ?v : _ ] : _ |- _ ] => idtac
+    end.
+  Abort.
+
+End MatchCastInPattern.
+
+Module StrictModeConfusion.
+
+Goal True.
+Fail let x := constr:(match _ with x x => _ end) in idtac.
+(* for_grammar does not reset the ref when an exception is raised *)
+Abort.
+
+Fail Ltac bad := exact x. (* was wrongly accepted *)
+
+End StrictModeConfusion.

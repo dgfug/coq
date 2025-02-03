@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -7,9 +7,6 @@
 (*         *     GNU Lesser General Public License Version 2.1          *)
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
-
-
-module Search = Explore.Make(Proof_search)
 
 open Ltac_plugin
 open CErrors
@@ -20,17 +17,51 @@ open Context
 open Proof_search
 open Context.Named.Declaration
 
+module Search = struct
+
+  open Pp
+
+  type position = int list
+
+  let msg_with_position (p : position) s = match p with
+  | [] -> ()
+  | _ :: _ ->
+    let pp = Proof_search.pp s in
+    let rec pp_rec = function
+      | [] -> mt ()
+      | [i] -> int i
+      | i :: l -> pp_rec l ++ str "." ++ int i
+    in
+    Feedback.msg_debug (h (pp_rec p) ++ pp)
+
+  let push i p = match p with [] -> [] | _ :: _ -> i :: p
+
+  let depth_first ?(debug=false) s =
+    let rec explore p s =
+      let () = msg_with_position p s in
+      if Proof_search.success s then s else explore_many 1 p (Proof_search.branching s)
+    and explore_many i p = function
+      | [] -> raise Not_found
+      | [s] -> explore (push i p) s
+      | s :: l ->
+          try explore (push i p) s with Not_found -> explore_many (succ i) p l
+    in
+    let pos = if debug then [1] else [] in
+    explore pos s
+
+end
+
 let force count lazc = incr count;Lazy.force lazc
 
 let step_count = ref 0
 
 let node_count = ref 0
 
-let li_False = lazy (destInd (UnivGen.constr_of_monomorphic_global @@ Coqlib.lib_ref "core.False.type"))
-let li_and   = lazy (destInd (UnivGen.constr_of_monomorphic_global @@ Coqlib.lib_ref "core.and.type"))
-let li_or    = lazy (destInd (UnivGen.constr_of_monomorphic_global @@ Coqlib.lib_ref "core.or.type"))
+let li_False = lazy (destInd (UnivGen.constr_of_monomorphic_global (Global.env ()) @@ Rocqlib.lib_ref "core.False.type"))
+let li_and   = lazy (destInd (UnivGen.constr_of_monomorphic_global (Global.env ()) @@ Rocqlib.lib_ref "core.and.type"))
+let li_or    = lazy (destInd (UnivGen.constr_of_monomorphic_global (Global.env ()) @@ Rocqlib.lib_ref "core.or.type"))
 
-let gen_constant n = lazy (UnivGen.constr_of_monomorphic_global (Coqlib.lib_ref n))
+let gen_constant n = lazy (UnivGen.constr_of_monomorphic_global (Global.env ()) (Rocqlib.lib_ref n))
 
 let l_xI = gen_constant "num.pos.xI"
 let l_xO = gen_constant "num.pos.xO"
@@ -61,10 +92,10 @@ let l_E_Or = gen_constant "plugins.rtauto.E_Or"
 let l_D_Or = gen_constant "plugins.rtauto.D_Or"
 
 let special_whd env sigma c =
-  Reductionops.clos_whd_flags CClosure.all env sigma c
+  Reductionops.clos_whd_flags RedFlags.all env sigma c
 
 let special_nf env sigma c =
-  Reductionops.clos_norm_flags CClosure.betaiotazeta env sigma c
+  Reductionops.clos_norm_flags RedFlags.betaiotazeta env sigma c
 
 type atom_env=
     {mutable next:int;
@@ -100,7 +131,7 @@ let rec make_form env sigma atom_env term =
   | Cast(a,_,_) ->
     make_form env sigma atom_env a
   | Ind (ind, _) ->
-    if Names.Ind.CanOrd.equal ind (fst (Lazy.force li_False)) then
+    if Environ.QInd.equal env ind (fst (Lazy.force li_False)) then
       Bot
     else
       make_atom atom_env (normalize term)
@@ -108,11 +139,11 @@ let rec make_form env sigma atom_env term =
     begin
       try
         let ind, _ = destInd sigma hd in
-        if Names.Ind.CanOrd.equal ind (fst (Lazy.force li_and)) then
+        if Environ.QInd.equal env ind (fst (Lazy.force li_and)) then
           let fa = make_form env sigma atom_env argv.(0) in
           let fb = make_form env sigma atom_env argv.(1) in
           Conjunct (fa,fb)
-        else if Names.Ind.CanOrd.equal ind (fst (Lazy.force li_or)) then
+        else if Environ.QInd.equal env ind (fst (Lazy.force li_or)) then
           let fa = make_form env sigma atom_env argv.(0) in
           let fb = make_form env sigma atom_env argv.(1) in
           Disjunct (fa,fb)
@@ -128,7 +159,7 @@ let rec make_hyps env sigma atom_env lenv = function
   | LocalAssum (id,typ)::rest ->
     let hrec=
       make_hyps env sigma atom_env (typ::lenv) rest in
-    if List.exists (fun c -> Termops.local_occur_var Evd.empty (* FIXME *) id.binder_name c) lenv ||
+    if List.exists (fun c -> Termops.local_occur_var sigma id.binder_name c) lenv ||
        (Retyping.get_sort_family_of env sigma typ != InProp)
     then
       hrec
@@ -221,17 +252,17 @@ let build_env gamma=
                      mkApp(force node_count l_push,[|mkProp;p;e|]))
     gamma.env (mkApp (force node_count l_empty,[|mkProp|]))
 
-let verbose =
+let { Goptions.get = verbose } =
   Goptions.declare_bool_option_and_ref
-    ~depr:false
     ~key:["Rtauto";"Verbose"]
     ~value:false
+    ()
 
-let check =
+let { Goptions.get = check } =
   Goptions.declare_bool_option_and_ref
-    ~depr:false
     ~key:["Rtauto";"Check"]
     ~value:false
+    ()
 
 open Pp
 
@@ -241,19 +272,20 @@ let rtauto_tac =
     let concl = Proofview.Goal.concl gl in
     let env = Proofview.Goal.env gl in
     let sigma = Proofview.Goal.sigma gl in
-    Coqlib.check_required_library ["Coq";"rtauto";"Rtauto"];
+    Rocqlib.check_required_library ["Stdlib";"rtauto";"Rtauto"];
     let gamma={next=1;env=[]} in
     let () =
       if Retyping.get_sort_family_of env sigma concl != InProp
-      then user_err ~hdr:"rtauto" (Pp.str "goal should be in Prop") in
+      then user_err (Pp.str "Goal should be in Prop.") in
     let glf = make_form env sigma gamma concl in
     let hyps = make_hyps env sigma gamma [concl] hyps in
     let formula=
       List.fold_left (fun gl (_,f)-> Arrow (f,gl)) glf hyps in
-    let search_fun = match Tacinterp.get_debug() with
-      | Tactic_debug.DebugOn 0 -> Search.debug_depth_first
-      | _ -> Search.depth_first
+    let debug = match Tacinterp.get_debug () with
+    | Tactic_debug.DebugOn 0 -> true
+    | _ -> false
     in
+    let search_fun s = Search.depth_first ~debug s in
     let () =
       begin
         reset_info ();
@@ -264,7 +296,7 @@ let rtauto_tac =
     let prf =
       try project (search_fun (init_state [] formula))
       with Not_found ->
-        user_err ~hdr:"rtauto" (Pp.str "rtauto couldn't find any proof") in
+        user_err (Pp.str "rtauto couldn't find a proof.") in
     let search_end_time = System.get_time () in
     let () = if verbose () then
         begin
@@ -291,7 +323,7 @@ let rtauto_tac =
                              str " steps" ++ fnl () ++
                              str "Proof term size : " ++ int (!step_count+ !node_count) ++
                              str " nodes (constants)" ++ fnl () ++
-                             str "Giving proof term to Coq ... ")
+                             str "Giving proof term to Rocq ... ")
         end in
     let tac_start_time = System.get_time () in
     let term = EConstr.of_constr term in

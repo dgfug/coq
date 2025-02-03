@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,37 +12,22 @@ open Util
 
 (** {1 Helper functions} *)
 
-let parse_env_line l =
-  try Scanf.sscanf l "%[^=]=%S" (fun name value -> Some(name,value))
-  with _ -> None
+let warn_deprecated_coq_var = CWarnings.create ~name:"deprecated-coq-env-var" ~category:Deprecation.Version.v9_0
+    Pp.(fun (rocq,coq) ->
+        str "Deprecated environment variable " ++ str coq ++ pr_comma() ++
+        str "use " ++ str rocq ++ str " instead.")
 
-let with_ic file f =
-  let ic = open_in file in
-  try
-    let rc = f ic in
-    close_in ic;
-    rc
-  with e -> close_in ic; raise e
+let warn_deprecated_coq_var ?loc ~rocq ~coq () = warn_deprecated_coq_var ?loc (rocq,coq)
 
-let getenv_from_file name =
-  let base = Filename.dirname Sys.executable_name in
-  try
-    with_ic (base ^ "/coq_environment.txt") (fun ic ->
-      let rec find () =
-        let l = input_line ic in
-        match parse_env_line l with
-        | Some(n,v) when n = name -> v
-        | _ -> find ()
-      in
-        find ())
-  with
-  | Sys_error s -> raise Not_found
-  | End_of_file -> raise Not_found
+let () = Boot.Util.set_warn_deprecated_coq_var (fun ~rocq ~coq ->
+    warn_deprecated_coq_var ~rocq ~coq ())
 
-let system_getenv name =
-  try Sys.getenv name with Not_found -> getenv_from_file name
+let getenv_else s dft =
+  match Boot.Util.getenv_opt s with
+  | Some v -> v
+  | None -> dft ()
 
-let getenv_else s dft = try system_getenv s with Not_found -> dft ()
+let getenv_rocq = Boot.Util.getenv_rocq
 
 let safe_getenv warning n =
   getenv_else n (fun () ->
@@ -94,7 +79,7 @@ let expand_path_macros ~warn s =
 
 (** {1 Paths} *)
 
-(** {2 Coq paths} *)
+(** {2 Rocq paths} *)
 
 let coqbin =
   CUnix.canonical_path_name (Filename.dirname Sys.executable_name)
@@ -115,44 +100,6 @@ let _ =
 let use_suffix prefix suffix =
   if String.length suffix > 0 && suffix.[0] = '/' then suffix else prefix / suffix
 
-(** [check_file_else ~dir ~file oth] checks if [file] exists in
-    the installation directory [dir] given relatively to [coqroot],
-    which maybe has been relocated.
-    If the check fails, then [oth ()] is evaluated.
-    Using file system equality seems well enough for this heuristic *)
-let check_file_else ~dir ~file oth =
-  let path = use_suffix coqroot dir in
-  if Sys.file_exists (path / file) then path else oth ()
-
-let guess_coqlib fail =
-  getenv_else "COQLIB" (fun () ->
-  let prelude = "theories/Init/Prelude.vo" in
-  check_file_else ~dir:Coq_config.coqlibsuffix ~file:prelude
-    (fun () ->
-      if Sys.file_exists (Coq_config.coqlib / prelude)
-      then Coq_config.coqlib
-      else
-        fail "cannot guess a path for Coq libraries; please use -coqlib option \
-              or ensure you have installed the package containing Coq's stdlib (coq-stdlib in OPAM) \
-              If you intend to use Coq without a standard library, the -boot -noinit options must be used.")
-  )
-
-let coqlib_ref : string option ref = ref None
-let set_user_coqlib path = coqlib_ref := Some path
-
-(** coqlib is now computed once during coqtop initialization *)
-
-let set_coqlib ~fail =
-  match !coqlib_ref with
-  | Some _ -> ()
-  | None ->
-    let lib = guess_coqlib fail in
-    coqlib_ref := Some lib
-
-let coqlib () = Option.default "" !coqlib_ref
-let coqcorelib () =
-  getenv_else "COQCORELIB" (fun () -> Option.cata (fun c -> Filename.concat c "../coq-core/") "" !coqlib_ref)
-
 let docdir () =
   (* This assumes implicitly that the suffix is non-trivial *)
   let path = use_suffix coqroot Coq_config.docdirsuffix in
@@ -169,13 +116,15 @@ let configdir () =
   if Sys.file_exists path then path else Coq_config.configdir
 
 let coqpath =
-  let coqpath = getenv_else "COQPATH" (fun () -> "") in
   let make_search_path path =
     let paths = path_to_list path in
     let valid_paths = List.filter Sys.file_exists paths in
     List.rev valid_paths
   in
-  make_search_path coqpath
+  let rocqpath = getenv_else "ROCQPATH" (fun () -> "") in
+  let coqpath = getenv_else "COQPATH" (fun () -> "") in
+  let () = if coqpath <> "" then warn_deprecated_coq_var ~rocq:"ROCQPATH" ~coq:"COQPATH" () in
+  make_search_path rocqpath @ make_search_path coqpath
 
 (** {2 Caml paths} *)
 
@@ -206,9 +155,12 @@ let xdg_dirs ~warn =
 (* Print the configuration information *)
 
 let print_config ?(prefix_var_name="") f =
+  let env = Boot.Env.init () in
+  let coqlib = Boot.Env.coqlib env |> Boot.Path.to_string in
+  let corelib = Boot.Env.corelib env |> Boot.Path.to_string in
   let open Printf in
-  fprintf f "%sCOQLIB=%s/\n" prefix_var_name (coqlib ());
-  fprintf f "%sCOQCORELIB=%s/\n" prefix_var_name (coqlib () / "../coq-core/");
+  fprintf f "%sCOQLIB=%s/\n" prefix_var_name coqlib;
+  fprintf f "%sCOQCORELIB=%s/\n" prefix_var_name corelib;
   fprintf f "%sDOCDIR=%s/\n" prefix_var_name (docdir ());
   fprintf f "%sOCAMLFIND=%s\n" prefix_var_name (ocamlfind ());
   fprintf f "%sCAMLFLAGS=%s\n" prefix_var_name Coq_config.caml_flags;

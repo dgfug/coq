@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -42,8 +42,6 @@ type ('c,'d,'id) inversion_strength =
   | DepInversion of
       Inv.inversion_kind * 'c option * 'd or_and_intro_pattern_expr CAst.t or_var option
   | InversionUsing of 'c * 'id list
-
-type ('a,'b) location = HypLocation of 'a | ConclLocation of 'b
 
 type 'id message_token =
   | MsgString of string
@@ -115,7 +113,7 @@ type 'a gen_atomic_tactic_expr =
   | TacAssert of
       evars_flag * bool * 'tacexpr option option *
       'dtrm intro_pattern_expr CAst.t option * 'trm
-  | TacGeneralize of ('trm with_occurrences * Name.t) list
+  | TacGeneralize of (('occvar occurrences_gen * 'trm) * Name.t) list
   | TacLetTac of evars_flag * Name.t * 'trm * 'nam clause_expr * letin_flag *
       Namegen.intro_pattern_naming_expr CAst.t option
 
@@ -124,8 +122,8 @@ type 'a gen_atomic_tactic_expr =
       rec_flag * evars_flag * ('trm,'dtrm,'nam) induction_clause_list
 
   (* Conversion *)
-  | TacReduce of ('trm,'cst,'pat) red_expr_gen * 'nam clause_expr
-  | TacChange of check_flag * 'pat option * 'dtrm * 'nam clause_expr
+  | TacReduce of ('trm,'cst,'rpat,'occvar) red_expr_gen * 'nam clause_expr
+  | TacChange of check_flag * 'rpat option * 'dtrm * 'nam clause_expr
 
   (* Equality and inversion *)
   | TacRewrite of evars_flag *
@@ -143,9 +141,11 @@ constraint 'a = <
     term:'trm;
     dterm: 'dtrm;
     pattern:'pat;
+    red_pattern:'rpat;
     constant:'cst;
     reference:'ref;
     name:'nam;
+    occvar:'occvar;
     tacexpr:'tacexpr;
     level:'lev
 >
@@ -154,7 +154,7 @@ constraint 'a = <
 
 type 'a gen_tactic_arg =
   | TacGeneric     of string option * 'lev generic_argument
-  | ConstrMayEval  of ('trm,'cst,'pat) may_eval
+  | ConstrMayEval  of ('trm,'cst,'rpat, 'occvar) may_eval
   | Reference      of 'ref
   | TacCall    of ('ref * 'a gen_tactic_arg list) CAst.t
   | TacFreshId of string or_var list
@@ -166,9 +166,11 @@ constraint 'a = <
     term:'trm;
     dterm: 'dtrm;
     pattern:'pat;
+    red_pattern:'rpat;
     constant:'cst;
     reference:'ref;
     name:'nam;
+    occvar:'occvar;
     tacexpr:'tacexpr;
     level:'lev
 >
@@ -197,7 +199,6 @@ and 'a gen_tactic_expr_r =
       'a gen_tactic_expr *
       'a gen_tactic_expr array
   | TacFirst of 'a gen_tactic_expr list
-  | TacComplete of 'a gen_tactic_expr
   | TacSolve of 'a gen_tactic_expr list
   | TacTry of 'a gen_tactic_expr
   | TacOr of
@@ -219,7 +220,6 @@ and 'a gen_tactic_expr_r =
   | TacTime of string option * 'a gen_tactic_expr
   | TacRepeat of 'a gen_tactic_expr
   | TacProgress of 'a gen_tactic_expr
-  | TacShowHyps of 'a gen_tactic_expr
   | TacAbstract of
       'a gen_tactic_expr * Id.t option
   | TacId of 'n message_token list
@@ -244,9 +244,11 @@ constraint 'a = <
     term:'t;
     dterm: 'dtrm;
     pattern:'p;
+    red_pattern:'rp;
     constant:'c;
     reference:'r;
     name:'n;
+    occvar:'occvar;
     tacexpr:'tacexpr;
     level:'l
 >
@@ -258,9 +260,11 @@ constraint 'a = <
     term:'t;
     dterm: 'dtrm;
     pattern:'p;
+    red_pattern:'rp;
     constant:'c;
     reference:'r;
     name:'n;
+    occvar:'occvar;
     tacexpr:'tacexpr;
     level:'l
 >
@@ -272,9 +276,11 @@ constraint 'a = <
     term:'t;
     dterm: 'dtrm;
     pattern:'p;
+    red_pattern:'rp;
     constant:'c;
     reference:'r;
     name:'n;
+    occvar:'occvar;
     tacexpr:'te;
     level:'l
 >
@@ -283,17 +289,20 @@ constraint 'a = <
 
 type g_trm = Genintern.glob_constr_and_expr
 type g_pat = Genintern.glob_constr_pattern_and_expr
-type g_cst = Tacred.evaluable_global_reference Genredexpr.and_short_name or_var
+type g_cst = Evaluable.t Genredexpr.and_short_name or_var
 type g_ref = ltac_constant located or_var
 type g_nam = lident
+type g_occvar = int or_var
 
 type g_dispatch =  <
     term:g_trm;
     dterm:g_trm;
     pattern:g_pat;
+    red_pattern:g_trm;
     constant:g_cst;
     reference:g_ref;
     name:g_nam;
+    occvar:g_occvar;
     tacexpr:glob_tactic_expr;
     level:glevel
 >
@@ -312,14 +321,17 @@ type glob_tactic_arg =
 type r_ref = qualid
 type r_nam = lident
 type r_lev = rlevel
+type r_occvar = int or_var
 
 type r_dispatch =  <
     term:r_trm;
     dterm:r_trm;
     pattern:r_pat;
+    red_pattern:r_pat;
     constant:r_cst;
     reference:r_ref;
     name:r_nam;
+    occvar:r_occvar;
     tacexpr:raw_tactic_expr;
     level:rlevel
 >
@@ -337,17 +349,20 @@ type raw_tactic_arg =
 
 type t_trm = EConstr.constr
 type t_pat = constr_pattern
-type t_cst = Tacred.evaluable_global_reference
+type t_cst = Evaluable.t
 type t_ref = ltac_constant located
 type t_nam = Id.t
+type t_occvar = int
 
 type t_dispatch =  <
     term:t_trm;
     dterm:g_trm;
     pattern:t_pat;
+    red_pattern:t_pat;
     constant:t_cst;
     reference:t_ref;
     name:t_nam;
+    occvar:t_occvar;
     tacexpr:unit;
     level:tlevel
 >
@@ -357,8 +372,8 @@ type atomic_tactic_expr =
 
 (** Misc *)
 
-type raw_red_expr = (r_trm, r_cst, r_pat) red_expr_gen
-type glob_red_expr = (g_trm, g_cst, g_pat) red_expr_gen
+type raw_strategy = (constr_expr, Genredexpr.raw_red_expr, lident) Rewrite.strategy_ast
+type glob_strategy = (Genintern.glob_constr_and_expr, Genredexpr.glob_red_expr, Id.t) Rewrite.strategy_ast
 
 (** Traces *)
 
@@ -367,10 +382,11 @@ type ltac_call_kind =
   | LtacNotationCall of KerName.t
   | LtacNameCall of ltac_constant
   | LtacAtomCall of glob_atomic_tactic_expr
-  | LtacVarCall of Id.t * glob_tactic_expr
-  | LtacConstrInterp of Glob_term.glob_constr * Ltac_pretype.ltac_var_map
+  | LtacVarCall of KerName.t option * Id.t * glob_tactic_expr
+  | LtacConstrInterp of Environ.env * Evd.evar_map * Glob_term.glob_constr * Ltac_pretype.ltac_var_map
 
-type ltac_trace = ltac_call_kind Loc.located list
+type ltac_stack = ltac_call_kind Loc.located list
+type ltac_trace = ltac_stack * Geninterp.Val.t Id.Map.t list
 
 type tacdef_body =
   | TacticDefinition of lident * raw_tactic_expr (* indicates that user employed ':=' in Ltac body *)

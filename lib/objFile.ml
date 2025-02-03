@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -14,12 +14,12 @@ open System
 let magic_number = 0x436F7121l (* "Coq!" *)
 
 let error_corrupted file s =
-  CErrors.user_err ~hdr:"System" (str file ++ str ": " ++ str s ++ str ". Try to rebuild it.")
+  CErrors.user_err (str file ++ str ": " ++ str s ++ str ". Try to rebuild it.")
 
 let open_trapping_failure name =
   try open_out_bin name
   with e when CErrors.noncritical e ->
-    CErrors.user_err ~hdr:"System.open" (str "Can't open " ++ str name)
+    CErrors.user_err (str "Can't open " ++ str name ++ spc() ++ str "(" ++ CErrors.print e ++ str ").")
 
 (*
 
@@ -55,7 +55,7 @@ summary |
 
 *)
 
-type segment = {
+type 'a segment = {
   name : string;
   pos : int64;
   len : int64;
@@ -65,40 +65,18 @@ type segment = {
 type in_handle = {
   in_filename : string;
   in_channel : in_channel;
-  in_segments : segment CString.Map.t;
+  in_segments : Obj.t segment CString.Map.t;
 }
 
 type out_handle = {
   out_filename : string;
   out_channel : out_channel;
-  mutable out_segments : segment CString.Map.t;
+  mutable out_segments : Obj.t segment CString.Map.t;
 }
 
-let input_int32 ch =
-  let accu = ref 0l in
-  for _i = 0 to 3 do
-    let c = input_byte ch in
-    accu := Int32.add (Int32.shift_left !accu 8) (Int32.of_int c)
-  done;
-  !accu
+type 'a id = { id : string }
 
-let input_int64 ch =
-  let accu = ref 0L in
-  for _i = 0 to 7 do
-    let c = input_byte ch in
-    accu := Int64.add (Int64.shift_left !accu 8) (Int64.of_int c)
-  done;
-  !accu
-
-let output_int32 ch n =
-  for i = 0 to 3 do
-    output_byte ch (Int32.to_int (Int32.shift_right_logical n (24 - 8 * i)))
-  done
-
-let output_int64 ch n =
-  for i = 0 to 7 do
-    output_byte ch (Int64.to_int (Int64.shift_right_logical n (56 - 8 * i)))
-  done
+let make_id id = { id }
 
 let input_segment_summary ch =
   let nlen = input_int32 ch in
@@ -126,7 +104,7 @@ let rec input_segment_summaries ch n accu =
 
 let marshal_in_segment (type a) h ~segment : a * Digest.t =
   let { in_channel = ch } = h in
-  let s = CString.Map.find segment h.in_segments in
+  let s = CString.Map.find segment.id h.in_segments in
   let () = LargeFile.seek_in ch s.pos in
   let (v : a) = marshal_in h.in_filename ch in
   let () = assert (Int64.equal (LargeFile.pos_in ch) (Int64.add s.pos s.len)) in
@@ -136,7 +114,7 @@ let marshal_in_segment (type a) h ~segment : a * Digest.t =
 
 let marshal_out_segment h ~segment v =
   let { out_channel = ch } = h in
-  let () = assert (not (CString.Map.mem segment h.out_segments)) in
+  let () = assert (not (CString.Map.mem segment.id h.out_segments)) in
   let pos = LargeFile.pos_out ch in
   let () = Marshal.to_channel ch v [] in
   let () = flush ch in
@@ -150,13 +128,13 @@ let marshal_out_segment h ~segment v =
     digest
   in
   let () = Digest.output ch hash in
-  let s = { name = segment; pos; len; hash } in
-  let () = h.out_segments <- CString.Map.add segment s h.out_segments in
+  let s = { name = segment.id; pos; len; hash } in
+  let () = h.out_segments <- CString.Map.add segment.id s h.out_segments in
   ()
 
 let marshal_out_binary h ~segment =
   let { out_channel = ch } = h in
-  let () = assert (not (CString.Map.mem segment h.out_segments)) in
+  let () = assert (not (CString.Map.mem segment.id h.out_segments)) in
   let pos = LargeFile.pos_out ch in
   let finish () =
     let () = flush ch in
@@ -170,8 +148,8 @@ let marshal_out_binary h ~segment =
       digest
     in
     let () = Digest.output ch hash in
-    let s = { name = segment; pos; len; hash } in
-    h.out_segments <- CString.Map.add segment s h.out_segments
+    let s = { name = segment.id; pos; len; hash } in
+    h.out_segments <- CString.Map.add segment.id s h.out_segments
   in
   ch, finish
 
@@ -203,8 +181,8 @@ let open_in ~file =
 let close_in ch =
   close_in ch.in_channel
 
-let get_segment ch ~segment =
-  CString.Map.find segment ch.in_segments
+let get_segment (type a) ch ~(segment : a id) : a segment =
+  (CString.Map.find segment.id ch.in_segments :> a segment)
 
 let segments ch = ch.in_segments
 

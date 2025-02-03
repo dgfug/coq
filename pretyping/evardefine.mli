@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -38,14 +38,14 @@ val split_as_array : env -> evar_map -> type_constraint ->
 val valcon_of_tycon : type_constraint -> val_constraint
 val lift_tycon : int -> type_constraint -> type_constraint
 
-val define_evar_as_product : env -> evar_map -> existential -> evar_map * types
-val define_evar_as_lambda : env -> evar_map -> existential -> evar_map * types
-val define_evar_as_sort : env -> evar_map -> existential -> evar_map * Sorts.t
+val define_evar_as_product : env -> evar_map -> ?name:Names.Id.t -> existential -> evar_map * types
+val define_evar_as_lambda : env -> evar_map -> ?name:Names.Id.t -> existential -> evar_map * types
+val define_evar_as_sort : env -> evar_map -> existential -> evar_map * ESorts.t
 
 (** {6 debug pretty-printer:} *)
 
 val pr_tycon : env -> evar_map -> type_constraint -> Pp.t
 
 (** Used for bidi heuristic when typing lambdas. Transforms an applied
-    evar to an evar with bigger context (ie ?X e to ?X'@{y=e}). *)
+    evar to an evar with bigger context (ie [?X e] to [?X'@{y=e}]). *)
 val presplit : env -> evar_map -> EConstr.t -> evar_map * EConstr.t

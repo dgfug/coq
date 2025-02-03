@@ -10,7 +10,7 @@ manual.  Then, we present the essential vocabulary necessary to read
 the rest of the manual.  Other terms are defined throughout the manual.
 The reader may refer to the :ref:`glossary index <glossary_index>`
 for a complete list of defined terms.  Finally, we describe the various types of
-settings that Coq provides.
+settings that Rocq provides.
 
 Syntax and lexical conventions
 ------------------------------
@@ -21,7 +21,7 @@ Syntax conventions
 ~~~~~~~~~~~~~~~~~~
 
 The syntax described in this documentation is equivalent to that
-accepted by the Coq parser, but the grammar has been edited
+accepted by the Rocq parser, but the grammar has been edited
 to improve readability and presentation.
 
 In the grammar presented in this manual, the terminal symbols are
@@ -49,13 +49,13 @@ graphically using the following kinds of blocks:
 
 `Precedence levels
 <https://en.wikipedia.org/wiki/Order_of_operations>`_ that are
-implemented in the Coq parser are shown in the documentation by
+implemented in the Rocq parser are shown in the documentation by
 appending the level to the nonterminal name (as in :n:`@term100` or
 :n:`@ltac_expr3`).
 
 .. note::
 
-   Coq uses an extensible parser.  Plugins and the :ref:`notation
+   Rocq uses an extensible parser.  Plugins and the :ref:`notation
    system <syntax-extensions-and-notation-scopes>` can extend the
    syntax at run time.  Some notations are defined in the :term:`prelude`,
    which is loaded by default.  The documented grammar doesn't include
@@ -71,9 +71,9 @@ appending the level to the nonterminal name (as in :n:`@term100` or
 
    Given the complexity of these parsing rules, it would be extremely
    difficult to create an external program that can properly parse a
-   Coq document.  Therefore, tool writers are advised to delegate
-   parsing to Coq, by communicating with it, for instance through
-   `SerAPI <https://github.com/ejgallego/coq-serapi>`_.
+   Rocq document.  Therefore, tool writers are advised to delegate
+   parsing to Rocq, by communicating with it, for instance through
+   `coq-lsp <https://github.com/ejgallego/coq-lsp>`_.
 
 .. seealso:: :cmd:`Print Grammar`
 
@@ -114,8 +114,8 @@ Identifiers
 Numbers
   Numbers are sequences of digits with an optional fractional part
   and exponent, optionally preceded by a minus sign. Hexadecimal numbers
-  start with ``0x`` or ``0X``. :n:`@bigint` are integers;
-  numbers without fractional nor exponent parts. :n:`@bignat` are non-negative
+  start with ``0x`` or ``0X``. :n:`@integer`\s are signed
+  numbers without fraction or exponent parts. :n:`@natural`\s are non-negative
   integers.  Underscores embedded in the digits are ignored, for example
   ``1_000_000`` is the same as ``1000000``.
 
@@ -124,23 +124,52 @@ Numbers
   .. prodn::
      number ::= {? - } @decnat {? . {+ {| @digit | _ } } } {? {| e | E } {? {| + | - } } @decnat }
      | {? - } @hexnat {? . {+ {| @hexdigit | _ } } } {? {| p | P } {? {| + | - } } @decnat }
-     integer ::= {? - } @natural
-     natural ::= @bignat
+     integer ::= @bigint
      bigint ::= {? - } @bignat
+     natural ::= @bignat
      bignat ::= {| @decnat | @hexnat }
      decnat ::= @digit {* {| @digit | _ } }
      digit ::= 0 .. 9
      hexnat ::= {| 0x | 0X } @hexdigit {* {| @hexdigit | _ } }
      hexdigit ::= {| 0 .. 9 | a .. f | A .. F }
 
-  :n:`@integer` and :n:`@natural` are limited to the range that fits
+  :n:`number`, :n:`@bigint` and :n:`@bignat`, which are used in :token:`term`\s,
+  generally have no range limitation.
+  :n:`@integer` and :n:`@natural`, which are used as arguments in tactics
+  and commands, are limited to the range that fits
   into an OCaml integer (63-bit integers on most architectures).
-  :n:`@bigint` and :n:`@bignat` have no range limitation.
 
-  The :ref:`standard library <thecoqlibrary>` provides some
-  :ref:`interpretations <notation-scopes>` for :n:`@number`. The
-  :cmd:`Number Notation` mechanism offers the user
-  a way to define custom parsers and printers for :n:`@number`.
+  The :ref:`standard library <thecoqlibrary>` provides a few
+  :ref:`interpretations <notation-scopes>` for :n:`@number`.
+  Some of these interpretations support exponential notation
+  for decimal numbers, for example ``5.02e-6`` means 5.02×10\ :sup:`-6`;
+  and base 2 exponential notation for hexadecimal numbers denoted by
+  ``p`` or ``P``, for example ``0xAp12`` means 10×2\ :sup:`12`.
+  The :cmd:`Number Notation` mechanism lets the user
+  define custom parsers and printers for :n:`@number`.
+
+  By default, numbers are interpreted as :n:`nat`\s, which is a unary
+  representation.  For example, :n:`3` is represented as `S (S (S O))`.  While
+  this is a convenient representation for doing proofs, computing with large
+  :n:`nat`\s can lead to stack overflows or running out of memory.  You can
+  explicitly specify a different interpretation to avoid this problem.  For
+  example, the Stdlib library enables to write :n:`1000000%Z` for a more
+  efficient binary representation of that number as an integer.
+  See :ref:`Scopes` and :n:`@term_scope` for the ``%`` notation.
+
+   .. example:: Stack overflow with :n:`nat`
+
+      .. rocqtop:: all reset extra
+
+         Fail Eval compute in 100000 + 100000.  (* gives a stack overflow (not shown) *)
+
+      .. rocqtop:: in extra
+
+         From Stdlib Require Import ZArith.  (* for definition of Z *)
+
+      .. rocqtop:: all extra
+
+         Eval compute in (1000000000000000000000000000000000 + 1)%Z.
 
 Strings
   Strings begin and end with ``"`` (double quote).  Use ``""`` to represent
@@ -151,9 +180,11 @@ Strings
   user a way to define custom parsers and printers for
   :token:`string`.
 
+.. _keywords:
+
 Keywords
-  The following character sequences are keywords defined in the main Coq grammar
-  that cannot be used as identifiers (even when starting Coq with the `-noinit`
+  The following character sequences are keywords defined in the main Rocq grammar
+  that cannot be used as identifiers (even when starting Rocq with the `-noinit`
   command-line flag)::
 
     _ Axiom CoFixpoint Definition Fixpoint Hypothesis Parameter Prop
@@ -162,14 +193,16 @@ Keywords
 
   The following are keywords defined in notations or plugins loaded in the :term:`prelude`::
 
-    IF by exists exists2 using
+    by exists exists2 using
 
   Note that loading additional modules or plugins may expand the set of reserved
   keywords.
 
+  :cmd:`Print Keywords` can be used to print the current keywords and tokens.
+
 Other tokens
-  The following character sequences are tokens defined in the main Coq grammar
-  (even when starting Coq with the `-noinit` command-line flag)::
+  The following character sequences are tokens defined in the main Rocq grammar
+  (even when starting Rocq with the `-noinit` command-line flag)::
 
     ! #[ % & ' ( () ) * + , - ->
     . .( .. ... / : ::= := :> ; < <+ <- <:
@@ -179,23 +212,32 @@ Other tokens
   The following character sequences are tokens defined in notations or plugins
   loaded in the :term:`prelude`::
 
-    ** [= |- || ->
+    ** |- || ->
 
   Note that loading additional modules or plugins may expand the set of defined
   tokens.
 
+.. _lexing-unseparated-keywords:
+
   When multiple tokens match the beginning of a sequence of characters,
-  the longest matching token is used.
+  the longest matching token not cutting a subsequence of contiguous letters in the middle is used.
   Occasionally you may need to insert spaces to separate tokens.  For example,
   if ``~`` and ``~~`` are both defined as tokens, the inputs ``~ ~`` and
-  ``~~`` generate different tokens, whereas if `~~` is not defined, then the
-  two inputs are equivalent.
+  ``~~`` generate different tokens, whereas if ``~~`` is not defined, then the
+  two inputs are equivalent. Also, if ``~`` and ``~_h`` are both
+  defined as tokens, the input ``~_ho`` is interpreted as ``~ _ho``
+  rather than ``~_h o`` so as not to cut the identifier-like
+  subsequence ``ho``. Contrastingly, if only ``~_h`` is defined as a token,
+  then ``~_ho`` is an error because no token can be found that includes
+  the whole subsequence ``ho`` without cutting it in the middle. Finally, if
+  all of ``~``, ``~_h`` and ``~_ho`` are defined as tokens, the input
+  ``~_ho`` is interpreted using the longest match rule, i.e. as the token ``~_ho``.
 
 Essential vocabulary
 --------------------
 
 This section presents the most essential notions to understand the
-rest of the Coq manual: :term:`terms <term>` and :term:`types
+rest of the Rocq Prover manual: :term:`terms <term>` and :term:`types
 <type>` on the one hand, :term:`commands <command>` and :term:`tactics
 <tactic>` on the other hand.
 
@@ -203,14 +245,14 @@ rest of the Coq manual: :term:`terms <term>` and :term:`types
 
    term
 
-     Terms are the basic expressions of Coq.  Terms can represent
+     Terms are the basic expressions of Rocq.  Terms can represent
      mathematical expressions, propositions and proofs, but also
      executable programs and program types.
 
      Here is the top-level syntax of terms.  Each of the listed
      constructs is presented in a dedicated section.  Some of these
      constructs (like :n:`@term_forall_or_fun`) are part of the core
-     language that the kernel of Coq understands and are therefore
+     language that the kernel of Rocq understands and are therefore
      described in :ref:`this chapter <core-language>`, while
      others (like :n:`@term_if`) are language extensions that are
      presented in :ref:`the next chapter <extensions>`.
@@ -218,15 +260,15 @@ rest of the Coq manual: :term:`terms <term>` and :term:`types
      .. insertprodn term qualid_annotated
 
      .. prodn::
-        term ::= @term_forall_or_fun
-        | @term_let
-        | @term_if
-        | @term_fix
-        | @term_cofix
-        | @term100
+        term ::= @term100
         term100 ::= @term_cast
         | @term10
         term10 ::= @term_application
+        | @term_forall_or_fun
+        | @term_let
+        | @term_fix
+        | @term_cofix
+        | @term_if
         | @one_term
         one_term ::= @term_explicit
         | @term1
@@ -235,7 +277,7 @@ rest of the Coq manual: :term:`terms <term>` and :term:`types
         | @term0
         term0 ::= @qualid_annotated
         | @sort
-        | @primitive_notations
+        | @number_or_string
         | @term_evar
         | @term_match
         | @term_record
@@ -256,32 +298,35 @@ rest of the Coq manual: :term:`terms <term>` and :term:`types
 
    type
 
-     To be valid and accepted by the Coq kernel, a term needs an
+     To be valid and accepted by the Rocq kernel, a term needs an
      associated type.  We express this relationship by “:math:`x` *of
      type* :math:`T`”, which we write as “:math:`x:T`”.  Informally,
      “:math:`x:T`” can be thought as “:math:`x` *belongs to*
      :math:`T`”.
 
-     The Coq kernel is a type checker: it verifies that a term has
+     The Rocq kernel is a type checker: it verifies that a term has
      the expected type by applying a set of typing rules (see
      :ref:`Typing-rules`).  If that's indeed the case, we say that the
      term is :gdef:`well-typed`.
 
-     A special feature of the Coq language is that types can depend
+     A special feature of the Rocq language is that types can depend
      on terms (we say that the language is `dependently-typed
      <https://en.wikipedia.org/wiki/Dependent_type>`_).  Because of
-     this, types and terms share a common syntax.  All types are terms,
-     but not all terms are types:
+     this, types and terms share a common syntax.  All types are :term:`terms <term>`,
+     but not all terms are types.  The syntactic aliases :n:`@type` and
+     :n:`@one_type` are used to make clear when the provided :term:`term`
+     must semantically be a type:
 
-     .. insertprodn type type
+     .. insertprodn type one_type
 
      .. prodn::
         type ::= @term
+        one_type ::= @one_term
 
      Intuitively, types may be viewed as sets containing terms.  We
      say that a type is :gdef:`inhabited` if it contains at least one
      term (i.e. if we can find a term which is associated with this
-     type).  We call such terms :gdef:`witnesses <witness>`.  Note that deciding
+     type).  We call such terms :gdef:`inhabitants <inhabitant>`.  Note that deciding
      whether a type is inhabited is `undecidable
      <https://en.wikipedia.org/wiki/Undecidable_problem>`_.
 
@@ -289,13 +334,13 @@ rest of the Coq manual: :term:`terms <term>` and :term:`types
      mathematics alternative to the standard `"set theory"
      <https://en.wikipedia.org/wiki/Set_theory>`_: we call such
      logical foundations `"type theories"
-     <https://en.wikipedia.org/wiki/Type_theory>`_.  Coq is based on
+     <https://en.wikipedia.org/wiki/Type_theory>`_.  The Rocq Prover is based on
      the Calculus of Inductive Constructions, which is a particular
      instance of type theory.
 
    sentence
 
-     Coq documents are made of a series of sentences that contain
+     Rocq documents are made of a series of sentences that contain
      :term:`commands <command>` or :term:`tactics <tactic>`, generally
      terminated with a period and optionally decorated with
      :term:`attributes <attribute>`.
@@ -315,7 +360,7 @@ rest of the Coq manual: :term:`terms <term>` and :term:`types
 
    command
 
-     A :production:`command` can be used to modify the state of a Coq
+     A :production:`command` can be used to modify the state of a Rocq
      document, for instance by declaring a new object, or to get
      information about the current state.
 
@@ -334,7 +379,7 @@ rest of the Coq manual: :term:`terms <term>` and :term:`types
 
      A :production:`tactic` specifies how to transform the current proof state as a
      step in creating a proof.  They are syntactically valid only when
-     Coq is in :term:`proof mode`, such as after a :cmd:`Theorem` command
+     Rocq is in :term:`proof mode`, such as after a :cmd:`Theorem` command
      and before any subsequent proof-terminating command such as
      :cmd:`Qed`.  See :ref:`proofhandling` for more on proof mode.
 
@@ -346,10 +391,11 @@ rest of the Coq manual: :term:`terms <term>` and :term:`types
 Settings
 --------
 
-There are several mechanisms for changing the behavior of Coq.  The
-:term:`attribute` mechanism is used to modify the behavior of a single
-:term:`sentence`.  The :term:`flag`, :term:`option` and :term:`table`
-mechanisms are used to modify the behavior of Coq more globally in a
+There are several mechanisms for changing the behavior of Rocq.  The
+:term:`attribute` mechanism is used to modify the default behavior of a
+:term:`sentence` or to attach information to Rocq objects.
+The :term:`flag`, :term:`option` and :term:`table`
+mechanisms are used to modify the behavior of Rocq more globally in a
 document or project.
 
 .. _attributes:
@@ -357,11 +403,13 @@ document or project.
 Attributes
 ~~~~~~~~~~
 
-An :gdef:`attribute` modifies the behavior of a single sentence.
+An :gdef:`attribute` is used to modify the default behavior of a
+sentence or to attach information to a Rocq object.
 Syntactically, most commands and tactics can be decorated with
 attributes (cf. :n:`@sentence`), but attributes not supported by the
 command or tactic will trigger :warn:`This command does not support
-this attribute`.
+this attribute`. There is also a command :cmd:`Attributes` to
+assign attributes to a whole document.
 
 .. insertprodn attributes legacy_attr
 
@@ -369,8 +417,8 @@ this attribute`.
    attributes ::= {* #[ {*, @attribute } ] } {* @legacy_attr }
    attribute ::= @ident {? @attr_value }
    attr_value ::= = @string
-   | = @ident
-   | ( {*, @attribute } )
+   | = @qualid
+   | ( {+, @attribute } )
    legacy_attr ::= {| Local | Global }
    | {| Polymorphic | Monomorphic }
    | {| Cumulative | NonCumulative }
@@ -408,21 +456,72 @@ boldface label "Attribute:".  Attributes are listed in the
    This warning is configured to behave as an error by default.  You
    may turn it into a normal warning by using the :opt:`Warnings` option:
 
-   .. coqtop:: none
+   .. rocqtop:: none
 
       Set Silent.
 
-   .. coqtop:: all warn
+   .. rocqtop:: all warn
 
       Set Warnings "unsupported-attributes".
       #[ foo ] Comments.
+
+Generic attributes
+^^^^^^^^^^^^^^^^^^
+
+The following attribute is supported by every command:
+
+.. attr:: warnings = @string
+   :name: warnings
+
+   Sets the given warning string locally for the command. After the
+   command finishes the warning state is reset to what it was before
+   the command. For instance if the current warning state is
+   `some-warnings,-other-warning`,
+
+   .. rocqdoc::
+
+      #[warnings="+other-warning"] Command.
+
+   is equivalent to
+
+   .. rocqdoc::
+
+      Set Warnings "+other-warning".
+      Command.
+      Set Warnings "some-warnings,-other-warning".
+
+   and `other-warning` is an error while executing the command.
+
+   Consequently, using this attribute around an :cmd:`Import` command
+   will prevent it from changing the warning state.
+
+   See also :opt:`Warnings` for the concrete syntax to use inside the
+   quoted string.
+
+.. attr:: warning = @string
+   :name: warning
+
+   Alias of :attr:`warnings`.
+
+Document-level attributes
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. cmd:: Attributes {+, @attribute }
+   :name: Attributes
+
+   Associates attributes with the
+   document. When compiled with ``rocq compile`` (see Section
+   :ref:`therocqcommands`), the attributes are associated with the
+   compiled file and may have an effect when the file is loaded with
+   :cmd:`Require`. Supported attributes include :attr:`deprecated`
+   and :attr:`warn`.
 
 .. _flags-options-tables:
 
 Flags, Options and Tables
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The following types of settings can be used to change the behavior of Coq in
+The following types of settings can be used to change the behavior of Rocq in
 subsequent commands and tactics (see :ref:`set_unset_scope_qualifiers` for a
 more precise description of the scope of these settings):
 
@@ -464,10 +563,10 @@ they appear after a boldface label.  They are listed in the
       This warning message can be raised by :cmd:`Set` and
       :cmd:`Unset` when :n:`@setting_name` is unknown.  It is a
       warning rather than an error because this helps library authors
-      produce Coq code that is compatible with several Coq versions.
+      produce Rocq code that is compatible with several Rocq versions.
       To preserve the same behavior, they may need to set some
       compatibility flags or options that did not exist in previous
-      Coq versions.
+      Rocq versions.
 
 .. cmd:: Unset @setting_name
 
@@ -481,9 +580,16 @@ they appear after a boldface label.  They are listed in the
 
    Adds the specified values to the table :n:`@setting_name`.
 
+   This command supports the :attr:`local`, :attr:`global` and :attr:`export` attributes.
+   The default is `export` outside sections and `local` inside sections.
+   Depending on the table some values may only allow `local`,
+   typically section variables cannot be added with `export` or `global`.
+
 .. cmd:: Remove @setting_name {+ {| @qualid | @string } }
 
    Removes the specified value from the table :n:`@setting_name`.
+
+   This command supports the same attributes as :cmd:`Add`.
 
 .. cmd:: Test @setting_name {? for {+ {| @qualid | @string } } }
 
@@ -525,13 +631,19 @@ Locality attributes supported by :cmd:`Set` and :cmd:`Unset`
 
 The :cmd:`Set` and :cmd:`Unset` commands support the mutually
 exclusive :attr:`local`, :attr:`export` and :attr:`global` locality
-attributes (or the ``Local``, ``Export`` or ``Global`` prefixes).
+attributes.
 
-If no attribute is specified, the original value of the flag or option
-is restored at the end of the current module but it is *not* restored
-at the end of the current section.
-
-Newly opened modules and sections inherit the current settings.
+* If no attribute is specified, the original value of the flag or option
+  is restored at the end of the current module but it is *not* restored
+  at the end of the current section.
+* The :attr:`local` attribute makes the setting local to the current
+  :cmd:`Section` (if applicable) or :cmd:`Module`.
+* The :attr:`export` attribute makes the setting local to the current
+  :cmd:`Module`, unless :cmd:`Import` (or one of its variants) is used
+  on the :cmd:`Module`.
+* The :attr:`global` attribute makes the setting persist outside the current
+  :cmd:`Module` in the current file, or whenever :cmd:`Require` is used on the
+  current file.
 
 .. note::
 

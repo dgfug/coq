@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -36,6 +36,10 @@ Definition not (A:Prop) := A -> False.
 Notation "~ x" := (not x) : type_scope.
 
 Register not as core.not.type.
+
+(** Negation of a type in [Type] *)
+
+Definition notT (A:Type) := A -> False.
 
 (** Create the "core" hint database, and set its transparent state for
   variables and constants explicitly. *)
@@ -318,6 +322,7 @@ Section ex2_Projections.
 End ex2_Projections.
 
 Definition all (A:Type) (P:A -> Prop) := forall x:A, P x.
+Register all as core.all.
 
 (* Rule order is important to give printing priority to fully typed exists *)
 
@@ -378,9 +383,9 @@ where "x = y :> A" := (@eq A x y) : type_scope.
 Arguments eq {A} x _.
 Arguments eq_refl {A x} , [A] x.
 
-Arguments eq_ind [A] x P _ y _.
-Arguments eq_rec [A] x P _ y _.
-Arguments eq_rect [A] x P _ y _.
+Arguments eq_ind [A] x P _ y _ : rename.
+Arguments eq_rec [A] x P _ y _ : rename.
+Arguments eq_rect [A] x P _ y _ : rename.
 
 Notation "x = y" := (eq x y) : type_scope.
 Notation "x <> y  :> T" := (~ x = y :>T) : type_scope.

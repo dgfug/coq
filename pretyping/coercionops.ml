@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -35,7 +35,7 @@ let cl_typ_ord t1 t2 = match t1, t2 with
   | CL_CONST c1, CL_CONST c2 -> Constant.CanOrd.compare c1 c2
   | CL_PROJ c1, CL_PROJ c2 -> Projection.Repr.CanOrd.compare c1 c2
   | CL_IND i1, CL_IND i2 -> Ind.CanOrd.compare i1 i2
-  | _ -> pervasives_compare t1 t2 (** OK *)
+  | _ -> Stdlib.compare t1 t2 (** OK *)
 
 let cl_typ_eq t1 t2 = Int.equal (cl_typ_ord t1 t2) 0
 
@@ -64,8 +64,8 @@ module CoeTypMap = GlobRef.Map_env
 
 type coe_info_typ = {
   coe_value : GlobRef.t;
-  coe_typ : Constr.t;
   coe_local : bool;
+  coe_reversible : bool;
   coe_is_identity : bool;
   coe_is_projection : Projection.Repr.t option;
   coe_source : cl_typ;
@@ -91,6 +91,10 @@ let class_tab =
 
 let coercion_tab =
   Summary.ref ~name:"coercion_tab" (CoeTypMap.empty : coe_info_typ CoeTypMap.t)
+
+let reachable_from cl =
+  try (ClTypMap.find cl !class_tab).cl_reachable_from
+  with Not_found -> ClTypSet.empty
 
 module ClGraph :
 sig
@@ -131,10 +135,10 @@ let inheritance_graph =
 let add_new_class cl s =
   class_tab := ClTypMap.add cl s !class_tab
 
-let add_new_coercion coe s =
+let add_coercion coe s =
   coercion_tab := CoeTypMap.add coe s !coercion_tab
 
-let add_new_path (x, y) p =
+let add_path (x, y) p =
   inheritance_graph := ClGraph.add x y p !inheritance_graph
 
 (* class_info : cl_typ -> int * cl_info_typ *)
@@ -147,6 +151,9 @@ let class_exists cl = ClTypMap.mem cl !class_tab
 
 let coercion_info coe = CoeTypMap.find coe !coercion_tab
 
+let coercion_type env sigma (coe,u) =
+  Retyping.get_type_of env sigma (EConstr.mkRef (coe.coe_value,u))
+
 let coercion_exists coe = CoeTypMap.mem coe !coercion_tab
 
 (* find_class_type : evar_map -> constr -> cl_typ * universe_list * constr list *)
@@ -157,13 +164,31 @@ let find_class_type env sigma t =
   match EConstr.kind sigma t' with
     | Var id -> CL_SECVAR id, EInstance.empty, args
     | Const (sp,u) -> CL_CONST sp, u, args
-    | Proj (p, c) when not (Projection.unfolded p) ->
-      CL_PROJ (Projection.repr p), EInstance.empty, (c :: args)
+    | Proj (p, _, c) when not (Projection.unfolded p) ->
+      let revparams =
+        let open Inductiveops in
+        let t = Retyping.get_type_of env sigma c in
+        let IndType (fam,_) = find_rectype env sigma t in
+        let _, params = dest_ind_family fam in
+        List.rev params
+      in
+      CL_PROJ (Projection.repr p), EInstance.empty, (List.rev_append revparams (c :: args))
     | Ind (ind_sp,u) -> CL_IND ind_sp, u, args
     | Prod _ -> CL_FUN, EInstance.empty, []
     | Sort _ -> CL_SORT, EInstance.empty, []
     |  _ -> raise Not_found
 
+let class_of_global_reference = function
+  | GlobRef.VarRef id -> CL_SECVAR id
+  | GlobRef.ConstRef kn -> CL_CONST kn
+  | GlobRef.IndRef ind -> CL_IND ind
+  | GlobRef.ConstructRef _ -> raise Not_found
+
+let find_class_glob_type c = match DAst.get c with
+  | Glob_term.GRef (ref,_) -> class_of_global_reference ref
+  | Glob_term.GProd _ -> CL_FUN
+  | Glob_term.GSort _ -> CL_SORT
+  |  _ -> raise Not_found
 
 let subst_cl_typ env subst ct = match ct with
     CL_SORT
@@ -177,7 +202,7 @@ let subst_cl_typ env subst ct = match ct with
       if c' == c then ct else (match t with
           | None -> CL_CONST c'
           | Some t ->
-            pi1 (find_class_type env Evd.empty (EConstr.of_constr t.Univ.univ_abstracted_value)))
+            pi1 (find_class_type env Evd.empty (EConstr.of_constr t.UVars.univ_abstracted_value)))
   | CL_IND i ->
       let i' = subst_ind subst i in
         if i' == i then ct else CL_IND i'
@@ -237,21 +262,19 @@ let apply_on_class_of env sigma t cont =
     let (cl,u,args) = find_class_type env sigma t in
     let { cl_param = n1 } = class_info cl in
     if not (Int.equal (List.length args) n1) then raise Not_found;
-    t, cont cl
+    cont cl
   with Not_found ->
     (* Is it worth to be more incremental on the delta steps? *)
     let t = Tacred.hnf_constr env sigma t in
     let (cl, u, args) = find_class_type env sigma t in
     let { cl_param = n1 } = class_info cl in
     if not (Int.equal (List.length args) n1) then raise Not_found;
-    t, cont cl
+    cont cl
 
-let lookup_path_between env sigma (s,t) =
-  let (s,(t,p)) =
-    apply_on_class_of env sigma s (fun i ->
+let lookup_path_between env sigma ~src:s ~tgt:t =
+  apply_on_class_of env sigma s (fun i ->
       apply_on_class_of env sigma t (fun j ->
-        lookup_path_between_class (i,j))) in
-  (s,t,p)
+          lookup_path_between_class (i,j)))
 
 let lookup_path_to_fun_from env sigma s =
   apply_on_class_of env sigma s lookup_path_to_fun_from_class
@@ -259,23 +282,22 @@ let lookup_path_to_fun_from env sigma s =
 let lookup_path_to_sort_from env sigma s =
   apply_on_class_of env sigma s lookup_path_to_sort_from_class
 
-let mkNamed = let open GlobRef in function
-  | ConstRef c -> EConstr.mkConst c
-  | VarRef v -> EConstr.mkVar v
-  | ConstructRef c -> EConstr.mkConstruct c
-  | IndRef i -> EConstr.mkInd i
-
 let get_coercion_constructor env coe =
   let evd = Evd.from_env env in
-  let red x = fst (Reductionops.whd_all_stack env evd x) in
-  match EConstr.kind evd (red (mkNamed coe.coe_value)) with
+  let evd, c = Evd.fresh_global env evd coe.coe_value in
+  let c = fst (Reductionops.whd_all_stack env evd c) in
+  match EConstr.kind evd c with
   | Constr.Construct (c, _) ->
-      c, Inductiveops.constructor_nrealargs env c -1
+    (* we don't return the modified evd as we drop the universes *)
+    c, Inductiveops.constructor_nrealargs env c -1
   | _ -> raise Not_found
 
 let lookup_pattern_path_between env (s,t) =
   List.map (get_coercion_constructor env)
     (ClGraph.find (CL_IND s) (CL_IND t) !inheritance_graph)
+
+let path_is_reversible p =
+  List.for_all (fun c -> c.coe_reversible) p
 
 (* rajouter une coercion dans le graphe *)
 
@@ -294,8 +316,10 @@ let install_path_comparator f = path_comparator := f
 
 let compare_path env sigma cl p q = !path_comparator env sigma cl p q
 
+let warning_ambiguous_path = "ambiguous-paths"
+
 let warn_ambiguous_path =
-  CWarnings.create ~name:"ambiguous-paths" ~category:"typechecker"
+  CWarnings.create ~name:warning_ambiguous_path ~category:CWarnings.CoreCategories.coercions
     (fun l -> prlist_with_sep fnl (fun (c,p,q) ->
          str"New coercion path " ++ print_path (c,p) ++
          if List.is_empty q then
@@ -314,7 +338,7 @@ let different_class_params env ci =
     | CL_CONST c -> Environ.is_polymorphic env (GlobRef.ConstRef c)
     | _ -> false
 
-let add_coercion_in_graph env sigma ic =
+let add_coercion_in_graph env sigma ?(update=false) ic =
   let source = ic.coe_source in
   let target = ic.coe_target in
   let source_info = class_info source in
@@ -323,7 +347,16 @@ let add_coercion_in_graph env sigma ic =
   let ambig_paths :
     ((cl_typ * cl_typ) * inheritance_path * inheritance_path) list ref =
     ref [] in
+  let warn = match CWarnings.get_warning warning_ambiguous_path with
+  | There w ->
+    begin match CWarnings.warning_status w with
+    | Disabled -> false
+    | Enabled | AsError -> true
+    end
+  | NotThere | OtherType -> assert false
+  in
   let check_coherence (i, j as ij) p q =
+    if warn then
     let i_info = class_info i in
     let j_info = class_info j in
     let between_ij = ClTypSet.inter i_info.cl_reachable_from j_info.cl_reachable_to in
@@ -341,11 +374,12 @@ let add_coercion_in_graph env sigma ic =
       ambig_paths := (ij, p, q) :: !ambig_paths
   in
   let try_add_new_path (i,j as ij) p =
-    if cl_typ_eq i j then check_coherence ij p [];
+    let () = if cl_typ_eq i j then check_coherence ij p [] in
     if not (cl_typ_eq i j) || different_class_params env i then
-      match lookup_path_between_class ij with
-      | q -> (if not (cl_typ_eq i j) then check_coherence ij p q); false
-      | exception Not_found -> add_new_path ij p; true
+      if update then let () = add_path ij p in true else
+        match lookup_path_between_class ij with
+        | q -> (if not (cl_typ_eq i j) then check_coherence ij p q); false
+        | exception Not_found -> add_path ij p; true
     else
       false
   in
@@ -394,14 +428,13 @@ let add_coercion_in_graph env sigma ic =
 let subst_coercion subst c =
   let env = Global.env () in
   let coe = subst_coe_typ subst c.coe_value in
-  let typ = subst_mps subst c.coe_typ in
   let cls = subst_cl_typ env subst c.coe_source in
   let clt = subst_cl_typ env subst c.coe_target in
   let clp = Option.Smart.map (subst_proj_repr subst) c.coe_is_projection in
   if c.coe_value == coe && c.coe_source == cls && c.coe_target == clt &&
      c.coe_is_projection == clp
   then c
-  else { c with coe_value = coe; coe_typ = typ; coe_source = cls; coe_target = clt;
+  else { c with coe_value = coe; coe_source = cls; coe_target = clt;
                 coe_is_projection = clp; }
 
 (* Computation of the class arity *)
@@ -411,8 +444,7 @@ let reference_arity_length env sigma ref =
   List.length (fst (Reductionops.splay_arity env sigma (EConstr.of_constr t)))
 
 let projection_arity_length env sigma p =
-  let len = reference_arity_length env sigma (GlobRef.ConstRef (Projection.Repr.constant p)) in
-  len - Projection.Repr.npars p
+  reference_arity_length env sigma (GlobRef.ConstRef (Projection.Repr.constant p))
 
 let class_params env sigma = function
   | CL_FUN | CL_SORT -> 0
@@ -432,11 +464,11 @@ let add_class env sigma cl =
       cl_reachable_to = cl_singleton;
       cl_repr = cl }
 
-let declare_coercion env sigma c =
+let declare_coercion env sigma ?update c =
   let () = add_class env sigma c.coe_source in
   let () = add_class env sigma c.coe_target in
-  let () = add_new_coercion c.coe_value c in
-  add_coercion_in_graph env sigma c
+  let () = add_coercion c.coe_value c in
+  add_coercion_in_graph env sigma ?update c
 
 (* For printing purpose *)
 let classes () =
@@ -450,7 +482,7 @@ let inheritance_graph () =
 let coercion_of_reference r =
   let ref = Nametab.global r in
   if not (coercion_exists ref) then
-    user_err ~hdr:"try_add_coercion"
+    user_err
       (Nametab.pr_global_env Id.Set.empty ref ++ str" is not a coercion.");
   ref
 
@@ -460,6 +492,20 @@ module CoercionPrinting =
     module Set = GlobRef.Set
     let encode _env = coercion_of_reference
     let subst = subst_coe_typ
+
+    let check_local local = let open GlobRef in function
+      | ConstRef _ | ConstructRef _ | IndRef _ -> ()
+      | VarRef x -> match local with
+        | Libobject.Local -> ()
+        | Export | SuperGlobal ->
+          let local = if local = Export then "export" else "global" in
+          CErrors.user_err
+            Pp.(Id.print x ++ str " cannot be added with locality " ++ str local ++ str ".")
+
+    let discharge = let open GlobRef in function
+      | ConstRef _ | ConstructRef _ | IndRef _ as x -> x
+      | VarRef _ as x -> assert (not (Lib.is_in_section x)); x
+
     let printer x = Nametab.pr_global_env Id.Set.empty x
     let key = ["Printing";"Coercion"]
     let title = "Explicitly printed coercions: "

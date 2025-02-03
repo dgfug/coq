@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -11,73 +11,61 @@
 open Util
 open Pp
 
-let ( / ) s1 s2 = Filename.concat s1 s2
-
 (* Recursively puts `.v` files in the LoadPath *)
-let build_stdlib_vo_path ~unix_path ~coq_path =
+let build_stdlib_vo_path ~unix_path ~rocq_path =
   let open Loadpath in
-  { unix_path; coq_path ; has_ml = false; implicit = true; recursive = true }
+  { unix_path; coq_path = rocq_path; implicit = true; recursive = true }
 
-(* Note we don't use has_ml=true due to #12771 , we need to see if we
-   should just remove that option *)
 let build_userlib_path ~unix_path =
   let open Loadpath in
   if Sys.file_exists unix_path then
-    let ml_path = System.all_subdirs ~unix_path |> List.map fst in
     let vo_path =
       { unix_path
       ; coq_path = Libnames.default_root_prefix
-      ; has_ml = false
       ; implicit = false
       ; recursive = true
       } in
-    ml_path, [vo_path]
-  else [], []
+    [vo_path]
+  else []
 
-(* LoadPath for Coq user libraries *)
-let init_load_path ~coqlib =
+(* LoadPath for Rocq user libraries *)
+let init_load_path ~coqenv =
 
   let open Loadpath in
-  let user_contrib = coqlib/"user-contrib" in
+  let user_contrib = Boot.Env.user_contrib coqenv |> Boot.Path.to_string in
   let xdg_dirs = Envars.xdg_dirs ~warn:(fun x -> Feedback.msg_warning (str x)) in
-  let coqpath = Envars.coqpath in
-  let coq_path = Names.DirPath.make [Libnames.coq_root] in
-
+  let rocqpath = Envars.coqpath in
+  let rocq_path = Names.DirPath.make [Libnames.rocq_init_root] in
   (* ML includes *)
-  let unix_path =
-    (* Usually lib/coq-stdlib/../plugins ; this kind of hacks with the
-       ML path should go away once we use ocamlfind to load plugins *)
-    CPath.choose_existing
-      [ CPath.make [ coqlib ; "plugins" ]
-      ; CPath.make [ coqlib ; ".."; "coq-core"; "plugins" ]
-      ] |> function
-    | None ->
-      CErrors.user_err (Pp.str "Cannot find plugins directory")
-    | Some f -> (f :> string)
+  let core_dir = Boot.Env.corelib coqenv in
+
+  (* EJGA: this needs clenaup, we must be deterministic *)
+  let meta_dir = if Boot.Env.Path.(exists (relative core_dir "META"))
+    then [Boot.Env.Path.(to_string (relative core_dir ".."))]
+    else []
   in
-  let plugins_dirs = System.all_subdirs ~unix_path |> List.map fst in
-  let contrib_ml, contrib_vo = build_userlib_path ~unix_path:user_contrib in
+  let stdlib = Boot.Env.stdlib coqenv |> Boot.Path.to_string in
+  let contrib_vo = build_userlib_path ~unix_path:user_contrib in
 
-  let misc_ml, misc_vo =
-    List.map (fun s -> build_userlib_path ~unix_path:s) (xdg_dirs @ coqpath) |> List.split in
+  let misc_vo =
+    List.map (fun s -> build_userlib_path ~unix_path:s) (xdg_dirs @ rocqpath) in
 
-  let ml_loadpath = plugins_dirs @ contrib_ml @ List.concat misc_ml in
+  let ml_loadpath = meta_dir in
   let vo_loadpath =
     (* current directory (not recursively!) *)
     [ { unix_path = "."
       ; coq_path = Libnames.default_root_prefix
       ; implicit = false
-      ; has_ml = true
       ; recursive = false
       } ] @
 
     (* then standard library *)
-    [build_stdlib_vo_path ~unix_path:(coqlib/"theories") ~coq_path] @
+    [build_stdlib_vo_path ~unix_path:stdlib ~rocq_path] @
 
     (* then user-contrib *)
     contrib_vo @
 
-    (* then directories in XDG_DATA_DIRS and XDG_DATA_HOME and COQPATH *)
+    (* then directories in XDG_DATA_DIRS and XDG_DATA_HOME and ROCQPATH *)
     List.concat misc_vo
   in
   ml_loadpath, vo_loadpath

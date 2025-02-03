@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,14 +12,14 @@
 
 open Pp
 open Stdarg
-open Pcoq.Prim
-open Pcoq.Constr
+open Procq.Prim
+open Procq.Constr
 open Pltac
 open Hints
 
 }
 
-DECLARE PLUGIN "ltac_plugin"
+DECLARE PLUGIN "rocq-runtime.plugins.ltac"
 
 (* Hint bases *)
 
@@ -49,13 +49,17 @@ END
 {
 
 let eval_uconstrs ist cs =
-  let flags = {
-    Pretyping.use_typeclasses = Pretyping.NoUseTC;
+  let flags = Pretyping.{
+    use_coercions = true;
+    use_typeclasses = NoUseTC;
     solve_unification_constraints = true;
     fail_evar = false;
     expand_evars = true;
     program_mode = false;
     polymorphic = false;
+    undeclared_evars_patvars = false;
+    patvars_abstract = false;
+    unconstrained_sorts = false;
   } in
   let map c env sigma = c env sigma in
   List.map (fun c -> map (Tacinterp.type_uconstr ~flags ist c)) cs
@@ -81,87 +85,49 @@ END
 
 TACTIC EXTEND trivial
 | [ "trivial" auto_using(lems) hintbases(db) ] ->
-    { Auto.h_trivial (eval_uconstrs ist lems) db }
+    { Auto.gen_trivial (eval_uconstrs ist lems) db }
 END
 
 TACTIC EXTEND info_trivial
 | [ "info_trivial" auto_using(lems) hintbases(db) ] ->
-    { Auto.h_trivial ~debug:Info (eval_uconstrs ist lems) db }
+    { Auto.gen_trivial ~debug:Info (eval_uconstrs ist lems) db }
 END
 
 TACTIC EXTEND debug_trivial
 | [ "debug" "trivial" auto_using(lems) hintbases(db) ] ->
-    { Auto.h_trivial ~debug:Debug (eval_uconstrs ist lems) db }
+    { Auto.gen_trivial ~debug:Debug (eval_uconstrs ist lems) db }
 END
 
 TACTIC EXTEND auto
 | [ "auto" nat_or_var_opt(n) auto_using(lems) hintbases(db) ] ->
-    { Auto.h_auto n (eval_uconstrs ist lems) db }
+    { Auto.gen_auto n (eval_uconstrs ist lems) db }
 END
 
 TACTIC EXTEND info_auto
 | [ "info_auto" nat_or_var_opt(n) auto_using(lems) hintbases(db) ] ->
-    { Auto.h_auto ~debug:Info n (eval_uconstrs ist lems) db }
+    { Auto.gen_auto ~debug:Info n (eval_uconstrs ist lems) db }
 END
 
 TACTIC EXTEND debug_auto
 | [ "debug" "auto" nat_or_var_opt(n) auto_using(lems) hintbases(db) ] ->
-    { Auto.h_auto ~debug:Debug n (eval_uconstrs ist lems) db }
+    { Auto.gen_auto ~debug:Debug n (eval_uconstrs ist lems) db }
 END
 
 (** Eauto *)
 
-{
-
-let make_depth n = snd (Eauto.make_dimension n None)
-
-(* deprecated in 8.13; the second int_or_var will be removed *)
-let deprecated_eauto_bfs =
-  CWarnings.create
-    ~name:"eauto_bfs" ~category:"deprecated"
-    (fun () -> Pp.str "The syntax [eauto @int_or_var @int_or_var] is deprecated. Use [bfs eauto] instead.")
-
-let deprecated_bfs tacname =
-  CWarnings.create
-    ~name:"eauto_bfs" ~category:"deprecated"
-    (fun () -> Pp.str "The syntax [" ++ Pp.str tacname ++ Pp.str "@int_or_var @int_or_var] is deprecated. No replacement yet.")
-
-}
-
 TACTIC EXTEND eauto
-| [ "eauto" nat_or_var_opt(n) nat_or_var_opt(p) auto_using(lems)
-    hintbases(db) ] ->
-    {
-      ( match n,p with Some _, Some _ -> deprecated_eauto_bfs () | _ -> () );
-      Eauto.gen_eauto (Eauto.make_dimension n p) (eval_uconstrs ist lems) db }
+| [ "eauto" nat_or_var_opt(depth) auto_using(lems) hintbases(db) ] ->
+  { Eauto.gen_eauto ?depth (eval_uconstrs ist lems) db }
 END
 
 TACTIC EXTEND debug_eauto
-| [ "debug" "eauto" nat_or_var_opt(n) nat_or_var_opt(p) auto_using(lems)
-    hintbases(db) ] ->
-    {
-      ( match n,p with Some _, Some _ -> (deprecated_bfs "debug eauto") () | _ -> () );
-      Eauto.gen_eauto ~debug:Debug (Eauto.make_dimension n p) (eval_uconstrs ist lems) db }
+| [ "debug" "eauto" nat_or_var_opt(depth) auto_using(lems) hintbases(db) ] ->
+  { Eauto.gen_eauto ~debug:Debug ?depth (eval_uconstrs ist lems) db }
 END
 
 TACTIC EXTEND info_eauto
-| [ "info_eauto" nat_or_var_opt(n) nat_or_var_opt(p) auto_using(lems)
-    hintbases(db) ] ->
-    {
-      ( match n,p with Some _, Some _ -> (deprecated_bfs "info_eauto") () | _ -> () );
-      Eauto.gen_eauto ~debug:Info (Eauto.make_dimension n p) (eval_uconstrs ist lems) db }
-END
-
-TACTIC EXTEND dfs_eauto
-| [ "dfs" "eauto" nat_or_var_opt(p) auto_using(lems)
-      hintbases(db) ] ->
-    { Eauto.gen_eauto (Eauto.make_dimension p None) (eval_uconstrs ist lems) db }
-END
-
-TACTIC EXTEND bfs_eauto
-| [ "bfs" "eauto" nat_or_var_opt(p) auto_using(lems)
-      hintbases(db) ] ->
-    { Eauto.gen_eauto (true, Eauto.make_depth p) (eval_uconstrs ist lems) db }
+| [ "info_eauto" nat_or_var_opt(depth) auto_using(lems) hintbases(db) ] ->
+  { Eauto.gen_eauto ~debug:Info ?depth (eval_uconstrs ist lems) db }
 END
 
 TACTIC EXTEND autounfold
@@ -182,53 +148,33 @@ TACTIC EXTEND unify
     match table with
     | None ->
       let msg = str "Hint table " ++ str base ++ str " not found" in
-      Tacticals.New.tclZEROMSG msg
+      Tacticals.tclZEROMSG msg
     | Some t ->
       let state = Hints.Hint_db.transparent_state t in
       Tactics.unify ~state x y
   }
 END
 
-{
-
-let pr_pre_hints_path_atom _ _ _ = Hints.pp_hints_path_atom Libnames.pr_qualid
-let pr_hints_path_atom _ _ _ = Hints.pp_hints_path_atom Printer.pr_global
-let glob_hints_path_atom ist = Hints.glob_hints_path_atom
-
-}
-
-ARGUMENT EXTEND hints_path_atom
-  PRINTED BY { pr_hints_path_atom }
-
-  GLOBALIZED BY { glob_hints_path_atom }
-
-  RAW_PRINTED BY { pr_pre_hints_path_atom }
-  GLOB_PRINTED BY { pr_hints_path_atom }
-| [ ne_global_list(g) ] -> { Hints.PathHints g }
-| [ "_" ] -> { Hints.PathAny }
+TACTIC EXTEND convert
+| ["convert" constr(x) constr(y) ] -> { Tactics.convert x y }
 END
 
 {
 
-let pr_hints_path prc prx pry c = Hints.pp_hints_path c
-let pr_pre_hints_path prc prx pry c = Hints.pp_hints_path_gen Libnames.pr_qualid c
-let glob_hints_path ist = Hints.glob_hints_path
+let pr_pre_hints_path c = Hints.pp_hints_path_gen Libnames.pr_qualid c
 
 }
 
-ARGUMENT EXTEND hints_path
-PRINTED BY { pr_hints_path }
-
-GLOBALIZED BY { glob_hints_path }
-RAW_PRINTED BY { pr_pre_hints_path }
-GLOB_PRINTED BY { pr_hints_path }
+VERNAC ARGUMENT EXTEND hints_path
+PRINTED BY { pr_pre_hints_path }
 
 | [ "(" hints_path(p) ")"  ] -> { p }
 | [ hints_path(p) "*" ] -> { Hints.PathStar p }
 | [ "emp" ] -> { Hints.PathEmpty }
 | [ "eps" ] -> { Hints.PathEpsilon }
 | [ hints_path(p) "|" hints_path(q) ] -> { Hints.PathOr (p, q) }
-| [ hints_path_atom(a) ] -> { Hints.PathAtom a }
+| [ ne_global_list(g) ] -> { Hints.PathAtom (Hints.PathHints g) }
+| [ "_" ] -> { Hints.PathAtom Hints.PathAny }
 | [ hints_path(p) hints_path(q) ] -> { Hints.PathSeq (p, q) }
 END
 
@@ -240,7 +186,7 @@ ARGUMENT EXTEND opthints
 END
 
 VERNAC COMMAND EXTEND HintCut CLASSIFIED AS SIDEFF
-| #[ locality = Attributes.really_hint_locality; ] [ "Hint" "Cut" "[" hints_path(p) "]" opthints(dbnames) ] -> {
+| #[ locality = Attributes.hint_locality; ] [ "Hint" "Cut" "[" hints_path(p) "]" opthints(dbnames) ] -> {
   let entry = Hints.HintsCutEntry (Hints.glob_hints_path p) in
   Hints.add_hints ~locality
     (match dbnames with None -> ["core"] | Some l -> l) entry;

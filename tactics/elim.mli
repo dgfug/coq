@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -16,7 +16,7 @@ open Tactypes
 
 val case_tac : bool -> or_and_intro_pattern option ->
   (intro_patterns -> named_context -> unit Proofview.tactic) ->
-  constr -> inductive * EInstance.t * EConstr.t array -> Id.t -> unit Proofview.tactic
+  inductive * EInstance.t * EConstr.t array -> Id.t -> unit Proofview.tactic
 
 val h_decompose       : inductive list -> constr -> unit Proofview.tactic
 val h_decompose_or    : constr -> unit Proofview.tactic

@@ -1,4 +1,4 @@
-# Beginner's guide to hacking Coq
+# Beginner's guide to hacking Rocq
 
 ## Getting dependencies
 
@@ -13,7 +13,7 @@ by creating a Dune configuration file (see `man dune-config` to learn
 more). This file is generally located in `~/.config/dune/config` (this
 is system-dependent). It should start with the version of the Dune
 language used (by the configuration file---which can be different from
-the one used in the Coq repository), e.g.:
+the one used in the Rocq repository), e.g.:
 
 ```
 (lang dune 2.0)
@@ -21,7 +21,7 @@ the one used in the Coq repository), e.g.:
 
 - You will get faster rebuilds if you enable Dune caching. This is
   true in all cases, but even more so when using the targets in
-  `Makefile.dune` (see below).
+  `Makefile` (see below).
 
   To set up Dune caching, you should append the following line to your
   Dune configuration file:
@@ -42,23 +42,22 @@ the one used in the Coq repository), e.g.:
   (display short)
   ```
 
-## Building `coqtop` / `coqc` binaries
+## Building `rocq` binary
 
-We recommend that you use the targets in `Makefile.dune`.  See
-[`build-system.dune.md`](build-system.dune.md) to learn more about
-them.  In the example below, you may omit `-f Makefile.dune` by
-setting `COQ_USE_DUNE=1`.
+We recommend that you use the targets in the `Makefile`. Calling `make` will
+show the available targets. See [`build-system.dune.md`](build-system.dune.md)
+to learn more about them.
 
 ```
 $ git clone https://github.com/coq/coq.git
 $ cd coq
-$ make -f Makefile.dune
+$ make
     # to get an idea of the available targets
-$ make -f Makefile.dune check
+$ make check
    # build all OCaml files as fast as possible
 $ dune exec -- dev/shim/coqc-prelude test.v
     # update coqc and the prelude and compile file test.v
-$ make -f Makefile.dune world
+$ make world
     # build coq and the complete stdlib and setup it for use under _build/install/default
     # In particular, you may run, e.g., coq_makefile from _build/install/default
     # to build some test project
@@ -68,31 +67,10 @@ When running the commands above, you may set `DUNEOPT=--display=short`
 for a more verbose build (not required if you have already set the
 default verbosity globally as described in the previous section).
 
-Alternatively, you can use the legacy build system (which is now
-a hybrid since it relies on Dune for the OCaml parts). If you haven't
-set `COQ_USE_DUNE=1`, then you don't need `-f Makefile.make`.
-
-```
-$ ./configure -profile devel
-    # add -warn-error no if you don't want to fail on warnings while building the stlib
-$ make -f Makefile.make -j $JOBS
-    # Make once for `merlin` (autocompletion tool)
-
-<hack>
-
-$ make -f Makefile.make -j $JOBS states
-    # builds just enough to run coqtop
-$ bin/coqc <test_file_name.v>
-<goto hack until stuff works>
-```
-
-When running the commands above, you may set `_DDISPLAY=short` for a
-more verbose build.
-
 To learn how to run the test suite, you can read
 [`test-suite/README.md`](../../test-suite/README.md).
 
-## Coq functions of interest
+## Rocq functions of interest
 - `Coqtop.start`: This function is the main entry point of coqtop.
 - `Coqtop.parse_args `: This function is responsible for parsing command-line arguments.
 - `Coqloop.loop`: This function implements the read-eval-print loop.
@@ -111,7 +89,7 @@ To learn how to run the test suite, you can read
 
 ## A note about rlwrap
 
-When using `rlwrap coqtop` make sure the version of `rlwrap` is at least
+When using `rlwrap rocq repl` make sure the version of `rlwrap` is at least
 `0.42`, otherwise you will get
 
 ```

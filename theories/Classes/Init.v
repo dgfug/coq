@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -17,9 +17,9 @@
 
 (** Hints for the proof search: these combinators should be considered rigid. *)
 
-Require Import Coq.Program.Basics.
+Require Import Corelib.Program.Basics.
 
-Typeclasses Opaque id const flip compose arrow impl iff not all.
+Global Typeclasses Opaque id const flip compose arrow impl iff not all.
 
 (** Apply using the same opacity information as typeclass proof search. *)
 
@@ -27,7 +27,7 @@ Ltac class_apply c := autoapply c with typeclass_instances.
 
 (** The unconvertible typeclass, to test that two objects of the same type are
    actually different. *)
-
+#[universes(polymorphic)]
 Class Unconvertible (A : Type) (a b : A) := unconvertible : unit.
 
 Ltac unconvertible :=

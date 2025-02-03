@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -27,31 +27,59 @@ type scheme_dependency =
 | SchemeIndividualDep of inductive * individual scheme_kind
 
 type mutual_scheme_object_function =
-  Environ.env -> handle -> MutInd.t -> constr array Evd.in_evar_universe_context
+  Environ.env -> handle -> MutInd.t -> constr array Evd.in_ustate
 type individual_scheme_object_function =
-  Environ.env -> handle -> inductive -> constr Evd.in_evar_universe_context
+  Environ.env -> handle -> inductive -> constr Evd.in_ustate
 
 (** Main functions to register a scheme builder. Note these functions
    are not safe to be used by plugins as their effects won't be undone
-   on backtracking *)
+   on backtracking.
+
+    In [declare_X_scheme_object key ?suff ?deps f], [key] is the name
+    of the scheme kind. It must be unique across the Rocq process's
+    lifetime. It is used to generate [scheme_kind] in a marshal-stable
+    way and as the scheme name in Register Scheme.
+
+    [suff] defaults to [key], generated schemes which aren't given an
+    explicit name will be named "ind_suff" where "ind" is the
+    inductive's name.
+*)
 
 val declare_mutual_scheme_object : string ->
+  ?suff:string ->
   ?deps:(Environ.env -> MutInd.t -> scheme_dependency list) ->
-  ?aux:string ->
   mutual_scheme_object_function -> mutual scheme_kind
 
 val declare_individual_scheme_object : string ->
+  ?suff:string ->
   ?deps:(Environ.env -> inductive -> scheme_dependency list) ->
-  ?aux:string ->
   individual_scheme_object_function ->
   individual scheme_kind
 
+val is_declared_scheme_object : string -> bool
+(** Is the string used as the name of a [scheme_kind]? *)
+
+val scheme_kind_name : _ scheme_kind -> string
+(** Name of a [scheme_kind]. Can be used to register with DeclareScheme. *)
+
 (** Force generation of a (mutually) scheme with possibly user-level names *)
 
-val define_individual_scheme : individual scheme_kind ->
+val define_individual_scheme : ?loc:Loc.t -> individual scheme_kind ->
   Id.t option -> inductive -> unit
 
-val define_mutual_scheme : mutual scheme_kind ->
+module Locmap : sig
+  type t
+
+  val default : Loc.t option -> t
+  val make
+     : ?default:Loc.t (* The default is the loc of the first inductive, if passed *)
+    -> Names.MutInd.t
+    -> Loc.t option list (* order must match the one of the inductives block *)
+    -> t
+  val lookup : locmap:t -> Names.inductive -> Loc.t option
+end
+
+val define_mutual_scheme : ?locmap:Locmap.t -> mutual scheme_kind ->
   (int * Id.t) list -> MutInd.t -> unit
 
 (** Main function to retrieve a scheme in the cache or to generate it *)
@@ -67,8 +95,9 @@ val pr_scheme_kind : 'a scheme_kind -> Pp.t
 
 val declare_definition_scheme :
   (internal : bool
-   -> univs:Entries.universes_entry
+   -> univs:UState.named_universes_entry
    -> role:Evd.side_effect_role
    -> name:Id.t
+   -> ?loc:Loc.t
    -> Constr.t
    -> Constant.t * Evd.side_effects) ref

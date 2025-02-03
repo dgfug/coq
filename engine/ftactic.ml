@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -58,7 +58,7 @@ let goals = Proofview.Goal.goals >>= fun l -> Proofview.tclUNIT (Depends l)
 
 let enter f =
   bind goals
-    (fun gl -> gl >>= fun gl -> Proofview.V82.wrap_exceptions (fun () -> f gl))
+    (fun gl -> gl >>= fun gl -> Proofview.wrap_exceptions (fun () -> f gl))
 
 let with_env t =
   t >>= function

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -15,9 +15,10 @@ open Names
 open Sorts
 open Constr
 open EConstr
-open Tacmach.New
-open Tacticals.New
+open Tacmach
+open Tacticals
 open Tactics
+open Induction
 open Indfun_common
 module RelDecl = Context.Rel.Declaration
 
@@ -27,23 +28,23 @@ let is_rec_info sigma scheme_info =
     ||
     let new_branche =
       it_mkProd_or_LetIn mkProp
-        (fst (decompose_prod_assum sigma (RelDecl.get_type decl)))
+        (fst (decompose_prod_decls sigma (RelDecl.get_type decl)))
     in
     let free_rels_in_br = Termops.free_rels sigma new_branche in
-    let max = min + scheme_info.Tactics.npredicates in
+    let max = min + scheme_info.npredicates in
     Int.Set.exists (fun i -> i >= min && i < max) free_rels_in_br
   in
-  List.fold_left_i test_branche 1 false (List.rev scheme_info.Tactics.branches)
+  List.fold_left_i test_branche 1 false (List.rev scheme_info.branches)
 
 let choose_dest_or_ind scheme_info args =
   Proofview.tclBIND Proofview.tclEVARMAP (fun sigma ->
-      Tactics.induction_destruct (is_rec_info sigma scheme_info) false args)
+      Induction.induction_destruct (is_rec_info sigma scheme_info) false args)
 
 let functional_induction with_clean c princl pat =
   let open Proofview.Notations in
   Proofview.Goal.enter_one (fun gl ->
       let sigma = project gl in
-      let f, args = decompose_app sigma c in
+      let f, args = decompose_app_list sigma c in
       match princl with
       | None -> (
         (* No principle is given let's find the good one *)
@@ -57,13 +58,13 @@ let functional_induction with_clean c princl pat =
               | None ->
                 user_err
                   ( str "Cannot find induction information on "
-                  ++ Printer.pr_leconstr_env (pf_env gl) sigma (mkConst c') )
+                  ++ Termops.pr_global_env (pf_env gl) (ConstRef c') )
             in
             match elimination_sort_of_goal gl with
             | InSProp -> finfo.sprop_lemma
             | InProp -> finfo.prop_lemma
             | InSet -> finfo.rec_lemma
-            | InType -> finfo.rect_lemma
+            | InType | InQSort -> finfo.rect_lemma
           in
           let sigma, princ =
             (* then we get the principle *)
@@ -88,7 +89,7 @@ let functional_induction with_clean c princl pat =
                 | None ->
                   user_err
                     ( str "Cannot find induction principle for "
-                    ++ Printer.pr_leconstr_env (pf_env gl) sigma (mkConst c') )
+                    ++ Termops.pr_global_env (pf_env gl) (ConstRef c') )
               in
               Evd.fresh_global (pf_env gl) (project gl) princ_ref
           in
@@ -107,7 +108,7 @@ let functional_induction with_clean c princl pat =
       let sigma = project gl in
       let princ_infos = compute_elim_sig (project gl) princ_type in
       let args_as_induction_constr =
-        let c_list = if princ_infos.Tactics.farg_in_concl then [c] else [] in
+        let c_list = if princ_infos.farg_in_concl then [c] else [] in
         if List.length args + List.length c_list = 0 then
           user_err Pp.(str "Cannot recognize a valid functional scheme");
         let encoded_pat_as_patlist =

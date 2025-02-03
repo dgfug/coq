@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -9,10 +9,6 @@
 (************************************************************************)
 
 open Vmvalues
-
-(** Debug printing *)
-
-val set_drawinstr : unit -> unit
 
 val reduce_fix : int -> vfix -> vfun array * values array
                               (** bodies ,  types *)
@@ -33,4 +29,4 @@ val decompose_vfun2  : int -> vfun -> vfun -> int * values * values
 
 (** Apply a value *)
 
-val apply_whd : int -> whd -> values
+val apply_whd : int -> kind -> values

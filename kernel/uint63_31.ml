@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -126,9 +126,7 @@ let div21 xh xl y =
     nl := Int64.shift_left !nl 1;
     nh := Int64.logor (Int64.shift_left !nh 1) (Int64.shift_right_logical !nl 63);
     q := Int64.shift_left !q 1;
-    (* TODO: use "Int64.unsigned_compare !nh y >= 0",
-       once OCaml 4.08 becomes the minimal required version *)
-    if Int64.compare !nh 0L < 0 || Int64.compare !nh y >= 0 then
+    if Int64.unsigned_compare !nh y >= 0 then
       begin q := Int64.logor !q 1L; nh := Int64.sub !nh y; end
   done;
   !q, !nh

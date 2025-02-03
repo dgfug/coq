@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -91,7 +91,7 @@ let map f (l,x) = (l, f x)
 
 (** Exceptions *)
 
-let location : t Exninfo.t = Exninfo.make ()
+let location : t Exninfo.t = Exninfo.make "location"
 
 let add_loc e loc = Exninfo.add e location loc
 let get_loc e = Exninfo.get e location
@@ -102,3 +102,21 @@ let raise ?loc e =
   | Some loc ->
     let info = Exninfo.add Exninfo.null location loc in
     Exninfo.iraise (e, info)
+
+let pr loc =
+  let open Pp in
+  let fname = loc.fname in
+  match fname with
+  | ToplevelInput ->
+    (str"Toplevel input, characters " ++ int loc.bp ++
+     str"-" ++ int loc.ep)
+  | InFile { file } ->
+    (str"File " ++ str "\"" ++ str file ++ str "\"" ++
+     str", line " ++ int loc.line_nb ++ str", characters " ++
+     int (loc.bp-loc.bol_pos) ++ str"-" ++ int (loc.ep-loc.bol_pos))
+
+let current_command_loc = ref None
+
+let get_current_command_loc () = !current_command_loc
+
+let set_current_command_loc v = current_command_loc := v

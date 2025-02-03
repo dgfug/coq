@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -58,7 +58,7 @@ let rec eq_ml_type t1 t2 = match t1, t2 with
 | Tarr (tl1, tr1), Tarr (tl2, tr2) ->
   eq_ml_type tl1 tl2 && eq_ml_type tr1 tr2
 | Tglob (gr1, t1), Tglob (gr2, t2) ->
-  GlobRef.equal gr1 gr2 && List.equal eq_ml_type t1 t2
+  GlobRef.CanOrd.equal gr1 gr2 && List.equal eq_ml_type t1 t2
 | Tvar i1, Tvar i2 -> Int.equal i1 i2
 | Tvar' i1, Tvar' i2 -> Int.equal i1 i2
 | Tmeta m1, Tmeta m2 -> eq_ml_meta m1 m2
@@ -120,7 +120,7 @@ let rec mgu = function
       | None -> m.contents <- Some t)
   | Tarr(a, b), Tarr(a', b') ->
       mgu (a, a'); mgu (b, b')
-  | Tglob (r,l), Tglob (r',l') when GlobRef.equal r r' ->
+  | Tglob (r,l), Tglob (r',l') when GlobRef.CanOrd.equal r r' ->
        List.iter mgu (List.combine l l')
   | Tdummy _, Tdummy _ -> ()
   | Tvar i, Tvar j when Int.equal i j -> ()
@@ -384,9 +384,9 @@ let rec eq_ml_ast t1 t2 = match t1, t2 with
   eq_ml_ident na1 na2 && eq_ml_ast t1 t2
 | MLletin (na1, c1, t1), MLletin (na2, c2, t2) ->
   eq_ml_ident na1 na2 && eq_ml_ast c1 c2 && eq_ml_ast t1 t2
-| MLglob gr1, MLglob gr2 -> GlobRef.equal gr1 gr2
+| MLglob gr1, MLglob gr2 -> GlobRef.CanOrd.equal gr1 gr2
 | MLcons (t1, gr1, c1), MLcons (t2, gr2, c2) ->
-  eq_ml_type t1 t2 && GlobRef.equal gr1 gr2 && List.equal eq_ml_ast c1 c2
+  eq_ml_type t1 t2 && GlobRef.CanOrd.equal gr1 gr2 && List.equal eq_ml_ast c1 c2
 | MLtuple t1, MLtuple t2 ->
   List.equal eq_ml_ast t1 t2
 | MLcase (t1, c1, p1), MLcase (t2, c2, p2) ->
@@ -395,25 +395,26 @@ let rec eq_ml_ast t1 t2 = match t1, t2 with
   Int.equal i1 i2 && Array.equal Id.equal id1 id2 && Array.equal eq_ml_ast t1 t2
 | MLexn e1, MLexn e2 -> String.equal e1 e2
 | MLdummy k1, MLdummy k2 -> k1 == k2
-| MLaxiom, MLaxiom -> true
+| MLaxiom _, MLaxiom _ -> true (* ignore the name of the axiom *)
 | MLmagic t1, MLmagic t2 -> eq_ml_ast t1 t2
 | MLuint i1, MLuint i2 -> Uint63.equal i1 i2
 | MLfloat f1, MLfloat f2 -> Float64.equal f1 f2
+| MLstring s1, MLstring s2 -> Pstring.equal s1 s2
 | MLparray (t1,def1), MLparray (t2, def2) -> Array.equal eq_ml_ast t1 t2 && eq_ml_ast def1 def2
 | (MLrel _|MLapp _|MLlam _|MLletin _|MLglob _|MLcons _
-  |MLtuple _|MLcase _|MLfix _|MLexn _|MLdummy _|MLaxiom
-  | MLmagic _| MLuint _| MLfloat _|MLparray _), _
+  |MLtuple _|MLcase _|MLfix _|MLexn _|MLdummy _|MLaxiom _
+  | MLmagic _| MLuint _| MLfloat _| MLstring _| MLparray _), _
   -> false
 
 and eq_ml_pattern p1 p2 = match p1, p2 with
 | Pcons (gr1, p1), Pcons (gr2, p2) ->
-  GlobRef.equal gr1 gr2 && List.equal eq_ml_pattern p1 p2
+  GlobRef.CanOrd.equal gr1 gr2 && List.equal eq_ml_pattern p1 p2
 | Ptuple p1, Ptuple p2 ->
   List.equal eq_ml_pattern p1 p2
 | Prel i1, Prel i2 ->
   Int.equal i1 i2
 | Pwild, Pwild -> true
-| Pusual gr1, Pusual gr2 -> GlobRef.equal gr1 gr2
+| Pusual gr1, Pusual gr2 -> GlobRef.CanOrd.equal gr1 gr2
 | _ -> false
 
 and eq_ml_branch (id1, p1, t1) (id2, p2, t2) =
@@ -436,7 +437,8 @@ let ast_iter_rel f =
     | MLcons (_,_,l) | MLtuple l ->  List.iter (iter n) l
     | MLmagic a -> iter n a
     | MLparray (t,def) -> Array.iter (iter n) t; iter n def
-    | MLglob _ | MLexn _ | MLdummy _ | MLaxiom | MLuint _ | MLfloat _ -> ()
+    | MLglob _ | MLexn _ | MLdummy _ | MLaxiom _
+    | MLuint _ | MLfloat _ | MLstring _ -> ()
   in iter 0
 
 (*s Map over asts. *)
@@ -456,8 +458,8 @@ let ast_map f = function
   | MLtuple l -> MLtuple (List.map f l)
   | MLmagic a -> MLmagic (f a)
   | MLparray (t,def) -> MLparray (Array.map f t, f def)
-  | MLrel _ | MLglob _ | MLexn _ | MLdummy _ | MLaxiom
-  | MLuint _ | MLfloat _ as a -> a
+  | MLrel _ | MLglob _ | MLexn _ | MLdummy _ | MLaxiom _
+  | MLuint _ | MLfloat _ | MLstring _ as a -> a
 
 (*s Map over asts, with binding depth as parameter. *)
 
@@ -476,8 +478,8 @@ let ast_map_lift f n = function
   | MLtuple l -> MLtuple (List.map (f n) l)
   | MLmagic a -> MLmagic (f n a)
   | MLparray (t,def) -> MLparray (Array.map (f n) t, f n def)
-  | MLrel _ | MLglob _ | MLexn _ | MLdummy _ | MLaxiom
-  | MLuint _ | MLfloat _ as a -> a
+  | MLrel _ | MLglob _ | MLexn _ | MLdummy _ | MLaxiom _
+  | MLuint _ | MLfloat _ | MLstring _ as a -> a
 
 (*s Iter over asts. *)
 
@@ -492,8 +494,8 @@ let ast_iter f = function
   | MLcons (_,_,l) | MLtuple l -> List.iter f l
   | MLmagic a -> f a
   | MLparray (t,def) -> Array.iter f t; f def
-  | MLrel _ | MLglob _ | MLexn _ | MLdummy _ | MLaxiom
-  | MLuint _ | MLfloat _ -> ()
+  | MLrel _ | MLglob _ | MLexn _ | MLdummy _ | MLaxiom _
+  | MLuint _ | MLfloat _ | MLstring _ -> ()
 
 (*S Operations concerning De Bruijn indices. *)
 
@@ -530,7 +532,8 @@ let nb_occur_match =
     | MLcons (_,_,l) | MLtuple l -> List.fold_left (fun r a -> r+(nb k a)) 0 l
     | MLmagic a -> nb k a
     | MLparray (t,def) -> Array.fold_left (fun r a -> r+(nb k a)) 0 t + nb k def
-    | MLglob _ | MLexn _ | MLdummy _ | MLaxiom | MLuint _ | MLfloat _ -> 0
+    | MLglob _ | MLexn _ | MLdummy _ | MLaxiom _
+    | MLuint _ | MLfloat _ | MLstring _ -> 0
   in nb 1
 
 (* Replace unused variables by _ *)
@@ -587,7 +590,8 @@ let dump_unused_vars a =
        let def' = ren env def in
        if def' == def && t' == t then a else MLparray(t',def')
 
-    | MLglob _ | MLexn _ | MLdummy _ | MLaxiom | MLuint _ | MLfloat _ -> a
+    | MLglob _ | MLexn _ | MLdummy _ | MLaxiom _
+    | MLuint _ | MLfloat _ | MLstring _ -> a
 
     and ren_branch env ((ids,p,b) as tr) =
       let occs = List.map (fun _ -> ref false) ids in
@@ -920,7 +924,7 @@ let census_add, census_max, census_clean =
     with Not_found -> h := (k, Int.Set.singleton i) :: !h
   in
   let maxf () =
-    let len = ref 0 and lst = ref Int.Set.empty and elm = ref MLaxiom in
+    let len = ref 0 and lst = ref Int.Set.empty and elm = ref (MLaxiom "should not appear") in
     List.iter
       (fun (e, s) ->
          let n = Int.Set.cardinal s in
@@ -1006,7 +1010,7 @@ let rec iota_red i lift br ((typ,r,a) as cons) =
   if i >= Array.length br then raise Impossible;
   let (ids,p,c) = br.(i) in
   match p with
-    | Pusual r' | Pcons (r',_) when not (GlobRef.equal r' r) -> iota_red (i+1) lift br cons
+    | Pusual r' | Pcons (r',_) when not (GlobRef.CanOrd.equal r' r) -> iota_red (i+1) lift br cons
     | Pusual r' ->
       let c = named_lams (List.rev ids) c in
       let c = ast_lift lift c
@@ -1371,8 +1375,7 @@ let normalize a =
 (*S Special treatment of fixpoint for pretty-printing purpose. *)
 
 let general_optimize_fix f ids n args m c =
-  let v = Array.make n 0 in
-  for i=0 to (n-1) do v.(i)<-i done;
+  let v = Array.init n (fun i -> i) in
   let aux i = function
     | MLrel j when v.(j-1)>=0 ->
         if ast_occurs (j+1) c then raise Impossible else v.(j-1)<-(-i-1)
@@ -1421,8 +1424,8 @@ let rec ml_size = function
   | MLletin (_,_,t) -> ml_size t
   | MLmagic t -> ml_size t
   | MLparray(t,def) -> ml_size_array t + ml_size def
-  | MLglob _ | MLrel _ | MLexn _ | MLdummy _ | MLaxiom
-  | MLuint _ | MLfloat _ -> 0
+  | MLglob _ | MLrel _ | MLexn _ | MLdummy _ | MLaxiom _
+  | MLuint _ | MLfloat _ | MLstring _ -> 0
 
 and ml_size_list l = List.fold_left (fun a t -> a + ml_size t) 0 l
 
@@ -1538,16 +1541,16 @@ let con_of_string s =
 
 let manual_inline_set =
   List.fold_right (fun x -> Cset_env.add (con_of_string x))
-    [ "Coq.Init.Wf.well_founded_induction_type";
-      "Coq.Init.Wf.well_founded_induction";
-      "Coq.Init.Wf.Acc_iter";
-      "Coq.Init.Wf.Fix_F";
-      "Coq.Init.Wf.Fix";
-      "Coq.Init.Datatypes.andb";
-      "Coq.Init.Datatypes.orb";
-      "Coq.Init.Logic.eq_rec_r";
-      "Coq.Init.Logic.eq_rect_r";
-      "Coq.Init.Specif.proj1_sig";
+    [ "Corelib.Init.Wf.well_founded_induction_type";
+      "Corelib.Init.Wf.well_founded_induction";
+      "Corelib.Init.Wf.Acc_iter";
+      "Corelib.Init.Wf.Fix_F";
+      "Corelib.Init.Wf.Fix";
+      "Corelib.Init.Datatypes.andb";
+      "Corelib.Init.Datatypes.orb";
+      "Corelib.Init.Logic.eq_rec_r";
+      "Corelib.Init.Logic.eq_rect_r";
+      "Corelib.Init.Specif.proj1_sig";
     ]
     Cset_env.empty
 

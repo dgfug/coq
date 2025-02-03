@@ -133,9 +133,9 @@ Module Evar.
 
 Goal exists (A:Prop), A.
 eexists.
-unshelve (intro x).
+unshelve (intro y).
 - exact nat.
-- exact (x=x).
+- exact (y=y).
 - auto.
 Qed.
 
@@ -147,7 +147,7 @@ unshelve (intros x).
 - auto.
 Qed.
 
-Definition d := ltac:(intro x; exact (x*x)).
+Definition d := ltac:(let x := fresh in intro x; exact (x*x)).
 
 Definition d' : nat -> _ := ltac:(intros;exact 0).
 
@@ -164,3 +164,20 @@ exact _H.
 Qed.
 
 End Wildcard.
+
+Module SimplNever.
+
+Fixpoint arrow n X :=
+  match n with
+  | 0 => X
+  | S n => X -> arrow n X
+  end.
+
+Arguments arrow : simpl never.
+
+Goal arrow 1 False.
+intro H.
+exact H.
+Qed.
+
+End SimplNever.
