@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -151,6 +151,7 @@ let empty_state = {
 include Ssrcommon.MakeState(struct
   type state = istate
   let init = empty_state
+  let name = "ssripats"
 end)
 
 let print_name_seed env sigma = function
@@ -198,7 +199,7 @@ let gen_astac id new_name =
 let isGEN_CONSUME =
   tclGET (fun ({ to_generalize = dgs } as s) ->
   tclSET { s with to_generalize = [] } <*>
-  Tacticals.New.tclTHENLIST
+  Tacticals.tclTHENLIST
     (List.map (fun { tmp_id; orig_name } ->
        gen_astac tmp_id orig_name) dgs) <*>
   Tactics.clear (List.map (fun gen -> gen.tmp_id) dgs))
@@ -240,7 +241,7 @@ let intro_anon_all = Goal.enter begin fun gl ->
   let sigma = Goal.sigma gl in
   let g = Goal.concl gl in
   let n = nb_assums env sigma g in
-  Tacticals.New.tclDO n (Ssrcommon.tclINTRO_ANON ())
+  Tacticals.tclDO n (Ssrcommon.tclINTRO_ANON ())
 end
 
 (*** [=> >*] **************************************************************)
@@ -264,7 +265,7 @@ let intro_anon_deps = Goal.enter begin fun gl ->
   let sigma = Goal.sigma gl in
   let g = Goal.concl gl in
   let n = nb_deps_assums env sigma g in
-  Tacticals.New.tclDO n (Ssrcommon.tclINTRO_ANON ())
+  Tacticals.tclDO n (Ssrcommon.tclINTRO_ANON ())
 end
 
 (** [intro_drop] behaves like [intro_anon] but registers the id of the
@@ -291,7 +292,7 @@ let intro_clear ids =
       List.fold_left (fun (used_ids, clear_ids, ren) id ->
             let new_id = Ssrcommon.mk_anon_id (Id.to_string id) used_ids in
             (new_id :: used_ids, new_id :: clear_ids, (id, new_id) :: ren))
-                     (Tacmach.New.pf_ids_of_hyps gl, [], []) ids
+                     (Tacmach.pf_ids_of_hyps gl, [], []) ids
     in
     Tactics.rename_hyp ren <*>
     isCLR_PUSHL clear_ids
@@ -370,7 +371,7 @@ end end
 
 (*** [=> [: id]] ************************************************************)
 let mk_abstract_id =
-  let open Coqlib in
+  let open Rocqlib in
   let ssr_abstract_id = Summary.ref ~name:"SSR:abstractid" 0 in
 begin fun env sigma ->
   let sigma, zero = EConstr.fresh_global env sigma (lib_ref "num.nat.O") in
@@ -394,24 +395,24 @@ let tclMK_ABSTRACT_VAR id = Goal.enter begin fun gl ->
       let sigma, m = Evarutil.new_evar env sigma abstract_ty in
       sigma, (m, abstract_ty) in
     let sigma, kont =
-      let rd = Context.Rel.Declaration.LocalAssum (make_annot (Name id) Sorts.Relevant, abstract_ty) in
+      let rd = Context.Rel.Declaration.LocalAssum (make_annot (Name id) EConstr.ERelevance.relevant, abstract_ty) in
       let sigma, ev = Evarutil.new_evar (EConstr.push_rel rd env) sigma concl in
       sigma, ev
     in
     let term =
-      EConstr.(mkApp (mkLambda(make_annot (Name id) Sorts.Relevant,abstract_ty,kont),[|abstract_proof|])) in
+      EConstr.(mkApp (mkLambda(make_annot (Name id) ERelevance.relevant,abstract_ty,kont),[|abstract_proof|])) in
     let sigma, _ = Typing.type_of env sigma term in
     sigma, term
   end in
   Ssrcommon.tacMK_SSR_CONST "abstract_lock" >>= fun ablock ->
   Ssrcommon.tacMK_SSR_CONST "abstract" >>= fun abstract ->
-  Tactics.New.refine ~typecheck:false (step ablock abstract) <*>
+  Tactics.refine ~typecheck:false (step ablock abstract) <*>
   tclFOCUS 1 3 Proofview.shelve
 end
 
 let tclMK_ABSTRACT_VARS ids =
   List.fold_right (fun id tac ->
-    Tacticals.New.tclTHENFIRST (tclMK_ABSTRACT_VAR id) tac) ids (tclUNIT ())
+    Tacticals.tclTHENFIRST (tclMK_ABSTRACT_VAR id) tac) ids (tclUNIT ())
 
 (* Debugging *)
 let tclLOG p t =
@@ -422,7 +423,7 @@ let tclLOG p t =
   Goal.enter begin fun g ->
     Ssrprinters.debug_ssr (fun () -> Pp.(str" on state:" ++ spc () ++
       isPRINT g ++
-      str" goal:" ++ spc () ++ Printer.pr_goal (Goal.print g)));
+      str" goal:" ++ spc () ++ Printer.Debug.pr_goal g));
     tclUNIT ()
   end
   <*>
@@ -437,8 +438,12 @@ let tclLOG p t =
 let notTAC = tclUNIT false
 
 let duplicate_clear =
-  CWarnings.create ~name:"duplicate-clear" ~category:"ssr"
-    (fun id -> Pp.(str "Duplicate clear of " ++ Id.print id))
+  CWarnings.create ~name:"duplicate-clear" ~category:CWarnings.CoreCategories.ssr
+    (fun id -> Pp.(
+      str "Duplicate clear of" ++ spc () ++ Id.print id ++ str "." ++ spc ()
+      ++ str "Use {}" ++ Id.print id ++ spc ()
+      ++ str "instead of {" ++ Id.print id ++ str "}" ++ Id.print id
+    ))
 
 (* returns true if it was a tactic (eg /ltac:tactic) *)
 let rec ipat_tac1 ipat : bool tactic =
@@ -520,7 +525,7 @@ and ipat_tac pl : unit tactic =
 
 and tclIORPAT tac = function
   | [[]] -> tac
-  | p -> Tacticals.New.tclTHENS tac (List.map ipat_tac p)
+  | p -> Tacticals.tclTHENS tac (List.map ipat_tac p)
 
 and ssr_exception is_on = function
   | Some (IOpCaseBranches [[]]) when is_on -> Some IOpNoop
@@ -625,12 +630,12 @@ let with_dgens { dgens; gens; clr } maintac = match gens with
       Ssrcommon.genstac (gens, clr) <*> maintac dgens gen
 
 let mkCoqEq env sigma =
-  let eq = Coqlib.((build_coq_eq_data ()).eq) in
+  let eq = Rocqlib.((build_rocq_eq_data ()).eq) in
   let sigma, eq = EConstr.fresh_global env sigma eq in
   eq, sigma
 
 let mkCoqRefl t c env sigma =
-  let refl = Coqlib.((build_coq_eq_data()).refl) in
+  let refl = Rocqlib.((build_rocq_eq_data()).refl) in
   let sigma, refl = EConstr.fresh_global env sigma refl in
   EConstr.mkApp (refl, [|t; c|]), sigma
 
@@ -659,18 +664,18 @@ let elim_intro_tac ipats ?seed what eqid ssrelim is_rec clr =
          let sigma = Goal.sigma g in
          let elim_name = match clr, what with
            | [SsrHyp(_, x)], _ -> x
-           | _, `EConstr(_,_,t) when EConstr.isVar sigma t ->
+           | _, Ssrelim.EConstr(_,_,t) when EConstr.isVar sigma t ->
               EConstr.destVar sigma t
-           | _ -> Ssrcommon.mk_anon_id "K" (Tacmach.New.pf_ids_of_hyps g) in
-         Tacticals.New.tclFIRST
+           | _ -> Ssrcommon.mk_anon_id "K" (Tacmach.pf_ids_of_hyps g) in
+         Tacticals.tclFIRST
            [ Ssrcommon.tclINTRO_ID elim_name
            ; Ssrcommon.tclINTRO_ANON ~seed:"K" ()]
        end in
        let rec gen_eq_tac () = Goal.enter begin fun g ->
          let sigma, env, concl = Goal.(sigma g, env g, concl g) in
          let sigma, eq =
-           EConstr.fresh_global env sigma (Coqlib.lib_ref "core.eq.type") in
-         let ctx, last = EConstr.decompose_prod_assum sigma concl in
+           EConstr.fresh_global env sigma (Rocqlib.lib_ref "core.eq.type") in
+         let ctx, last = EConstr.decompose_prod_decls sigma concl in
          let open EConstr in
          let args = match kind_of_type sigma last with
            | AtomicType (hd, args) ->
@@ -686,10 +691,10 @@ let elim_intro_tac ipats ?seed what eqid ssrelim is_rec clr =
            let open EConstr in
            let refl =
              mkApp (eq, [|Vars.lift 1 case_ty; mkRel 1; Vars.lift 1 case|]) in
-           let name = Ssrcommon.mk_anon_id "K" (Tacmach.New.pf_ids_of_hyps g) in
+           let name = Ssrcommon.mk_anon_id "K" (Tacmach.pf_ids_of_hyps g) in
 
            let new_concl =
-             mkProd (make_annot (Name name) Sorts.Relevant, case_ty, mkArrow refl Sorts.Relevant (Vars.lift 2 concl)) in
+             mkProd (make_annot (Name name) ERelevance.relevant, case_ty, mkArrow refl ERelevance.relevant (Vars.lift 2 concl)) in
            let erefl, sigma = mkCoqRefl case_ty case env sigma in
            Proofview.Unsafe.tclEVARS sigma <*>
            Tactics.apply_type ~typecheck:true new_concl [case;erefl]
@@ -713,7 +718,7 @@ let mkEq dir cl c t n env sigma =
   eqargs.(Ssrequality.dir_org dir) <- mkRel n;
   let eq, sigma = mkCoqEq env sigma in
   let refl, sigma = mkCoqRefl t c env sigma in
-  mkArrow (mkApp (eq, eqargs)) Sorts.Relevant (Vars.lift 1 cl), refl, sigma
+  mkArrow (mkApp (eq, eqargs)) ERelevance.relevant (Vars.lift 1 cl), refl, sigma
 
 (** in [tac/v: last gens..] the first (last to be run) generalization is
     "special" in that is it also the main argument of [tac] and is eventually
@@ -725,19 +730,15 @@ let mkEq dir cl c t n env sigma =
     The code here does not "grab" [v last] nor apply [v] to [last], see the
     [tacVIEW_THEN_GRAB] combinator. *)
 let tclLAST_GEN ~to_ind ((oclr, occ), t) conclusion = tclINDEPENDENTL begin
-  Ssrcommon.tacSIGMA >>= fun sigma0 ->
-  Goal.enter_one begin fun g ->
-  let pat = Ssrmatching.interp_cpattern (Tacmach.pf_env sigma0) (Tacmach.project sigma0) t None in
-  let cl0, env, sigma, hyps = Goal.(concl g, env g, sigma g, hyps g) in
-  let cl = EConstr.to_constr ~abort_on_undefined_evars:false sigma cl0 in
-  let (c, ucst), cl =
-    try Ssrmatching.fill_occ_pattern ~raise_NoMatch:true env sigma cl pat occ 1
-    with Ssrmatching.NoMatch -> Ssrmatching.redex_of_pattern env pat, cl in
-  let sigma = Evd.merge_universe_context sigma ucst in
-  let c, cl = EConstr.of_constr c, EConstr.of_constr cl in
+  Goal.enter_one begin fun gl ->
+  let cl0, env, sigma, hyps = Goal.(concl gl, env gl, sigma gl, hyps gl) in
+  let sigma0 = sigma in
+  let pat = Ssrmatching.interp_cpattern env sigma t None in
+  let cl = Reductionops.nf_evar sigma cl0 in
+  let sigma, c, cl = Ssrmatching.fill_rel_occ_pattern env sigma cl pat occ in
   let clr =
     Ssrcommon.interp_clr sigma (oclr, (Ssrmatching.tag_of_cpattern t,c)) in
-  (* Historically in Coq, and hence in ssr, [case t] accepts [t] of type
+  (* Historically in Rocq, and hence in ssr, [case t] accepts [t] of type
      [A.. -> Ind] and opens new goals for [A..] as well as for the branches
      of [Ind], see the [~to_ind] argument *)
   if not(Termops.occur_existential sigma c) then
@@ -756,14 +757,12 @@ let tclLAST_GEN ~to_ind ((oclr, occ), t) conclusion = tclINDEPENDENTL begin
       tclUNIT (false, ccl, c, clr)
   else
     if to_ind && occ = None then
-      let _, p, _, ucst' =
-        (* TODO: use abs_evars2 *)
-        Ssrcommon.pf_abs_evars sigma0 (fst pat, c) in
+      let p, _, ucst' = Ssrcommon.abs_evars env sigma0 (pat.pat_sigma, c) in
       let sigma = Evd.merge_universe_context sigma ucst' in
       Unsafe.tclEVARS sigma <*>
       Ssrcommon.tacTYPEOF p >>= fun pty ->
       (* TODO: check bug: cl0 no lift? *)
-      let ccl = EConstr.mkProd (make_annot (Ssrcommon.constr_name sigma c) Sorts.Relevant, pty, cl0) in
+      let ccl = EConstr.mkProd (make_annot (Ssrcommon.constr_name sigma c) EConstr.ERelevance.relevant, pty, cl0) in
       tclUNIT (false, ccl, p, clr)
   else
     Ssrcommon.errorstrm Pp.(str "generalized term didn't match")
@@ -798,11 +797,11 @@ let ssrelimtac (view, (eqid, (dgens, ipats))) =
     | [v] ->
       Ssrcommon.tclINTERP_AST_CLOSURE_TERM_AS_CONSTR v >>= fun cs ->
       tclDISPATCH (List.map (fun elim ->
-          (Ssrelim.ssrelim deps (`EGen gen) ~elim eqid (elim_intro_tac ipats)))
+          (Ssrelim.ssrelim deps (Ssrelim.EGen gen) ~elim eqid (elim_intro_tac ipats)))
         cs)
     | [] ->
       tclINDEPENDENT
-          (Ssrelim.ssrelim deps (`EGen gen) eqid (elim_intro_tac ipats))
+          (Ssrelim.ssrelim deps (Ssrelim.EGen gen) eqid (elim_intro_tac ipats))
     | _ ->
       Ssrcommon.errorstrm
         Pp.(str "elim: only one elimination lemma can be provided")
@@ -825,7 +824,7 @@ let ssrcasetac (view, (eqid, (dgens, ipats))) =
             if view <> [] && eqid <> None && deps = []
             then [gen], [], None
             else deps, clear, occ in
-          Ssrelim.ssrelim ~is_case:true deps (`EConstr (clear, occ, vc))
+          Ssrelim.ssrelim ~is_case:true deps (Ssrelim.EConstr (clear, occ, vc))
             eqid (elim_intro_tac ipats)
       in
       if view = [] then conclusion false c clear c
@@ -846,9 +845,13 @@ let pushmoveeqtac cl c = Goal.enter begin fun g ->
 end
 
 let eqmovetac _ gen =
-  Ssrcommon.pfLIFT (Ssrcommon.pf_interp_gen false gen) >>=
-  fun (cl, c, _) -> pushmoveeqtac cl c
-;;
+  Proofview.Goal.enter begin fun gl ->
+    let env = Proofview.Goal.env gl in
+    let sigma = Proofview.Goal.sigma gl in
+    let concl = Proofview.Goal.concl gl in
+    let (sigma, (cl, c, _)) = Ssrcommon.interp_gen env sigma ~concl false gen in
+    Proofview.Unsafe.tclEVARS sigma <*> pushmoveeqtac cl c
+  end
 
 let rec eqmoveipats eqpat = function
   | (IOpSimpl _ | IOpClear _ as ipat) :: ipats ->
@@ -887,7 +890,7 @@ let ssrmovetac = function
     let gentac = Ssrcommon.genstac (gens, clr) in
     gentac <*> tclIPAT (IpatMachine.tclCompileIPats ipats)
   | _, (_, ({ clr }, ipats)) ->
-    Tacticals.New.tclTHENLIST [ssrsmovetac; Tactics.clear (List.map Ssrcommon.hyp_id clr); tclIPAT (IpatMachine.tclCompileIPats ipats)]
+    Tacticals.tclTHENLIST [ssrsmovetac; Tactics.clear (List.map Ssrcommon.hyp_id clr); tclIPAT (IpatMachine.tclCompileIPats ipats)]
 
 (** [abstract: absvar gens] **************************************************)
 let rec is_Evar_or_CastedMeta sigma x =
@@ -905,52 +908,63 @@ let occur_existential_or_casted_meta sigma c =
   try occrec c; false
   with Not_found -> true
 
-let tacEXAMINE_ABSTRACT id = Ssrcommon.tacTYPEOF id >>= begin fun tid ->
-  Ssrcommon.tacMK_SSR_CONST "abstract" >>= fun abstract ->
-  Goal.enter_one ~__LOC__ begin fun g ->
-  let sigma, env = Goal.(sigma g, env g) in
+let examine_abstract env sigma id =
+  let (sigma, tid) = Typing.type_of env sigma id in
+  let abstract = Ssrcommon.mkSsrRef "abstract" in
   let err () =
     Ssrcommon.errorstrm
       Pp.(strbrk"not a proper abstract constant: "++
         Printer.pr_econstr_env env sigma id) in
   if not (EConstr.isApp sigma tid) then err ();
   let hd, args_id = EConstr.destApp sigma tid in
-  if not (EConstr.eq_constr_nounivs sigma hd abstract) then err ();
+  if not (EConstr.isRefX env sigma abstract hd) then err ();
   if Array.length args_id <> 3 then err ();
   if not (is_Evar_or_CastedMeta sigma args_id.(2)) then
     Ssrcommon.errorstrm Pp.(strbrk"abstract constant "++
       Printer.pr_econstr_env env sigma id++str" already used");
-  tclUNIT (tid, args_id)
-end end
+  sigma, (tid, args_id)
 
-let tacFIND_ABSTRACT_PROOF check_lock abstract_n =
-  Ssrcommon.tacMK_SSR_CONST "abstract" >>= fun abstract ->
+let tacEXAMINE_ABSTRACT id =
   Goal.enter_one ~__LOC__ begin fun g ->
-    let sigma, env = Goal.(sigma g, env g) in
+  let sigma, env = Goal.(sigma g, env g) in
+  let sigma, ans = examine_abstract env sigma id in
+  Proofview.Unsafe.tclEVARS sigma <*> Proofview.tclUNIT ans
+  end
+
+let find_abstract_proof env sigma check_lock abstract_n =
+  let abstract = Ssrcommon.mkSsrRef "abstract" in
     let l = Evd.fold_undefined (fun e ei l ->
-      match EConstr.kind sigma ei.Evd.evar_concl with
+      match EConstr.kind sigma (Evd.evar_concl ei) with
       | App(hd, [|ty; n; lock|])
         when (not check_lock ||
                    (occur_existential_or_casted_meta sigma ty &&
                     is_Evar_or_CastedMeta sigma lock)) &&
-             EConstr.eq_constr_nounivs sigma hd abstract &&
+             EConstr.isRefX env sigma abstract hd &&
              EConstr.eq_constr_nounivs sigma n abstract_n -> e :: l
       | _ -> l) sigma [] in
     match l with
-    | [e] -> tclUNIT e
+    | [e] -> e
     | _ -> Ssrcommon.errorstrm
        Pp.(strbrk"abstract constant "++
          Printer.pr_econstr_env env sigma abstract_n ++
            strbrk" not found in the evar map exactly once. "++
            strbrk"Did you tamper with it?")
+
+let tacFIND_ABSTRACT_PROOF check_lock abstract_n =
+  Goal.enter_one ~__LOC__ begin fun g ->
+    let sigma, env = Goal.(sigma g, env g) in
+    tclUNIT (find_abstract_proof env sigma check_lock abstract_n)
 end
 
 let ssrabstract dgens =
-  let main _ (_,cid) = Goal.enter begin fun g ->
+  let main _ (_,cid) =
     Ssrcommon.tacMK_SSR_CONST "abstract" >>= fun abstract ->
     Ssrcommon.tacMK_SSR_CONST "abstract_key" >>= fun abstract_key ->
-    Ssrcommon.tacINTERP_CPATTERN cid >>= fun cid ->
-    let id = EConstr.mkVar (Option.get (Ssrmatching.id_of_pattern cid)) in
+    Ssrcommon.tacINTERP_CPATTERN cid >>= fun cid -> Goal.enter @@ fun g ->
+    let id =
+      match Ssrmatching.id_of_pattern (Goal.sigma g) cid with
+      | None -> Ssrcommon.errorstrm Pp.(strbrk "argument is not a hypothesis")
+      | Some id -> EConstr.mkVar id in
     tacEXAMINE_ABSTRACT id >>= fun (idty, args_id) ->
     let abstract_n = args_id.(1) in
     tacFIND_ABSTRACT_PROOF true abstract_n >>= fun abstract_proof ->
@@ -977,15 +991,14 @@ let ssrabstract dgens =
     Unsafe.tclSETGOALS
       (goals @ [Proofview_monad.with_empty_state abstract_proof]) <*>
     tclDISPATCH [
-      Tacticals.New.tclSOLVE [Tactics.apply proof];
+      Tacticals.tclSOLVE [Tactics.apply proof];
       Ssrcommon.unfold[abstract;abstract_key]
-    ]
-  end in
-  let interp_gens { gens } ~conclusion = Goal.enter begin fun g ->
-   Ssrcommon.tacSIGMA >>= fun gl0 ->
+    ] in
+  let interp_gens { gens } ~conclusion = Goal.enter begin fun gl ->
      let open Ssrmatching in
+     let open Tacmach in
      let ipats = List.map (fun (_,cp) ->
-       match id_of_pattern (interp_cpattern (Tacmach.pf_env gl0) (Tacmach.project gl0) cp None) with
+       match id_of_pattern (project gl) (interp_cpattern (pf_env gl) (project gl) cp None) with
        | None -> IPatAnon (One None)
        | Some id -> IPatId id)
        (List.tl gens) in
@@ -996,21 +1009,8 @@ let ssrabstract dgens =
   tclIPATssr ipats)
 
 module Internal = struct
-
-  let pf_find_abstract_proof b gl t =
-    let res = ref None in
-    let _ = V82.of_tactic (tacFIND_ABSTRACT_PROOF b (EConstr.of_constr t) >>= fun x -> res := Some x; tclUNIT ()) gl in
-    match !res with
-    | None -> assert false
-    | Some x -> x
-
-  let examine_abstract t gl =
-    let res = ref None in
-    let _ = V82.of_tactic (tacEXAMINE_ABSTRACT t >>= fun x -> res := Some x; tclUNIT ()) gl in
-    match !res with
-    | None -> assert false
-    | Some x -> x
-
+  let find_abstract_proof = find_abstract_proof
+  let examine_abstract = examine_abstract
 end
 
 (* vim: set filetype=ocaml foldmethod=marker: *)

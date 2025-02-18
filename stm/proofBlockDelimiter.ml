@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,8 +12,8 @@ open Stm
 
 module Util : sig
 
-val simple_goal : Evd.evar_map -> Goal.goal -> Goal.goal list -> bool
-val is_focused_goal_simple : doc:Stm.doc -> Stateid.t -> [ `Simple of Goal.goal list | `Not ]
+val simple_goal : Evd.evar_map -> Evar.t -> Evar.t list -> bool
+val is_focused_goal_simple : doc:Stm.doc -> Stateid.t -> [ `Simple of Evar.t list | `Not ]
 
 type 'a until = [ `Stop | `Found of static_block_declaration | `Cont of 'a ]
 
@@ -40,15 +40,16 @@ let simple_goal sigma g gs =
   let open Evar in
   let open Evd in
   let open Evarutil in
-  let evi = Evd.find sigma g in
-  Set.is_empty (evars_of_term sigma evi.evar_concl) &&
+  let () = assert (not @@ Evd.is_defined sigma g) in
+  let evi = Evd.find_undefined sigma g in
+  Set.is_empty (evars_of_term sigma (Evd.evar_concl evi)) &&
   Set.is_empty (evars_of_filtered_evar_info sigma (nf_evar_info sigma evi)) &&
   not (List.exists (Proofview.depends_on sigma g) gs)
 
 let is_focused_goal_simple ~doc id =
   match state_of_id ~doc id with
-  | `Expired | `Error _ | `Valid None -> `Not
-  | `Valid (Some { Vernacstate.lemmas }) ->
+  | Expired | Error _ | Valid None -> `Not
+  | Valid (Some { interp = { Vernacstate.Interp.lemmas } }) ->
     Option.cata (Vernacstate.LemmaStack.with_top ~f:(fun proof ->
         let proof = Declare.Proof.get proof in
         let Proof.{ goals=focused; stack=r1; sigma } = Proof.data proof in
@@ -80,7 +81,7 @@ let static_bullet ({ entry_point; prev_node } as view) =
   let open Vernacexpr in
   assert (not (Vernacprop.has_query_control entry_point.ast));
   match entry_point.ast.CAst.v.expr with
-  | VernacBullet b ->
+  | VernacSynPure (VernacBullet b) ->
       let base = entry_point.indentation in
       let last_tac = prev_node entry_point in
       crawl view ~init:last_tac (fun prev node ->
@@ -88,7 +89,7 @@ let static_bullet ({ entry_point; prev_node } as view) =
         if node.indentation > base then `Cont node else
         if Vernacprop.has_query_control node.ast then `Stop
         else match node.ast.CAst.v.expr with
-        | VernacBullet b' when b = b' ->
+        | VernacSynPure (VernacBullet b') when b = b' ->
           `Found { block_stop = entry_point.id; block_start = prev.id;
                    dynamic_switch = node.id; carry_on_data = of_bullet_val b }
         | _ -> `Stop) entry_point
@@ -97,12 +98,12 @@ let static_bullet ({ entry_point; prev_node } as view) =
 let dynamic_bullet doc { dynamic_switch = id; carry_on_data = b } =
   match is_focused_goal_simple ~doc id with
   | `Simple focused ->
-      `ValidBlock {
+      ValidBlock {
          base_state = id;
          goals_to_admit = focused;
-         recovery_command = Some (CAst.make Vernacexpr.{ control = []; attrs = []; expr = VernacBullet (to_bullet_val b)})
+         recovery_command = Some (CAst.make Vernacexpr.{ control = []; attrs = []; expr = VernacSynPure (VernacBullet (to_bullet_val b))})
       }
-  | `Not -> `Leaks
+  | `Not -> Leaks
 
 let () = register_proof_block_delimiter
   "bullet" static_bullet dynamic_bullet
@@ -111,28 +112,28 @@ let () = register_proof_block_delimiter
 
 let static_curly_brace ({ entry_point; prev_node } as view) =
   let open Vernacexpr in
-  assert(entry_point.ast.CAst.v.expr = VernacEndSubproof);
+  assert(entry_point.ast.CAst.v.expr = VernacSynPure VernacEndSubproof);
   crawl view (fun (nesting,prev) node ->
     if Vernacprop.has_query_control node.ast then `Cont (nesting,node)
     else match node.ast.CAst.v.expr with
-    | VernacSubproof _ when nesting = 0 ->
+    | VernacSynPure (VernacSubproof _) when nesting = 0 ->
       `Found { block_stop = entry_point.id; block_start = prev.id;
                dynamic_switch = node.id; carry_on_data = unit_val }
-    | VernacSubproof _ ->
+    | VernacSynPure (VernacSubproof _) ->
       `Cont (nesting - 1,node)
-    | VernacEndSubproof ->
+    | VernacSynPure VernacEndSubproof ->
       `Cont (nesting + 1,node)
     | _ -> `Cont (nesting,node)) (-1, entry_point)
 
 let dynamic_curly_brace doc { dynamic_switch = id } =
   match is_focused_goal_simple ~doc id with
   | `Simple focused ->
-      `ValidBlock {
+      ValidBlock {
          base_state = id;
          goals_to_admit = focused;
-         recovery_command = Some (CAst.make Vernacexpr.{ control = []; attrs = []; expr = VernacEndSubproof })
+         recovery_command = Some (CAst.make Vernacexpr.{ control = []; attrs = []; expr = VernacSynPure VernacEndSubproof })
       }
-  | `Not -> `Leaks
+  | `Not -> Leaks
 
 let () = register_proof_block_delimiter
   "curly" static_curly_brace dynamic_curly_brace
@@ -149,12 +150,12 @@ let static_par { entry_point; prev_node } =
 let dynamic_par doc { dynamic_switch = id } =
   match is_focused_goal_simple ~doc id with
   | `Simple focused ->
-      `ValidBlock {
+      ValidBlock {
          base_state = id;
          goals_to_admit = focused;
          recovery_command = None;
       }
-  | `Not -> `Leaks
+  | `Not -> Leaks
 
 let () = register_proof_block_delimiter "par" static_par dynamic_par
 
@@ -178,15 +179,15 @@ let static_indent ({ entry_point; prev_node } as view) =
 let dynamic_indent doc { dynamic_switch = id; carry_on_data = e } =
   Printf.eprintf "%s\n" (Stateid.to_string id);
   match is_focused_goal_simple ~doc id with
-  | `Simple [] -> `Leaks
+  | `Simple [] -> Leaks
   | `Simple focused ->
       let but_last = List.tl (List.rev focused) in
-      `ValidBlock {
+      ValidBlock {
          base_state = id;
          goals_to_admit = but_last;
          recovery_command = Some (to_vernac_control_val e);
       }
-  | `Not -> `Leaks
+  | `Not -> Leaks
 
 let () = register_proof_block_delimiter "indent" static_indent dynamic_indent
 

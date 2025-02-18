@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -14,13 +14,13 @@
    Institution: LRI, CNRS UMR 8623 - University Paris Sud
 *)
 
-Require Import Coq.Program.Basics.
-Require Import Coq.Program.Tactics.
+Require Import Corelib.Program.Basics.
+Require Import Corelib.Program.Tactics.
 
-Require Import Coq.Classes.Init.
+Require Import Corelib.Classes.Init.
 Require Import Relation_Definitions.
-Require Export Coq.Classes.RelationClasses.
-Require Import Coq.Classes.Morphisms.
+Require Export Corelib.Classes.RelationClasses.
+Require Import Corelib.Classes.Morphisms.
 
 Set Implicit Arguments.
 Unset Strict Implicit.
@@ -54,7 +54,7 @@ Infix "=~=" := pequiv (at level 70, no associativity) : equiv_scope.
 (** Shortcuts to make proof search easier. *)
 
 #[global]
-Program Instance equiv_reflexive `(sa : Equivalence A) : Reflexive equiv | 1.
+ Program Instance equiv_reflexive `(sa : Equivalence A) : Reflexive equiv | 1.
 
 #[global]
 Program Instance equiv_symmetric `(sa : Equivalence A) : Symmetric equiv | 1.
@@ -63,8 +63,9 @@ Program Instance equiv_symmetric `(sa : Equivalence A) : Symmetric equiv | 1.
 Program Instance equiv_transitive `(sa : Equivalence A) : Transitive equiv | 1.
 
   Next Obligation.
-  Proof. intros A R sa x y z Hxy Hyz.
-         now transitivity y.
+  Proof.
+    intros A R sa x y z Hxy Hyz.
+    now transitivity y.
   Qed.
 
 Arguments equiv_symmetric {A R} sa x y : rename.

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,12 +8,12 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
-open Pcoq
+open Procq
 
 type proof_mode = string
 
 (* Tactic parsing modes *)
-let register_proof_mode, find_proof_mode, lookup_proof_mode =
+let register_proof_mode, find_proof_mode, lookup_proof_mode, list_proof_modes =
   let proof_mode : (string, Vernacexpr.vernac_expr Entry.t) Hashtbl.t =
     Hashtbl.create 19 in
   let register_proof_mode ename e = Hashtbl.add proof_mode ename e; ename in
@@ -25,7 +25,10 @@ let register_proof_mode, find_proof_mode, lookup_proof_mode =
     if Hashtbl.mem proof_mode name then Some name
     else None
   in
-  register_proof_mode, find_proof_mode, lookup_proof_mode
+  let list_proof_modes () =
+    Hashtbl.fold CString.Map.add proof_mode CString.Map.empty
+  in
+  register_proof_mode, find_proof_mode, lookup_proof_mode, list_proof_modes
 
 let proof_mode_to_string name = name
 
@@ -34,28 +37,27 @@ let command_entry_ref = ref None
 module Vernac_ =
   struct
     (* The different kinds of vernacular commands *)
-    let gallina = Entry.create "gallina"
-    let gallina_ext = Entry.create "gallina_ext"
-    let command = Entry.create "command"
-    let syntax = Entry.create "syntax_command"
-    let vernac_control = Entry.create "Vernac.vernac_control"
-    let inductive_definition = Entry.create "Vernac.inductive_definition"
-    let fix_definition = Entry.create "Vernac.fix_definition"
-    let rec_definition = fix_definition
-    let red_expr = Entry.create "red_expr"
-    let hint_info = Entry.create "hint_info"
+    let gallina = Entry.make "gallina"
+    let gallina_ext = Entry.make "gallina_ext"
+    let command = Entry.make "command"
+    let syntax = Entry.make "syntax_command"
+    let vernac_control = Entry.make "vernac_control"
+    let inductive_or_record_definition = Entry.make "inductive_or_record_definition"
+    let fix_definition = Entry.make "fix_definition"
+    let red_expr = Entry.make "red_expr"
+    let hint_info = Entry.make "hint_info"
     (* Main vernac entry *)
-    let main_entry = Entry.create "vernac"
-    let noedit_mode = Entry.create "noedit_command"
+    let main_entry = Entry.make "vernac"
+    let noedit_mode = Entry.make "noedit_command"
 
     let () =
       let act_vernac v loc = Some v in
       let act_eoi _ loc = None in
       let rule = [
-        Pcoq.(Production.make (Rule.next Rule.stop (Symbol.token Tok.PEOI)) act_eoi);
-        Pcoq.(Production.make (Rule.next Rule.stop (Symbol.nterm vernac_control)) act_vernac);
+        Procq.(Production.make (Rule.next Rule.stop (Symbol.token Tok.PEOI)) act_eoi);
+        Procq.(Production.make (Rule.next Rule.stop (Symbol.nterm vernac_control)) act_vernac);
       ] in
-      Pcoq.(grammar_extend main_entry (Fresh (Gramlib.Gramext.First, [None, None, rule])))
+      Procq.(grammar_extend main_entry (Fresh (Gramlib.Gramext.First, [None, None, rule])))
 
     let select_tactic_entry spec =
       match spec with
@@ -63,8 +65,8 @@ module Vernac_ =
       | Some ename -> find_proof_mode ename
 
     let command_entry =
-      Pcoq.Entry.(of_parser "command_entry"
-        { parser_fun = (fun strm -> Pcoq.Entry.parse_token_stream (select_tactic_entry !command_entry_ref) strm) })
+      Procq.Entry.(of_parser "command_entry"
+        { parser_fun = (fun _kwstate strm -> Procq.Entry.parse_token_stream (select_tactic_entry !command_entry_ref) strm) })
 
   end
 
@@ -77,4 +79,4 @@ let main_entry proof_mode =
   Vernac_.main_entry
 
 let () =
-  register_grammar Genredexpr.wit_red_expr (Vernac_.red_expr);
+  register_grammar Redexpr.wit_red_expr (Vernac_.red_expr);

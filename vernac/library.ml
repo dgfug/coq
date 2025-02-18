@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -13,7 +13,6 @@ open CErrors
 open Util
 
 open Names
-open Lib
 open Libobject
 
 (************************************************************************)
@@ -22,9 +21,9 @@ open Libobject
 let raw_extern_library f =
   ObjFile.open_out ~file:f
 
-let raw_intern_library f =
-  System.with_magic_number_check
-    (fun file -> ObjFile.open_in ~file) f
+let raw_intern_library ?loc f =
+  System.with_magic_number_check ?loc
+   (fun file -> ObjFile.open_in ~file) f
 
 (************************************************************************)
 (** Serialized objects loaded on-the-fly *)
@@ -35,7 +34,7 @@ module Delayed :
 sig
 
 type 'a delayed
-val in_delayed : string -> ObjFile.in_handle -> segment:string -> 'a delayed * Digest.t
+val in_delayed : string -> ObjFile.in_handle -> segment:'a ObjFile.id -> 'a delayed * Digest.t
 val fetch_delayed : 'a delayed -> 'a
 
 end =
@@ -83,6 +82,7 @@ type compilation_unit_name = DirPath.t
 
 type library_disk = {
   md_compiled : Safe_typing.compiled_library;
+  md_syntax_objects : Declaremods.library_objects;
   md_objects : Declaremods.library_objects;
 }
 
@@ -90,6 +90,7 @@ type summary_disk = {
   md_name : compilation_unit_name;
   md_deps : (compilation_unit_name * Safe_typing.vodigest) array;
   md_ocaml : string;
+  md_info : Library_info.t;
 }
 
 (*s Modules loaded in memory contain the following informations. They are
@@ -100,35 +101,40 @@ type library_t = {
   library_data : library_disk;
   library_deps : (compilation_unit_name * Safe_typing.vodigest) array;
   library_digests : Safe_typing.vodigest;
-  library_extra_univs : Univ.ContextSet.t;
-}
-
-type library_summary = {
-  libsum_name : compilation_unit_name;
-  libsum_digests : Safe_typing.vodigest;
+  library_info : Library_info.t;
+  library_vm : Vmlibrary.on_disk;
 }
 
 (* This is a map from names to loaded libraries *)
-let libraries_table : library_summary DPmap.t ref =
-  Summary.ref DPmap.empty ~name:"LIBRARY"
+let libraries_table : library_t DPmap.t ref =
+  Summary.ref DPmap.empty ~stage:Summary.Stage.Synterp ~name:"LIBRARY"
 
 (* This is the map of loaded libraries filename *)
 (* (not synchronized so as not to be caught in the states on disk) *)
 let libraries_filename_table = ref DPmap.empty
 
 (* These are the _ordered_ sets of loaded, imported and exported libraries *)
-let libraries_loaded_list = Summary.ref [] ~name:"LIBRARY-LOAD"
+let libraries_loaded_list = Summary.ref [] ~stage:Summary.Stage.Synterp ~name:"LIBRARY-LOAD"
+
+let loaded_native_libraries = Summary.ref DPset.empty ~stage:Summary.Stage.Interp ~name:"NATIVE-LIBRARY-LOAD"
+
+(* Opaque proof tables *)
 
 (* various requests to the tables *)
 
 let find_library dir =
-  DPmap.find dir !libraries_table
+  DPmap.find_opt dir !libraries_table
 
 let try_find_library dir =
-  try find_library dir
-  with Not_found ->
-    user_err ~hdr:"Library.find_library"
-      (str "Unknown library " ++ DirPath.print dir)
+  match find_library dir with
+  | Some lib -> lib
+  | None ->
+    user_err
+      (str "Unknown library " ++ DirPath.print dir ++ str ".")
+
+let library_compiled dir =
+  let lib = Option.get @@ find_library dir in
+  lib.library_data.md_compiled
 
 let register_library_filename dir f =
   (* Not synchronized: overwrite the previous binding if one existed *)
@@ -140,12 +146,6 @@ let library_full_filename dir =
   try DPmap.find dir !libraries_filename_table
   with Not_found -> "<unavailable filename>"
 
-let overwrite_library_filenames f =
-  let f =
-    if Filename.is_relative f then Filename.concat (Sys.getcwd ()) f else f in
-  DPmap.iter (fun dir _ -> register_library_filename dir f)
-    !libraries_table
-
 let library_is_loaded dir =
   try let _ = find_library dir in true
   with Not_found -> false
@@ -153,36 +153,30 @@ let library_is_loaded dir =
   (* If a library is loaded several time, then the first occurrence must
      be performed first, thus the libraries_loaded_list ... *)
 
-let register_loaded_library m =
-  let libname = m.libsum_name in
+let register_loaded_library ~root m =
+  let libname = m.library_name in
   let rec aux = function
-    | [] ->
-        if Flags.get_native_compiler () then begin
-            let dirname = Filename.dirname (library_full_filename libname) in
-            Nativelib.enable_library dirname libname
-          end;
-        [libname]
-    | m'::_ as l when DirPath.equal m' libname -> l
+    | [] -> [root, libname]
+    | (_, m') ::_ as l when DirPath.equal m' libname -> l
     | m'::l' -> m' :: aux l' in
   libraries_loaded_list := aux !libraries_loaded_list;
   libraries_table := DPmap.add libname m !libraries_table
 
-  let loaded_libraries () = !libraries_loaded_list
+let register_native_library libname =
+  if (Global.typing_flags ()).enable_native_compiler
+    && not (DPset.mem libname !loaded_native_libraries) then begin
+      let dirname = Filename.dirname (library_full_filename libname) in
+      loaded_native_libraries := DPset.add libname !loaded_native_libraries;
+      Nativelib.enable_library dirname libname
+  end
 
-(************************************************************************)
-(** {6 Tables of opaque proof terms} *)
-
-(** We now store opaque proof terms apart from the rest of the environment.
-    See the [Indirect] constructor in [Lazyconstr.lazy_constr]. This way,
-    we can quickly load a first half of a .vo file without these opaque
-    terms, and access them only when a specific command (e.g. Print or
-    Print Assumptions) needs it. *)
+let loaded_libraries () = List.map snd !libraries_loaded_list
 
 (** Delayed / available tables of opaque terms *)
 
 type table_status =
-  | ToFetch of Opaqueproof.opaque_disk delayed
-  | Fetched of Opaqueproof.opaque_disk
+  | ToFetch of Opaques.opaque_disk delayed
+  | Fetched of Opaques.opaque_disk
 
 let opaque_tables =
   ref (DPmap.empty : table_status DPmap.t)
@@ -199,7 +193,7 @@ let access_table what tables dp i =
       let t =
         try fetch_delayed f
         with Faulty f ->
-          user_err ~hdr:"Library.access_table"
+          user_err
             (str "The file " ++ str f ++ str " (bound to " ++ str dir_path ++
              str ") is corrupted,\ncannot load some " ++
              str what ++ str " in it.\n")
@@ -207,15 +201,26 @@ let access_table what tables dp i =
       tables := DPmap.add dp (Fetched t) !tables;
       t
   in
-  Opaqueproof.get_opaque_disk i t
+  Opaques.get_opaque_disk i t
 
-let access_opaque_table dp i =
-  let what = "opaque proofs" in
-  access_table what opaque_tables dp i
+let access_opaque_table o =
+  let (sub, ci, dp, i) = Opaqueproof.repr o in
+  let ans =
+    if DirPath.equal dp (Global.current_dirpath ()) then
+      Opaques.get_current_opaque i
+    else
+      let what = "opaque proofs" in
+      access_table what opaque_tables dp i
+  in
+  match ans with
+  | None -> None
+  | Some (c, ctx) ->
+    let (c, ctx) = Discharge.cook_opaque_proofterm ci (c, ctx) in
+    let c = Mod_subst.subst_mps_list sub c in
+    Some (c, ctx)
 
 let indirect_accessor = {
-  Opaqueproof.access_proof = access_opaque_table;
-  Opaqueproof.access_discharge = Cooking.cook_constr;
+  Global.access_proof = access_opaque_table;
 }
 
 (************************************************************************)
@@ -223,82 +228,125 @@ let indirect_accessor = {
 
 type seg_sum = summary_disk
 type seg_lib = library_disk
-type seg_univ = (* true = vivo, false = vi *)
-  Univ.ContextSet.t * bool
-type seg_proofs = Opaqueproof.opaque_disk
+type seg_proofs = Opaques.opaque_disk
+type seg_vm = Vmlibrary.compiled_library
 
-let mk_library sd md digests univs =
+let mk_library sd md digests vm =
   {
     library_name     = sd.md_name;
     library_data     = md;
     library_deps     = sd.md_deps;
     library_digests  = digests;
-    library_extra_univs = univs;
+    library_info     = sd.md_info;
+    library_vm = vm;
   }
 
-let mk_summary m = {
-  libsum_name = m.library_name;
-  libsum_digests = m.library_digests;
-}
-
-let intern_from_file f =
-  let ch = raw_intern_library f in
-  let (lsd : seg_sum), digest_lsd = ObjFile.marshal_in_segment ch ~segment:"summary" in
-  let ((lmd : seg_lib), digest_lmd) = ObjFile.marshal_in_segment ch ~segment:"library" in
-  let (univs : seg_univ option), digest_u = ObjFile.marshal_in_segment ch ~segment:"universes" in
-  let ((del_opaque : seg_proofs delayed),_) = in_delayed f ch ~segment:"opaques" in
-  ObjFile.close_in ch;
-  System.check_caml_version ~caml:lsd.md_ocaml ~file:f;
-  register_library_filename lsd.md_name f;
-  add_opaque_table lsd.md_name (ToFetch del_opaque);
+let mk_intern_library sum lib digest_lib proofs vm =
+  add_opaque_table sum.md_name (ToFetch proofs);
   let open Safe_typing in
-  match univs with
-  | None -> mk_library lsd lmd (Dvo_or_vi digest_lmd) Univ.ContextSet.empty
-  | Some (uall,true) ->
-      mk_library lsd lmd (Dvivo (digest_lmd,digest_u)) uall
-  | Some (_,false) ->
-      mk_library lsd lmd (Dvo_or_vi digest_lmd) Univ.ContextSet.empty
+  mk_library sum lib (Dvo_or_vi digest_lib) vm
 
-let rec intern_library ~lib_resolver (needed, contents) (dir, f) from =
+let summary_seg : seg_sum ObjFile.id = ObjFile.make_id "summary"
+let library_seg : seg_lib ObjFile.id = ObjFile.make_id "library"
+let opaques_seg : seg_proofs ObjFile.id = ObjFile.make_id "opaques"
+let vm_seg : seg_vm ObjFile.id = Vmlibrary.vm_segment
+
+module Intern = struct
+  module Provenance = struct
+    type t = string * string
+    (** A pair of [kind, object], for example ["file",
+        "/usr/local/foo.vo"], used for error messages. *)
+  end
+
+  type t = DirPath.t -> (library_t, Exninfo.iexn) Result.t * Provenance.t
+end
+
+let intern_from_file file =
+  let ch = raw_intern_library file in
+  let lsd, digest_lsd = ObjFile.marshal_in_segment ch ~segment:summary_seg in
+  let lmd, digest_lmd = ObjFile.marshal_in_segment ch ~segment:library_seg in
+  let del_opaque, _ = in_delayed file ch ~segment:opaques_seg in
+  let vmlib = Vmlibrary.load lsd.md_name ~file ch in
+  ObjFile.close_in ch;
+  System.check_caml_version ~caml:lsd.md_ocaml ~file;
+  register_library_filename lsd.md_name file;
+  Library_info.warn_library_info ~transitive:true lsd.md_name lsd.md_info;
+  mk_intern_library lsd lmd digest_lmd del_opaque vmlib
+
+let intern_from_file file =
+  let provenance = ("file", file) in
+  (* This is a barrier to catch IO / Marshal exceptions in a more
+     structured way, as to provide better error messages. *)
+  (match CErrors.to_result ~f:intern_from_file file with
+   | Ok res -> Ok res
+   | Error iexn -> Error iexn), provenance
+
+let check_library_expected_name ~provenance dir library_name =
+  if not (DirPath.equal dir library_name) then
+    let kind, obj = provenance in
+    user_err
+      (str "The " ++ str kind ++ str " " ++ str obj ++ str " contains library" ++ spc () ++
+       DirPath.print library_name ++ spc () ++ str "and not library" ++
+       spc() ++ DirPath.print dir ++ str ".")
+
+exception InternError of { exn : exn; provenance : Intern.Provenance.t; dir : DirPath.t }
+
+let () = CErrors.register_handler (function
+    | InternError { exn; provenance; dir } ->
+      let err = CErrors.print exn in
+      Some (Pp.(str "Error when parsing .vo (from " ++ str (fst provenance) ++ str " " ++
+                str (snd provenance) ++ str ") for library " ++ Names.DirPath.print dir ++ str ": " ++ err))
+    | _ -> None)
+
+let error_in_intern provenance dir (exn, info) =
+  Exninfo.iraise (InternError { exn; provenance; dir }, info)
+
+(* Returns the digest of a library, checks both caches to see what is loaded *)
+let rec intern_library ~root ~intern (needed, contents as acc) dir =
   (* Look if in the current logical environment *)
-  try (find_library dir).libsum_digests, (needed, contents)
-  with Not_found ->
-  (* Look if already listed and consequently its dependencies too *)
-  try (DPmap.find dir contents).library_digests, (needed, contents)
-  with Not_found ->
-  Feedback.feedback(Feedback.FileDependency (from, DirPath.to_string dir));
-  (* [dir] is an absolute name which matches [f] which must be in loadpath *)
-  let f = match f with Some f -> f | None -> lib_resolver dir in
-  let m = intern_from_file f in
-  if not (DirPath.equal dir m.library_name) then
-    user_err ~hdr:"load_physical_library"
-      (str "The file " ++ str f ++ str " contains library" ++ spc () ++
-       DirPath.print m.library_name ++ spc () ++ str "and not library" ++
-       spc() ++ DirPath.print dir);
-  Feedback.feedback (Feedback.FileLoaded(DirPath.to_string dir, f));
-  m.library_digests, intern_library_deps ~lib_resolver (needed, contents) dir m f
+  match find_library dir with
+  | Some loaded_lib -> loaded_lib, acc
+  | None ->
+    (* Look if already listed in the accumulator *)
+    match DPmap.find_opt dir contents with
+    | Some interned_lib ->
+      interned_lib, acc
+    | None ->
+      (* We intern the library, and then intern the deps *)
+      match intern dir with
+      | Ok m, provenance ->
+        check_library_expected_name ~provenance dir m.library_name;
+        m, intern_library_deps ~root ~intern acc dir m
+      | Error iexn, provenance ->
+        error_in_intern provenance dir iexn
 
-and intern_library_deps ~lib_resolver libs dir m from =
+and intern_library_deps ~root ~intern libs dir m =
   let needed, contents =
-    Array.fold_left (intern_mandatory_library ~lib_resolver dir from)
+    Array.fold_left (intern_mandatory_library ~intern dir)
       libs m.library_deps in
-  (dir :: needed, DPmap.add dir m contents )
+  ((root, dir) :: needed, DPmap.add dir m contents )
 
-and intern_mandatory_library ~lib_resolver caller from libs (dir,d) =
-  let digest, libs = intern_library ~lib_resolver libs (dir, None) (Some from) in
-  if not (Safe_typing.digest_match ~actual:digest ~required:d) then
-    user_err (str "Compiled library " ++ DirPath.print caller ++
-    str " (in file " ++ str from ++ str ") makes inconsistent assumptions \
-    over library " ++ DirPath.print dir);
+and intern_mandatory_library ~intern caller libs (dir,d) =
+  let m, libs = intern_library ~root:false ~intern libs dir in
+  let digest = m.library_digests in
+  let () = if not (Safe_typing.digest_match ~actual:digest ~required:d) then
+    let from = library_full_filename caller in
+    user_err
+      (str "Compiled library " ++ DirPath.print caller ++
+       str " (in file " ++ str from ++
+       str ") makes inconsistent assumptions over library " ++
+       DirPath.print dir)
+  in
   libs
 
-let rec_intern_library ~lib_resolver libs (dir, f) =
-  let _, libs = intern_library ~lib_resolver libs (dir, Some f) None in
+let rec_intern_library ~intern libs (loc, dir) =
+  let m, libs = intern_library ~root:true ~intern libs dir in
+  Library_info.warn_library_info m.library_name m.library_info;
   libs
 
 let native_name_from_filename f =
   let ch = raw_intern_library f in
-  let (lmd : seg_sum), digest_lmd = ObjFile.marshal_in_segment ch ~segment:"summary" in
+  let lmd, digest_lmd = ObjFile.marshal_in_segment ch ~segment:summary_seg in
   Nativecode.mod_uid_of_dirpath lmd.md_name
 
 (**********************************************************************)
@@ -320,104 +368,110 @@ let native_name_from_filename f =
 
 let register_library m =
   let l = m.library_data in
-  Declaremods.register_library
+  Declaremods.Interp.register_library
     m.library_name
     l.md_compiled
     l.md_objects
     m.library_digests
-    m.library_extra_univs;
-  register_loaded_library (mk_summary m)
+    m.library_vm
+  ;
+  register_native_library m.library_name
+
+let register_library_syntax (root, m) =
+  let l = m.library_data in
+  Declaremods.Synterp.register_library
+    m.library_name
+    l.md_syntax_objects;
+  register_loaded_library ~root m
 
 (* Follow the semantics of Anticipate object:
    - called at module or module type closing when a Require occurs in
      the module or module type
    - not called from a library (i.e. a module identified with a file) *)
-let load_require _ (_,(needed,modl,_)) =
+let load_require _ needed =
   List.iter register_library needed
-
-let open_require i (_,(_,modl,export)) =
-  Option.iter (fun export ->
-      let mpl = List.map (fun m -> Unfiltered, MPfile m) modl in
-      (* TODO support filters in Require *)
-      Declaremods.import_modules ~export mpl)
-    export
 
   (* [needed] is the ordered list of libraries not already loaded *)
 let cache_require o =
-  load_require 1 o;
-  open_require 1 o
+  load_require 1 o
 
-let discharge_require (_,o) = Some o
+let discharge_require o = Some o
 
 (* open_function is never called from here because an Anticipate object *)
 
-type require_obj = library_t list * DirPath.t list * bool option
+type require_obj = library_t list
 
 let in_require : require_obj -> obj =
-  declare_object {(default_object "REQUIRE") with
-       cache_function = cache_require;
-       load_function = load_require;
-       open_function = (fun _ _ -> assert false);
-       discharge_function = discharge_require;
-       classify_function = (fun o -> Anticipate o) }
+  declare_object
+    {(default_object "REQUIRE") with
+     cache_function = cache_require;
+     load_function = load_require;
+     open_function = (fun _ _ -> assert false);
+     discharge_function = discharge_require;
+     classify_function = (fun o -> Anticipate) }
+
+let load_require_syntax _ needed =
+  List.iter register_library_syntax needed
+
+let cache_require_syntax o =
+  load_require_syntax 1 o
+
+let discharge_require_syntax o = Some o
+
+(* open_function is never called from here because an Anticipate object *)
+
+type require_obj_syntax = (bool * library_t) list
+
+let in_require_syntax : require_obj_syntax -> obj =
+  declare_object
+    {(default_object "REQUIRE-SYNTAX") with
+     object_stage = Summary.Stage.Synterp;
+     cache_function = cache_require_syntax;
+     load_function = load_require_syntax;
+     open_function = (fun _ _ -> assert false);
+     discharge_function = discharge_require_syntax;
+     classify_function = (fun o -> Anticipate) }
 
 (* Require libraries, import them if [export <> None], mark them for export
    if [export = Some true] *)
 
 let warn_require_in_module =
-  CWarnings.create ~name:"require-in-module" ~category:"fragile"
+  CWarnings.create ~name:"require-in-module" ~category:CWarnings.CoreCategories.fragile
     (fun () -> strbrk "Use of “Require” inside a module is fragile." ++ spc() ++
                strbrk "It is not recommended to use this functionality in finished proof scripts.")
 
-let require_library_from_dirpath ~lib_resolver modrefl export =
-  let needed, contents = List.fold_left (rec_intern_library ~lib_resolver) ([], DPmap.empty) modrefl in
-  let needed = List.rev_map (fun dir -> DPmap.find dir contents) needed in
-  let modrefl = List.map fst modrefl in
-  if Lib.is_module_or_modtype () then
-    begin
-      warn_require_in_module ();
-      add_anonymous_leaf (in_require (needed,modrefl,None));
-      Option.iter (fun export ->
-          (* TODO import filters *)
-          List.iter (fun m -> Declaremods.import_module Unfiltered ~export (MPfile m)) modrefl)
-        export
-    end
-  else
-    add_anonymous_leaf (in_require (needed,modrefl,export));
-  ()
+let require_library_from_dirpath needed =
+  if Lib.is_module_or_modtype () then warn_require_in_module ();
+  Lib.add_leaf (in_require needed)
 
-(************************************************************************)
-(*s Initializing the compilation of a library. *)
-
-let load_library_todo f =
-  let ch = raw_intern_library f in
-  let (s0 : seg_sum), _ = ObjFile.marshal_in_segment ch ~segment:"summary" in
-  let (s1 : seg_lib), _ = ObjFile.marshal_in_segment ch ~segment:"library" in
-  let (s2 : seg_univ option), _ = ObjFile.marshal_in_segment ch ~segment:"universes" in
-  let tasks, _ = ObjFile.marshal_in_segment ch ~segment:"tasks" in
-  let (s4 : seg_proofs), _ = ObjFile.marshal_in_segment ch ~segment:"opaques" in
-  ObjFile.close_in ch;
-  System.check_caml_version ~caml:s0.md_ocaml ~file:f;
-  if tasks = None then user_err ~hdr:"restart" (str"not a .vio file");
-  if s2 = None then user_err ~hdr:"restart" (str"not a .vio file");
-  if snd (Option.get s2) then user_err ~hdr:"restart" (str"not a .vio file");
-  s0, s1, Option.get s2, Option.get tasks, s4
+let require_library_syntax_from_dirpath ~intern modrefl =
+  let needed, contents = List.fold_left (rec_intern_library ~intern) ([], DPmap.empty) modrefl in
+  let needed = List.rev_map (fun (root, dir) -> root, DPmap.find dir contents) needed in
+  Lib.add_leaf (in_require_syntax needed);
+  List.map snd needed
 
 (************************************************************************)
 (*s [save_library dir] ends library [dir] and save it to the disk. *)
 
 let current_deps () =
-  let map name =
-    let m = try_find_library name in
-    (name, m.libsum_digests)
+  (* Only keep the roots of the dependency DAG *)
+  let map (root, m) =
+    if root then
+      let m = try_find_library m in
+      Some (m.library_name, m.library_digests)
+    else None
   in
-  List.map map !libraries_loaded_list
+  List.map_filter map !libraries_loaded_list
 
 let error_recursively_dependent_library dir =
   user_err
     (strbrk "Unable to use logical name " ++ DirPath.print dir ++
      strbrk " to save current library because" ++
      strbrk " it already depends on a library of this name.")
+
+type 'doc todo_proofs =
+ | ProofsTodoNone (* for .vo *)
+ | ProofsTodoSomeEmpty of Future.UUIDSet.t (* for .vos *)
 
 (* We now use two different digests in a .vo file. The first one
    only covers half of the file, without the opaque table. It is
@@ -430,14 +484,13 @@ let error_recursively_dependent_library dir =
 (* Security weakness: file might have been changed on disk between
    writing the content and computing the checksum... *)
 
-let save_library_base f sum lib univs tasks proofs =
+let save_library_base f sum lib proofs vmlib =
   let ch = raw_extern_library f in
   try
-    ObjFile.marshal_out_segment ch ~segment:"summary" (sum    : seg_sum);
-    ObjFile.marshal_out_segment ch ~segment:"library" (lib    : seg_lib);
-    ObjFile.marshal_out_segment ch ~segment:"universes" (univs  : seg_univ option);
-    ObjFile.marshal_out_segment ch ~segment:"tasks" (tasks  : 'tasks option);
-    ObjFile.marshal_out_segment ch ~segment:"opaques" (proofs : seg_proofs);
+    ObjFile.marshal_out_segment ch ~segment:summary_seg sum;
+    ObjFile.marshal_out_segment ch ~segment:library_seg lib;
+    ObjFile.marshal_out_segment ch ~segment:opaques_seg proofs;
+    ObjFile.marshal_out_segment ch ~segment:vm_seg vmlib;
     ObjFile.close_out ch
   with reraise ->
     let reraise = Exninfo.capture reraise in
@@ -446,64 +499,61 @@ let save_library_base f sum lib univs tasks proofs =
     Sys.remove f;
     Exninfo.iraise reraise
 
-type 'document todo_proofs =
- | ProofsTodoNone (* for .vo *)
- | ProofsTodoSomeEmpty of Future.UUIDSet.t (* for .vos *)
- | ProofsTodoSome of Future.UUIDSet.t * ((Future.UUID.t,'document) Stateid.request * bool) list (* for .vio *)
+(* This is the basic vo save structure *)
+let save_library_struct ~output_native_objects dir =
+  let md_compiled, md_objects, md_syntax_objects, vmlib, ast, info =
+    Declaremods.end_library ~output_native_objects dir in
+  let sd =
+    { md_name = dir
+    ; md_deps = Array.of_list (current_deps ())
+    ; md_ocaml = Coq_config.caml_version
+    ; md_info = info
+    } in
+  let md =
+    { md_compiled
+    ; md_syntax_objects
+    ; md_objects
+    } in
+  if Array.exists (fun (d,_) -> DirPath.equal d dir) sd.md_deps then
+    error_recursively_dependent_library dir;
+  sd, md, vmlib, ast
 
-let save_library_to todo_proofs ~output_native_objects dir f otab =
+let save_library dir : library_t =
+  let sd, md, vmlib, _ast = save_library_struct ~output_native_objects:false dir in
+  (* Digest for .vo files is on the md part, for now we also play it
+     safe when we work on-memory and compute the digest for the lib
+     part, even if that's slow. Better safe than sorry. *)
+  let digest = Marshal.to_string md [] |> Digest.string in
+  mk_library sd md (Dvo_or_vi digest) (Vmlibrary.inject vmlib)
+
+let save_library_to todo_proofs ~output_native_objects dir f =
   assert(
     let expected_extension = match todo_proofs with
       | ProofsTodoNone -> ".vo"
       | ProofsTodoSomeEmpty _ -> ".vos"
-      | ProofsTodoSome _ -> ".vio"
       in
     Filename.check_suffix f expected_extension);
   let except = match todo_proofs with
     | ProofsTodoNone -> Future.UUIDSet.empty
     | ProofsTodoSomeEmpty except -> except
-    | ProofsTodoSome (except,l) -> except
     in
-  let cenv, seg, ast = Declaremods.end_library ~output_native_objects ~except dir in
-  let opaque_table, f2t_map = Opaqueproof.dump ~except otab in
-  let tasks, utab =
-    match todo_proofs with
-    | ProofsTodoNone -> None, None
-    | ProofsTodoSomeEmpty _except ->
-      None, Some (Univ.ContextSet.empty,false)
-    | ProofsTodoSome (_except, tasks) ->
-      let tasks =
-        List.map Stateid.(fun (r,b) ->
-            try { r with uuid = Some (Future.UUIDMap.find r.uuid f2t_map) }, b
-            with Not_found -> assert b; { r with uuid = None }, b)
-          tasks in
-      Some tasks,
-      Some (Univ.ContextSet.empty,false)
-    in
-    let sd = {
-    md_name = dir;
-    md_deps = Array.of_list (current_deps ());
-    md_ocaml = Coq_config.caml_version;
-  } in
-  let md = {
-    md_compiled = cenv;
-    md_objects = seg;
-  } in
-  if Array.exists (fun (d,_) -> DirPath.equal d dir) sd.md_deps then
-    error_recursively_dependent_library dir;
+  (* Ensure that the call below is performed with all opaques joined *)
+  let () = Opaques.Summary.join ~except () in
+  let opaque_table, f2t_map = Opaques.dump ~except () in
+  let () = assert (not (Future.UUIDSet.is_empty except) ||
+    Safe_typing.is_joined_environment (Global.safe_env ()))
+  in
+  let sd, md, vmlib, ast = save_library_struct ~output_native_objects dir in
   (* Writing vo payload *)
-  save_library_base f sd md utab tasks opaque_table;
+  save_library_base f sd md opaque_table vmlib;
   (* Writing native code files *)
   if output_native_objects then
     let fn = Filename.dirname f ^"/"^ Nativecode.mod_uid_of_dirpath dir in
     Nativelib.compile_library ast fn
 
-let save_library_raw f sum lib univs proofs =
-  save_library_base f sum lib (Some univs) None proofs
-
 let get_used_load_paths () =
   String.Set.elements
-    (List.fold_left (fun acc m -> String.Set.add
+    (List.fold_left (fun acc (root, m) -> String.Set.add
       (Filename.dirname (library_full_filename m)) acc)
        String.Set.empty !libraries_loaded_list)
 

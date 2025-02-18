@@ -7,15 +7,20 @@ let constants = ref ([] : EConstr.t list)
  c_U *)
 let collect_constants () =
   if (!constants = []) then
+    let open Names in
     let open EConstr in
     let open UnivGen in
-    let find_reference = Coqlib.find_reference [@ocaml.warning "-3"] in
-    let gr_H = find_reference "Tuto3" ["Tuto3"; "Data"] "pack" in
-    let gr_M = find_reference "Tuto3" ["Tuto3"; "Data"] "packer" in
-    let gr_R = find_reference "Tuto3" ["Coq"; "Init"; "Datatypes"] "pair" in
-    let gr_P = find_reference "Tuto3" ["Coq"; "Init"; "Datatypes"] "prod" in
-    let gr_U = find_reference "Tuto3" ["Tuto3"; "Data"] "uncover" in
-    constants := List.map (fun x -> of_constr (constr_of_monomorphic_global x))
+    let find_reference path id =
+      let path = DirPath.make (List.rev_map Id.of_string path) in
+      let fp = Libnames.make_path path (Id.of_string id) in
+      Nametab.global_of_path fp
+    in
+    let gr_H = find_reference ["Tuto3"; "Data"] "pack" in
+    let gr_M = find_reference ["Tuto3"; "Data"] "packer" in
+    let gr_R = find_reference ["Corelib"; "Init"; "Datatypes"] "pair" in
+    let gr_P = find_reference ["Corelib"; "Init"; "Datatypes"] "prod" in
+    let gr_U = find_reference ["Tuto3"; "Data"] "uncover" in
+    constants := List.map (fun x -> of_constr (constr_of_monomorphic_global (Global.env ()) x))
       [gr_H; gr_M; gr_R; gr_P; gr_U];
     !constants
   else
@@ -104,8 +109,8 @@ let get_type_of_hyp env id =
 
 let repackage i h_hyps_id = Goal.enter begin fun gl ->
     let env = Goal.env gl in
-    let sigma = Tacmach.New.project gl in
-    let concl = Tacmach.New.pf_concl gl in
+    let sigma = Tacmach.project gl in
+    let concl = Tacmach.pf_concl gl in
     let (ty1 : EConstr.t) = get_type_of_hyp env i in
     let (packed_ty2 : EConstr.t) = get_type_of_hyp env h_hyps_id in
     let ty2 = unpack_type sigma packed_ty2 in

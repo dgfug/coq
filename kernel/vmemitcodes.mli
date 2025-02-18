@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -15,23 +15,20 @@ type reloc_info =
   | Reloc_annot of annot_switch
   | Reloc_const of structured_constant
   | Reloc_getglobal of Constant.t
-  | Reloc_proj_name of Projection.Repr.t
-  | Reloc_caml_prim of CPrimitives.t
+  | Reloc_caml_prim of caml_prim
 
+type to_patch
 type patches
-type emitcodes
 
-val patch : emitcodes -> patches -> (reloc_info -> int) -> Vmvalues.tcode
+val patch : (to_patch * patches) -> (reloc_info -> int) -> Vmvalues.tcode * fv
 
-type to_patch = emitcodes * patches * fv
-
-type body_code =
-  | BCdefined of to_patch
+type 'a pbody_code =
+  | BCdefined of bool array * 'a * patches
   | BCalias of Constant.t
   | BCconstant
 
+type body_code = to_patch pbody_code
 
-val subst_body_code : Mod_subst.substitution -> body_code -> body_code
+val subst_body_code : Mod_subst.substitution -> 'a pbody_code -> 'a pbody_code
 
-val to_memory : bytecodes * bytecodes * fv -> to_patch
-               (** init code, fun code, fv *)
+val to_memory : fv -> bytecodes -> to_patch * patches

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,49 +12,40 @@ open Names
 open EConstr
 open Formula
 
-module CM: CSig.MapS with type key=Constr.t
+type h_item = GlobRef.t * Unify.Item.t option
 
-type h_item = GlobRef.t * (int*Constr.t) option
+type t
 
-module History: Set.S with type elt = h_item
+val has_fuel : t -> bool
 
-val cm_add : Evd.evar_map -> constr -> GlobRef.t -> GlobRef.t list CM.t ->
-  GlobRef.t list CM.t
+val make_simple_atoms : t -> atoms
 
-val cm_remove : Evd.evar_map -> constr -> GlobRef.t -> GlobRef.t list CM.t ->
-  GlobRef.t list CM.t
-
-module HP: Heap.S with type elt=Formula.t
-
-type t = {redexes:HP.t;
-          context: GlobRef.t list CM.t;
-          latoms:constr list;
-          gl:types;
-          glatom:constr option;
-          cnt:counter;
-          history:History.t;
-          depth:int}
+val iter_redexes : (Formula.any_formula -> unit) -> t -> unit
 
 val deepen: t -> t
 
-val record: h_item -> t -> t
+val record: Environ.env -> h_item -> t -> t
 
 val lookup: Environ.env -> Evd.evar_map -> h_item -> t -> bool
 
-val add_formula : Environ.env -> Evd.evar_map -> side -> GlobRef.t -> constr -> t -> t
+val add_concl : flags:flags -> Environ.env -> Evd.evar_map -> constr -> t -> t
 
-val re_add_formula_list : Evd.evar_map -> Formula.t list -> t -> t
+val add_formula : flags:flags -> hint:bool -> Environ.env -> Evd.evar_map -> GlobRef.t -> constr -> t -> t
 
-val find_left : Evd.evar_map -> constr -> t -> GlobRef.t
+val re_add_formula_list : Evd.evar_map -> Formula.any_formula list -> t -> t
 
-val take_formula : Evd.evar_map -> t -> Formula.t * t
+val find_left : Evd.evar_map -> atom -> t -> GlobRef.t
+
+val find_goal : Evd.evar_map -> t -> GlobRef.t
+
+val take_formula : Environ.env -> Evd.evar_map -> t -> Formula.any_formula * t
 
 val empty_seq : int -> t
 
-val extend_with_ref_list : Environ.env -> Evd.evar_map -> GlobRef.t list ->
+val extend_with_ref_list : flags:flags -> Environ.env -> Evd.evar_map -> GlobRef.t list ->
   t -> t * Evd.evar_map
 
-val extend_with_auto_hints : Environ.env -> Evd.evar_map -> Hints.hint_db_name list ->
+val extend_with_auto_hints : flags:flags -> Environ.env -> Evd.evar_map -> Hints.hint_db_name list ->
   t -> t * Evd.evar_map
 
-val print_cmap: GlobRef.t list CM.t -> Pp.t
+val state : t -> Env.t

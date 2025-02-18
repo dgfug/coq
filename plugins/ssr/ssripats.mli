@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -76,11 +76,9 @@ val ssrscasetoptac : unit Proofview.tactic
  * ipat, and in ssrfwd for the integration with [have] *)
 val ssrabstract : ssrdgens -> unit Proofview.tactic
 
-(* Handling of [[:var]], needed in ssrfwd. Since ssrfwd is still outside the
- * tactic monad we export code with the V82 interface *)
 module Internal : sig
 val examine_abstract :
-  EConstr.t -> Goal.goal Evd.sigma -> EConstr.types * EConstr.t array
-val pf_find_abstract_proof :
-  bool -> Goal.goal Evd.sigma -> Constr.constr -> Evar.t
+  Environ.env -> Evd.evar_map -> EConstr.t -> Evd.evar_map * (EConstr.types * EConstr.t array)
+val find_abstract_proof :
+  Environ.env -> Evd.evar_map -> bool -> EConstr.constr -> Evar.t
 end

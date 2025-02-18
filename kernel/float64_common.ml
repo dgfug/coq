@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -116,17 +116,15 @@ let frshiftexp f =
 let ldshiftexp f e = ldexp f (Uint63.to_int_min e (2 * eshift) - eshift)
 [@@ocaml.inline always]
 
-external next_up : float -> float = "coq_next_up_byte" "coq_next_up"
+external next_up : float -> float = "rocq_next_up_byte" "rocq_next_up"
 [@@unboxed] [@@noalloc]
 
-external next_down : float -> float = "coq_next_down_byte" "coq_next_down"
+external next_down : float -> float = "rocq_next_down_byte" "rocq_next_down"
 [@@unboxed] [@@noalloc]
 
 let equal f1 f2 =
-  match classify_float f1 with
-  | FP_normal | FP_subnormal | FP_infinite -> (f1 = f2)
-  | FP_nan -> is_nan f2
-  | FP_zero -> f1 = f2 && 1. /. f1 = 1. /. f2 (* OCaml consider 0. = -0. *)
+  if f1 = f2 then f1 <> 0. || sign f1 = sign f2 (* OCaml consider 0. = -0. *)
+  else is_nan f1 && is_nan f2
 [@@ocaml.inline always]
 
 let hash =

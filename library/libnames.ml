@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,8 +8,6 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
-open Pp
-open CErrors
 open Util
 open Names
 
@@ -58,14 +56,16 @@ let add_dirpath_suffix p id = DirPath.make (id :: DirPath.repr p)
 let parse_dir s =
   let len = String.length s in
   let rec decoupe_dirs dirs n =
-    if Int.equal n len && n > 0 then user_err Pp.(str @@ s ^ " is an invalid path.");
+    if Int.equal n len && n > 0 then
+      CErrors.user_err Pp.(str @@ s ^ " is an invalid path.");
     if n >= len then dirs else
     let pos =
       try
         String.index_from s n '.'
       with Not_found -> len
     in
-    if Int.equal pos n then user_err Pp.(str @@ s ^ " is an invalid path.");
+    if Int.equal pos n then
+      CErrors.user_err Pp.(str @@ s ^ " is an invalid path.");
     let dir = String.sub s n (pos-n) in
     decoupe_dirs ((Id.of_string dir)::dirs) (pos+1)
   in
@@ -86,6 +86,8 @@ type full_path = {
 
 let dirpath sp = sp.dirpath
 let basename sp = sp.basename
+
+let full_path_is_ident sp = DirPath.is_empty (dirpath sp)
 
 let make_path pa id = { dirpath = pa; basename = id }
 
@@ -123,7 +125,7 @@ let path_of_string s =
   with
     | Invalid_argument _ -> invalid_arg "path_of_string"
 
-let pr_path sp = str (string_of_path sp)
+let pr_path sp = Pp.str (string_of_path sp)
 
 (*s qualified names *)
 type qualid_r = full_path
@@ -133,6 +135,12 @@ let make_qualid ?loc pa id = CAst.make ?loc (make_path pa id)
 let repr_qualid {CAst.v=qid} = repr_path qid
 
 let qualid_eq qid1 qid2 = eq_full_path qid1.CAst.v qid2.CAst.v
+
+let is_qualid_suffix_of_full_path
+    CAst.{v={dirpath=dirpath1;basename=basename1}} {dirpath=dirpath2;basename=basename2} =
+  let dir1 = DirPath.repr dirpath1 in
+  let dir2 = DirPath.repr dirpath2 in
+  Id.equal basename1 basename2 && List.prefix_of Id.equal dir1 dir2
 
 let string_of_qualid qid = string_of_path qid.CAst.v
 let pr_qualid qid = pr_path qid.CAst.v
@@ -148,7 +156,7 @@ let qualid_of_dirpath ?loc dir =
 let qualid_of_lident lid = qualid_of_ident ?loc:lid.CAst.loc lid.CAst.v
 
 let qualid_is_ident qid =
-  DirPath.is_empty qid.CAst.v.dirpath
+  full_path_is_ident qid.CAst.v
 
 let qualid_basename qid =
   qid.CAst.v.basename
@@ -160,10 +168,8 @@ let idset_mem_qualid qid s =
   qualid_is_ident qid && Id.Set.mem (qualid_basename qid) s
 
 (* Default paths *)
-(* todo: contrary to the comment, this does not give "Top" *)
-let default_library = Names.DirPath.initial (* = ["Top"] *)
 
 (*s Roots of the space of absolute names *)
-let coq_string = "Coq"
-let coq_root = Id.of_string coq_string
+let rocq_init_string = "Corelib"
+let rocq_init_root = Id.of_string rocq_init_string
 let default_root_prefix = DirPath.empty

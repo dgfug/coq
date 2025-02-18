@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,7 +8,7 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
-open Pcoq
+open Procq
 open Genredexpr
 open Vernacexpr
 
@@ -16,15 +16,13 @@ type proof_mode
 
 module Vernac_ :
   sig
-    val gallina : vernac_expr Entry.t
+    val gallina : synpure_vernac_expr Entry.t
     val gallina_ext : vernac_expr Entry.t
     val command : vernac_expr Entry.t
     val syntax : vernac_expr Entry.t
     val vernac_control : vernac_control Entry.t
-    val inductive_definition : (inductive_expr * decl_notation list) Entry.t
+    val inductive_or_record_definition : (inductive_expr * notation_declaration list) Entry.t
     val fix_definition : fixpoint_expr Entry.t
-    val rec_definition : fixpoint_expr Entry.t
-      [@@deprecated "Deprecated in 8.13; use 'fix_definition' instead"]
     val noedit_mode : vernac_expr Entry.t
     val command_entry : vernac_expr Entry.t
     val main_entry : vernac_control option Entry.t
@@ -55,3 +53,4 @@ val main_entry : proof_mode option -> vernac_control option Entry.t
 val register_proof_mode : string -> Vernacexpr.vernac_expr Entry.t -> proof_mode
 val lookup_proof_mode : string -> proof_mode option
 val proof_mode_to_string : proof_mode -> string
+val list_proof_modes : unit -> Vernacexpr.vernac_expr Entry.t CString.Map.t

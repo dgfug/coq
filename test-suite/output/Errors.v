@@ -37,3 +37,16 @@ Fail Goal forall f P,  P (f 0).
 
 Definition t := unit.
 End M.
+
+Module Change.
+
+Goal 0 = 0.
+Fail change 0 with true.
+Abort.
+
+Goal nat = nat.
+  pose (nat : Type) as n.
+  Fail change nat with n. (* Error: Replacement would lead to an ill-typed term. *)
+Abort.
+
+End Change.

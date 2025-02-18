@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -10,7 +10,6 @@
 
 open Names
 open Libnames
-open Globnames
 
 (** This module contains the tables for globalization. *)
 
@@ -20,7 +19,7 @@ open Globnames
     - 1a) internal kernel names: [kernel_name], [constant], [inductive],
          [module_path], [DirPath.t]
 
-    - 1b) other internal names: [global_reference], [syndef_name],
+    - 1b) other internal names: [global_reference], [abbreviation],
         [extended_global_reference], [global_dir_reference], ...
 
     - 2) full, non ambiguous user names: [full_path]
@@ -58,16 +57,15 @@ open Globnames
 *)
 
 (** Object prefix morally contains the "prefix" naming of an object to
-   be stored by [library], where [obj_dir] is the "absolute" path,
-   [obj_mp] is the current "module" prefix and [obj_sec] is the
-   "section" prefix.
+   be stored by [library], where [obj_dir] is the "absolute" path and
+   [obj_mp] is the current "module" prefix.
 
     Thus, for an object living inside [Module A. Section B.] the
    prefix would be:
 
-    [ { obj_dir = "A.B"; obj_mp = "A"; obj_sec = "B" } ]
+    [ { obj_dir = "A.B"; obj_mp = "A"; } ]
 
-    Note that both [obj_dir] and [obj_sec] are "paths" that is to say,
+    Note that [obj_dir] is a "path" that is to say,
    as opposed to [obj_mp] which is a single module name.
 
  *)
@@ -81,10 +79,9 @@ val eq_op : object_prefix -> object_prefix -> bool
 (** to this type are mapped [DirPath.t]'s in the nametab *)
 module GlobDirRef : sig
   type t =
-    | DirOpenModule of object_prefix
-    | DirOpenModtype of object_prefix
-    | DirOpenSection of object_prefix
-    | DirModule of object_prefix
+    | DirOpenModule of ModPath.t
+    | DirOpenModtype of ModPath.t
+    | DirOpenSection of DirPath.t
   val equal : t -> t -> bool
 end
 
@@ -107,14 +104,19 @@ type visibility = Until of int | Exactly of int
 
 val map_visibility : (int -> int) -> visibility -> visibility
 
-val push : visibility -> full_path -> GlobRef.t -> unit
+val push : ?user_warns:Globnames.extended_global_reference UserWarn.with_qf -> visibility -> full_path -> GlobRef.t -> unit
 val push_modtype : visibility -> full_path -> ModPath.t -> unit
+val push_module : visibility -> DirPath.t -> ModPath.t -> unit
 val push_dir : visibility -> DirPath.t -> GlobDirRef.t -> unit
-val push_syndef : visibility -> full_path -> syndef_name -> unit
+val push_abbreviation : ?user_warns:Globnames.extended_global_reference UserWarn.with_qf -> visibility -> full_path -> Globnames.abbreviation -> unit
 
-module UnivIdMap : CMap.ExtS with type key = Univ.Level.UGlobal.t
+val push_universe : visibility -> full_path -> Univ.UGlobal.t -> unit
 
-val push_universe : visibility -> full_path -> Univ.Level.UGlobal.t -> unit
+(** Deprecation and user warn info *)
+
+val is_warned_xref : Globnames.extended_global_reference -> Globnames.extended_global_reference UserWarn.with_qf option
+
+val warn_user_warn_xref : ?loc:Loc.t -> Globnames.extended_global_reference UserWarn.with_qf -> Globnames.extended_global_reference -> unit
 
 (** {6 The following functions perform globalization of qualified names } *)
 
@@ -122,14 +124,20 @@ val push_universe : visibility -> full_path -> Univ.Level.UGlobal.t -> unit
    [Not_found] *)
 
 val locate : qualid -> GlobRef.t
-val locate_extended : qualid -> extended_global_reference
+val locate_extended : qualid -> Globnames.extended_global_reference
 val locate_constant : qualid -> Constant.t
-val locate_syndef : qualid -> syndef_name
+val locate_abbreviation : qualid -> Globnames.abbreviation
 val locate_modtype : qualid -> ModPath.t
 val locate_dir : qualid -> GlobDirRef.t
 val locate_module : qualid -> ModPath.t
 val locate_section : qualid -> DirPath.t
-val locate_universe : qualid -> Univ.Level.UGlobal.t
+val locate_universe : qualid -> Univ.UGlobal.t
+
+val locate_extended_nowarn : qualid -> Globnames.extended_global_reference
+
+(** Remove the binding to an abbreviation *)
+
+val remove_abbreviation : full_path -> Globnames.abbreviation -> unit
 
 (** These functions globalize user-level references into global
    references, like [locate] and co, but raise a nice error message
@@ -142,12 +150,13 @@ val global_inductive : qualid -> inductive
    if [qualid] is valid as such, it comes first in the list *)
 
 val locate_all : qualid -> GlobRef.t list
-val locate_extended_all : qualid -> extended_global_reference list
+val locate_extended_all : qualid -> Globnames.extended_global_reference list
 val locate_extended_all_dir : qualid -> GlobDirRef.t list
 val locate_extended_all_modtype : qualid -> ModPath.t list
+val locate_extended_all_module : qualid -> ModPath.t list
 
 (** Experimental completion support, API is _unstable_ *)
-val completion_canditates : qualid -> extended_global_reference list
+val completion_canditates : qualid -> Globnames.extended_global_reference list
 (** [completion_canditates qualid] will return the list of global
     references that have [qualid] as a prefix. UI usually will want to
     compose this with [shortest_qualid_of_global] *)
@@ -155,18 +164,23 @@ val completion_canditates : qualid -> extended_global_reference list
 (** Mapping a full path to a global reference *)
 
 val global_of_path : full_path -> GlobRef.t
-val extended_global_of_path : full_path -> extended_global_reference
+val extended_global_of_path : full_path -> Globnames.extended_global_reference
 
 (** {6 These functions tell if the given absolute name is already taken } *)
 
 val exists_cci : full_path -> bool
 val exists_modtype : full_path -> bool
+val exists_module : DirPath.t -> bool
 val exists_dir : DirPath.t -> bool
 val exists_universe : full_path -> bool
 
+(** {6 These functions declare (resp. return) the source location of the object if known } *)
+
+val set_cci_src_loc : Globnames.extended_global_reference -> Loc.t -> unit
+val cci_src_loc : Globnames.extended_global_reference -> Loc.t option
+
 (** {6 These functions locate qualids into full user names } *)
 
-val full_name_cci : qualid -> full_path
 val full_name_modtype : qualid -> full_path
 val full_name_module : qualid -> DirPath.t
 
@@ -177,14 +191,14 @@ val full_name_module : qualid -> DirPath.t
 (** Returns the full path bound to a global reference or syntactic
    definition, and the (full) dirpath associated to a module path *)
 
-val path_of_syndef : syndef_name -> full_path
+val path_of_abbreviation : Globnames.abbreviation -> full_path
 val path_of_global : GlobRef.t -> full_path
 val dirpath_of_module : ModPath.t -> DirPath.t
 val path_of_modtype : ModPath.t -> full_path
 
 (** A universe_id might not be registered with a corresponding user name.
     @raise Not_found if the universe was not introduced by the user. *)
-val path_of_universe : Univ.Level.UGlobal.t -> full_path
+val path_of_universe : Univ.UGlobal.t -> full_path
 
 (** Returns in particular the dirpath or the basename of the full path
    associated to global reference *)
@@ -198,17 +212,19 @@ val pr_global_env : Id.Set.t -> GlobRef.t -> Pp.t
 
 
 (** The [shortest_qualid] functions given an object with [user_name]
-   Coq.A.B.x, try to find the shortest among x, B.x, A.B.x and
-   Coq.A.B.x that denotes the same object.
+   Mylib.A.B.x, try to find the shortest among x, B.x, A.B.x and
+   Mylib.A.B.x that denotes the same object.
    @raise Not_found for unknown objects. *)
 
 val shortest_qualid_of_global : ?loc:Loc.t -> Id.Set.t -> GlobRef.t -> qualid
-val shortest_qualid_of_syndef : ?loc:Loc.t -> Id.Set.t -> syndef_name -> qualid
+val shortest_qualid_of_abbreviation : ?loc:Loc.t -> Id.Set.t -> Globnames.abbreviation -> qualid
 val shortest_qualid_of_modtype : ?loc:Loc.t -> ModPath.t -> qualid
 val shortest_qualid_of_module : ?loc:Loc.t -> ModPath.t -> qualid
 
 (** In general we have a [UnivNames.universe_binders] around rather than a [Id.Set.t] *)
-val shortest_qualid_of_universe : ?loc:Loc.t -> 'u Id.Map.t -> Univ.Level.UGlobal.t -> qualid
+val shortest_qualid_of_universe : ?loc:Loc.t -> 'u Id.Map.t -> Univ.UGlobal.t -> qualid
+
+val pr_depr_xref : Globnames.extended_global_reference -> Pp.t
 
 (** {5 Generic name handling} *)
 
@@ -236,6 +252,7 @@ module type NAMETREE = sig
   val push : visibility -> user_name -> elt -> t -> t
   val locate : qualid -> t -> elt
   val find : user_name -> t -> elt
+  val remove : user_name -> t -> t
   val exists : user_name -> t -> bool
   val user_name : qualid -> t -> user_name
   val shortest_qualid_gen : ?loc:Loc.t -> (Id.t -> bool) -> user_name -> t -> qualid
@@ -246,3 +263,10 @@ end
 
 module Make (U : UserName) (E : EqualityType) :
   NAMETREE with type user_name = U.t and type elt = E.t
+
+module Modules : sig
+  type t
+  val freeze : unit -> t
+  val unfreeze : t -> unit
+  val summary_tag : t Summary.Dyn.tag
+end

@@ -4,7 +4,7 @@
 
 cp -r theories theories2
 mv src/test_plugin.mlpack src/test_plugin.mllib
-coq_makefile -f _CoqProject -o Makefile
+rocq makefile -f _CoqProject -o Makefile
 cat Makefile.conf
 make
 make html mlihtml
@@ -25,12 +25,6 @@ sort > desired <<EOT
 ./test/.coq-native/Ntest_test.cmx
 ./test/.coq-native/Ntest_test.cmxs
 ./test/test.glob
-./test/test.cmi
-./test/test.cmx
-./test/test_aux.cmi
-./test/test_aux.cmx
-./test/test_plugin.cmxa
-./test/test_plugin.cmxs
 ./test/test.v
 ./test/test.vo
 ./test2
@@ -67,4 +61,17 @@ sort > desired <<EOT
 ./orphan_test_test2_test/mlihtml/type_Test.html
 EOT
 (coqc -config | grep -q "NATIVE_COMPILER_DEFAULT=yes") || sed -i.bak '/\.coq-native/d' desired
-exec diff -u desired actual
+diff -u desired actual
+
+(cd "$(find tmp -name coq-test-suite)" && find .) | sort > actual
+sort > desired <<EOT
+.
+./META
+./test.cmi
+./test.cmx
+./test_aux.cmi
+./test_aux.cmx
+./test_plugin.cmxa
+./test_plugin.cmxs
+EOT
+diff -u desired actual

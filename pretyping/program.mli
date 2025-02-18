@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,7 +12,7 @@ open Names
 open EConstr
 open Evd
 
-(** A bunch of Coq constants used by Program *)
+(** A bunch of Rocq constants used by Program *)
 
 val sig_typ : unit -> GlobRef.t
 val sig_intro : unit -> GlobRef.t
@@ -35,11 +35,11 @@ val coq_eq_rect : unit -> GlobRef.t
 val coq_JMeq_ind : unit -> GlobRef.t
 val coq_JMeq_refl : unit -> GlobRef.t
 
-val mk_coq_and : Evd.evar_map -> constr list -> Evd.evar_map * constr
-val mk_coq_not : Evd.evar_map -> constr -> Evd.evar_map * constr
+val mk_coq_and : Environ.env -> Evd.evar_map -> constr list -> Evd.evar_map * constr
+val mk_coq_not : Environ.env -> Evd.evar_map -> constr -> Evd.evar_map * constr
 
 (** Polymorphic application of delayed references *)
-val papp : evar_map -> (unit -> GlobRef.t) -> constr array -> evar_map * constr
+val papp : Environ.env -> evar_map -> (unit -> GlobRef.t) -> constr array -> evar_map * constr
 
 val get_proofs_transparency : unit -> bool
 val is_program_cases : unit -> bool

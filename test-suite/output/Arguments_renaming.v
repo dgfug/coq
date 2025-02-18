@@ -1,6 +1,6 @@
 (* coq-prog-args: ("-top" "Arguments_renaming") *)
 Fail Arguments eq_refl {B y}, [B] y.
-Arguments identity A _ _.
+Arguments eq A _ _.
 Arguments eq_refl A x : assert.
 Arguments eq_refl {B y}, [B] y : rename.
 
@@ -10,12 +10,12 @@ Print eq_refl.
 About eq_refl.
 
 Goal 3 = 3.
-apply @eq_refl with (B := nat).
-Undo.
-apply @eq_refl with (y := 3).
-Undo.
+Succeed apply @eq_refl with (B := nat).
+
+Succeed apply @eq_refl with (y := 3).
+
 pose (y := nat).
-apply (@eq_refl y) with (y0 := 3).
+apply (@eq_refl y) with (y := 3).
 Qed.
 
 Section Test1.

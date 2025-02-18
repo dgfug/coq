@@ -1,12 +1,10 @@
-This file documents what a Coq developer needs to know about the
-Dune-based build system. If you want to enhance the build system
-itself (or are curious about its implementation details), see
-build-system.dev.txt, and in particular its initial HISTORY section.
+This file documents what a Rocq developer needs to know about the
+Dune-based build system.
 
 About Dune
 ==========
 
-Coq can now be built using [Dune](https://github.com/ocaml/dune).
+Rocq uses the [Dune](https://github.com/ocaml/dune) build system.
 
 ## Quick Start
 
@@ -14,28 +12,34 @@ Usually, using the latest version of Dune is recommended, see the
 first line of the `dune-project` file for the minimum required
 version.
 
-If you set `COQ_USE_DUNE=1`, then you don't need to explicitly add `-f
-Makefile.dune` in any of the commands below. However, you will then
-need an explicit `-f Makefile.make` if you want to use one of the
-legacy targets.
-
 It is strongly recommended that you use the helper targets available
-in `Makefile.dune`, `make -f Makefile.dune` will display help. Note
-that dune will call configure for you if needed, so no need to call
-`./configure` in the regular development workflow.
+in `Makefile`, `make` will display help. Note that dune will call
+configure for you if needed, so no need to call `./configure` in the
+regular development workflow, unless you want to tweak options.
 
-4 common operations targets are:
 
-- `make -f Makefile.dune check` : build all ml targets as fast as possible
-- `make -f Makefile.dune world` : build a complete Coq distribution
-- `dune exec -- dev/shim/coqtop-prelude` : build and launch coqtop + prelude [equivalent to `make states`].
+2 common operations are:
+
+- `make check` : build all ml targets as fast as possible
+- `make world` : build a complete Rocq distribution
+
+For more targeted builds, you can also call `dune` directly. First,
+call `make dunestrap` to generate necessary build files (the `make`
+targets above do it automatically). Then you can use:
+
+- `dune exec -- dev/shim/coqtop` : build and launch coqtop + prelude
+  [equivalent to `make states`].
+- `dune exec -- dev/shim/coqc <args...>`: build and launch `coqc` with
+  arguments of your choice
 - `dune build $target`: where `$target` can refer to the build
   directory or the source directory [but will be placed under
   `_build`]
 
-`dune build @install` will build all the public Coq artifacts; `dune
-build` will build all the targets in the workspace, including tests
-and documentation (so this is usually not what you want).
+You need to run `make dunestrap` again if the dependencies between the
+core library .v files have changed.
+
+`dune build @install` will build all the public Rocq artifacts; `dune
+build` builds the `@default` alias, defined in the top level `dune` file.
 
 Dune puts build artifacts in a separate directory `_build/$context`;
 usual `context` is `default`; dune also produces an "install" layout
@@ -60,43 +64,91 @@ etc... You should not have to modify `dune` files in regular workflow
 unless you are adding a new binary, library, or plugin, or want to
 tweak some low-level option.
 
+## The bootstrap process / rule generation
+
+Dune is able to build all the OCaml parts of Rocq in a pretty standard
+way, using its built-in rule generation for OCaml. Public tools
+written in OCaml are distributed in the `rocq-runtime` package.
+
+The set of public `.v` files present in this repository, usually
+referred as the "Rocq prelude" are distributed in the
+`rocq-core` package. As of June 2022, Dune has a set of built-in
+rules for `.v` files which is capable of building Rocq's core
+library.
+
+However, in order to have a bit more control, we generate ourselves a
+set of custom rules using the `tools/dune_rule_gen` binary, which are
+then stored in the `theories/dune` file. This allows us to have a
+finer control over the build rules without having to bump the Dune
+version. The generation of the `theories/dune` and
+`user-contrib/*/dune` files is known as "bootstrap".
+
+The rule generation code in `tools/dune_rule_gen` is mostly derived
+from Dune's built-in rules, and it works in an straightforward way: it
+will scan a directory with `.v` files in it, and output the
+corresponding build rule. The script will look at some configuration
+values such as whether native is enabled or not and adapt rule
+generation accordingly.
+
+In the case of native, the script supports two modes, `coqc
+-native-compiler on` and `coqnative`. The default is the first, as
+currently `coqnative` incurs a 33% build time overhead on a powerful
+16-core machine.
+
+There are several modes for the rule generation script to work,
+depending on the parameter passed. As of today, it support `-async`.
+
+`-async` will pass `-async-proofs on` to `coqc`.
+
 ## Per-User Custom Settings
 
 Dune will read the file `~/.config/dune/config`; see `man
 dune-config`. Among others, you can set in this file the custom number
 of build threads `(jobs N)` and display options `(display _mode_)`.
 
-## Running binaries [coqtop / coqide]
+## Running binaries [coqtop / rocqide]
 
 Running `coqtop` directly with `dune exec -- coqtop` won't in general
 work well unless you are using `dune exec -- coqtop -noinit`. The
-`coqtop` binary doesn't depend itself on Coq's prelude, so plugins /
+`coqtop` binary doesn't depend itself on Rocq's prelude, so plugins /
 vo files may go stale if you rebuild only `coqtop`.
 
 Instead, you should use the provided "shims" for running `coqtop` and
-`coqide` in a fast build. In order to use them, do:
+`rocqide` in a fast build. In order to use them, do:
 
 ```
-$ dune exec -- dev/shim/coqtop-prelude
+$ dune exec -- dev/shim/coqtop
 ```
 
-or `quickide` / `dev/shim/coqide-prelude` for CoqIDE, etc.... See
-`dev/shim/dune` for a complete list of targets. These targets enjoy
-quick incremental compilation thanks to `-opaque` so they tend to be
-very fast while developing.
+or `quickide` / `dev/shim/rocqide` for RocqIDE, etc.... See `dev/shim/dune` for a
+complete list of targets. These targets enjoy quick incremental compilation
+thanks to `-opaque` so they tend to be very fast while developing.
 
 Note that for a fast developer build of ML files, the `check` target
 is faster, as it doesn't link the binaries and uses the non-optimizing
 compiler.
 
-If you built the full standard library with the `world` target,
+If you built the full core library with the `world` target,
 then you can run the commands in the
 `_build/install/default/bin` directories (including `coq_makefile`).
+
+## Building custom toplevels
+
+You can build custom toplevels by tweaking the `toplevel/dune` files,
+for example, to add plugins to be linked statically using the
+`(libraries ...)` field.
+
+Note that Rocq relies on a hidden Dune hack, which will add `-linkall`
+to binaries if they depend on the `findlib.dynload` library. As of
+today, `rocq-runtime.vernac` uses `findlib.dynload`, so if your toplevel
+hooks at the `rocq-runtime.vernac` or above level, you should be OK,
+otherwise add `-linkall` to Dune's `(link_flags ...)` field for your
+binary.
 
 ## Targets
 
 The default dune target is `dune build` (or `dune build @install`),
-which will scan all sources in the Coq tree and then build the whole
+which will scan all sources in the Rocq tree and then build the whole
 project, creating an "install" overlay in `_build/install/default`.
 
 You can build some other target by doing `dune build $TARGET`, where
@@ -112,13 +164,25 @@ ml files in quick mode.
 Dune also provides targets for documentation, testing, and release
 builds, please see below.
 
-## Documentation and testing targets
+## Testing and documentation targets
 
-Coq's test-suite can be run with `dune runtest`; given that `dune`
-still invokes the test-suite makefile, the environment variable
-`NJOBS` will control the value of the `-j` option that is passed to
-make; common call `NJOBS=8 dune runtest`. This will be resolved in the
-future once the test suite is ported to Dune rules.
+There are two ways to run the test suite using Dune:
+
+- After building Rocq with `make world`, you can run the test-suite
+  in place, generating output files in the source tree
+  by running `make -C test-suite` from the top directory of the source tree
+  (equivalent to running `make test-suite` from the `test-suite` directory).
+  This permits incremental usage since output files will be preserved.
+
+- You can also run the test suite in a hygienic way using `make
+  test-suite` or `dune runtest`. This is convenient for full runs from
+  scratch, for instance in CI.
+
+  Since `dune` still invokes the test-suite makefile, the
+  environment variable `NJOBS` is used to set the `-j` option
+  that is passed to make (for example, with the command
+  `NJOBS=8 dune runtest`). This use of `NJOBS` will be
+  removed when the test suite is fully ported to Dune.
 
 There is preliminary support to build the API documentation and
 reference manual in HTML format, use `dune build {@doc,@refman-html}`
@@ -134,25 +198,23 @@ You can create a developer shell with `dune utop $library`, where
 `dune utop engine` or `dune utop plugins/ltac` will launch `utop` with
 the right libraries already loaded.
 
-Note that you must invoke the `#rectypes;;` toplevel flag in order to
-use Coq libraries. The provided `.ocamlinit` file does this
-automatically.
-
 ## ocamldebug
 
-You can use `ocamldebug` with Dune; after a build, do:
+You can use [ocamldebug](https://ocaml.org/learn/tutorials/debug.html#The-OCaml-debugger) with Dune; after a build, do:
 
 ```
 dune exec -- dev/dune-dbg coqc foo.v
-(ocd) source dune_db
+(ocd) source db
 ```
 
-to start `coqc.byte foo.v`, other targets are `{checker,coqide,coqtop}`:
+to start `coqc.byte foo.v`, other targets are `{checker,rocqide,coqtop}`:
 
 ```
 dune exec -- dev/dune-dbg checker foo.vo
-(ocd) source dune_db
+(ocd) source db
 ```
+
+More info in the [wiki](https://github.com/coq/coq/wiki/OCamldebug).
 
 Unfortunately, dependency handling is not fully refined / automated,
 you may find the occasional hiccup due to libraries being renamed,
@@ -160,34 +222,27 @@ etc... Please report any issue.
 
 For running in emacs, use `coqdev-ocamldebug` from `coqdev.el`.
 
-**Note**: If you are using OCaml >= 4.08 you need to use
+### Debugging hints
 
-```
-(ocd) source dune_db_408
-```
+- To debug a failure/error/anomaly, add a breakpoint in
+  `Vernacinterp.interp_gen` (in `vernac/vernacinterp.ml`) at the with
+  clause of the "try ... with ..." block, then go "back" a few steps
+  to find where the failure/error/anomaly has been raised
 
-or
+- Alternatively, for an error or an anomaly, add breakpoints where it
+  was raised (eg in `user_err` or `anomaly` in `lib/cErrors.ml`, or
+  the functions in `pretyping/pretype_errors.ml`, or other raises
+  depending on the error)
 
-```
-(ocd) source dune_db_409
-```
-
-depending on your OCaml version. This is due to several factors:
-
-- OCaml >= 4.08 doesn't allow doubly-linking modules, however `source`
-  is not re entrant and seems to doubly-load in the default setup, see
-  https://github.com/coq/coq/issues/8952
-- OCaml >= 4.09 comes with `dynlink` already linked in so we need to
-  modify the list of modules loaded.
+- If there is a linking error (eg from "source db"), do a "dune
+  build rocq-runtime.install" and try again.
 
 ## Dropping from coqtop:
 
 The following commands should work:
 ```
-dune exec -- dev/shim/coqbyte-prelude
+dune exec -- dev/shim/coqtop.byte
 > Drop.
-# #directory "dev";;
-# #use "include";;
 ```
 
 ## Compositionality, developer and release modes.
@@ -195,25 +250,25 @@ dune exec -- dev/shim/coqbyte-prelude
 By default [in "developer mode"], Dune will compose all the packages
 present in the tree and perform a global build. That means that for
 example you could drop the `ltac2` folder under `plugins` and get a
-build using `ltac2`, that will use the current Coq version.
+build using `ltac2`, that will use the current Rocq version.
 
-This is very useful to develop plugins and Coq libraries as your
+This is very useful to develop plugins and Rocq libraries as your
 plugin will correctly track dependencies and rebuild incrementally as
 needed.
 
 However, it is not always desirable to go this way. For example, the
-current Coq source tree contains two packages [Coq and CoqIDE], and in
-the OPAM CoqIDE package we don't want to build CoqIDE against the
-local copy of Coq. For this purpose, Dune supports the `-p` option, so
-`dune build -p coqide` will build CoqIDE against the system-installed
-version of Coq libs, and use a "release" profile that for example
+current Rocq source tree contains two packages [Rocq and RocqIDE], and in
+the OPAM RocqIDE package we don't want to build RocqIDE against the
+local copy of Rocq. For this purpose, Dune supports the `-p` option, so
+`dune build -p rocqide` will build RocqIDE against the system-installed
+version of Rocq libs, and use a "release" profile that for example
 enables stronger compiler optimizations.
 
 ## OPAM file generation
 
-`.opam` files are automatically generated by Dune from the package
+`.opam` files will be automatically generated by Dune from the package
 descriptions in the `dune-project` file; see Dune's manual for more
-details.
+details. For now we have disabled this due to some bugs.
 
 ## Stanzas
 
@@ -224,14 +279,14 @@ details.
 - documentation, arbitrary blobs.
 
 The concrete options for each stanza can be seen in the Dune manual,
-but usually the default setup will work well with the current Coq
+but usually the default setup will work well with the current Rocq
 sources. Note that declaring a library or an executable won't make it
 installed by default, for that, you need to provide a "public name".
 
 ## Workspaces and Profiles
 
 Dune provides support for tree workspaces so the developer can set
-global options --- such as flags --- on all packages, or build Coq
+global options --- such as flags --- on all packages, or build Rocq
 with different OPAM switches simultaneously [for example to test
 compatibility]; for more information, please refer to the Dune manual.
 
@@ -249,7 +304,7 @@ files. We hope to solve this in the future.
 ## Planned and Advanced features
 
 Dune supports or will support extra functionality that may result very
-useful to Coq, some examples are:
+useful to Rocq, some examples are:
 
 - Cross-compilation.
 - Automatic Generation of OPAM files.
@@ -261,7 +316,7 @@ useful to Coq, some examples are:
 
   You are likely running a partial build which doesn't include
   implicitly loaded plugins / vo files. See the "Running binaries
-  [coqtop / coqide]" section above as to how to correctly call Coq's
+  [coqtop / rocqide]" section above as to how to correctly call Rocq's
   binaries.
 
 ## Dune cheat sheet

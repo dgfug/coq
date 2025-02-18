@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -15,19 +15,19 @@ Require Import Ltac.
 Require Import Datatypes.
 Require Import Logic.
 
-Declare ML Module "tauto_plugin".
+Declare ML Module "rocq-runtime.plugins.tauto".
 
 Local Ltac not_dep_intros :=
   repeat match goal with
   | |- (forall (_: ?X1), ?X2) => intro
-  | |- (Coq.Init.Logic.not _) => unfold Coq.Init.Logic.not at 1; intro
+  | |- (Corelib.Init.Logic.not _) => unfold Corelib.Init.Logic.not at 1; intro
   end.
 
 Local Ltac axioms flags :=
   match reverse goal with
     | |- ?X1 => is_unit_or_eq flags X1; constructor 1
-    | _:?X1 |- _ => is_empty flags X1; elimtype X1; assumption
-    | _:?X1 |- ?X1 => assumption
+    | H:?X1 |- _ => is_empty flags X1; elim H
+    | _ => assumption
   end.
 
 Local Ltac simplif flags :=
@@ -35,14 +35,18 @@ Local Ltac simplif flags :=
   repeat
      (match reverse goal with
       | id: ?X1 |- _ => is_conj flags X1; elim id; do 2 intro; clear id
-      | id: (Coq.Init.Logic.iff _ _) |- _ => elim id; do 2 intro; clear id
-      | id: (Coq.Init.Logic.not _) |- _ => red in id
+      | id: (Corelib.Init.Logic.iff _ _) |- _ => elim id; do 2 intro; clear id
+      | id: (Corelib.Init.Logic.not _) |- _ => red in id
       | id: ?X1 |- _ => is_disj flags X1; elim id; intro; clear id
-      | id0: (forall (_: ?X1), ?X2), id1: ?X1|- _ =>
-    (* generalize (id0 id1); intro; clear id0 does not work
-       (see Marco Maggiesi's BZ#301)
-    so we instead use Assert and exact. *)
-    assert X2; [exact (id0 id1) | clear id0]
+      | _ =>
+        (* behaves as matching [ id0: ?X1 -> ?X2, id1: ?X1 |- _ ] with
+           universe-aware conversion *)
+        find_cut ltac:(fun id0 id1 X2 =>
+          (* generalize (id0 id1); intro; clear id0 does not work
+             (see Marco Maggiesi's BZ#301)
+          so we instead use Assert and exact. *)
+          assert X2; [exact (id0 id1) | clear id0]
+          )
       | id: forall (_ : ?X1), ?X2|- _ =>
         is_unit_or_eq flags X1; cut X2;
     [ intro; clear id
@@ -52,7 +56,7 @@ Local Ltac simplif flags :=
       | id: forall (_ : ?X1), ?X2|- _ =>
         flatten_contravariant_conj flags X1 X2 id
   (* moved from "id:(?A/\?B)->?X2|-" to "?A->?B->?X2|-" *)
-      | id: forall (_: Coq.Init.Logic.iff ?X1 ?X2), ?X3|- _ =>
+      | id: forall (_: Corelib.Init.Logic.iff ?X1 ?X2), ?X3|- _ =>
         assert (forall (_: forall _:X1, X2), forall (_: forall _: X2, X1), X3)
     by (do 2 intro; apply id; split; assumption);
           clear id
@@ -60,8 +64,8 @@ Local Ltac simplif flags :=
         flatten_contravariant_disj flags X1 X2 id
   (* moved from "id:(?A\/?B)->?X2|-" to "?A->?X2,?B->?X2|-" *)
       | |- ?X1 => is_conj flags X1; split
-      | |- (Coq.Init.Logic.iff _ _) => split
-      | |- (Coq.Init.Logic.not _) => red
+      | |- (Corelib.Init.Logic.iff _ _) => split
+      | |- (Corelib.Init.Logic.not _) => red
       end;
       not_dep_intros).
 
@@ -101,11 +105,15 @@ Local Ltac tauto_gen flags := tauto_intuitionistic flags || tauto_classical flag
 Ltac tauto := with_uniform_flags ltac:(fun flags => tauto_gen flags).
 Ltac dtauto := with_power_flags ltac:(fun flags => tauto_gen flags).
 
-Ltac intuition := with_uniform_flags ltac:(fun flags => intuition_gen flags ltac:(auto with *)).
-Local Ltac intuition_then tac := with_uniform_flags ltac:(fun flags => intuition_gen flags tac).
+Ltac intuition_solver :=
+  first [solve [auto]
+        | tryif solve [auto with *] then warn_auto_with_star else idtac].
 
-Ltac dintuition := with_power_flags ltac:(fun flags => intuition_gen flags ltac:(auto with *)).
+Local Ltac intuition_then tac := with_uniform_flags ltac:(fun flags => intuition_gen flags tac).
+Ltac intuition := intuition_then ltac:(idtac;intuition_solver).
+
 Local Ltac dintuition_then tac := with_power_flags ltac:(fun flags => intuition_gen flags tac).
+Ltac dintuition := dintuition_then ltac:(idtac;intuition_solver).
 
 Tactic Notation "intuition" := intuition.
 Tactic Notation "intuition" tactic(t) := intuition_then t.

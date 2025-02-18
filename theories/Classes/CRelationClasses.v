@@ -1,6 +1,6 @@
 (* -*- coding: utf-8 -*- *)
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -17,9 +17,9 @@
    Institution: LRI, CNRS UMR 8623 - University Paris Sud
 *)
 
-Require Export Coq.Classes.Init.
-Require Import Coq.Program.Basics.
-Require Import Coq.Program.Tactics.
+Require Export Corelib.Classes.Init.
+Require Import Corelib.Program.Basics.
+Require Import Corelib.Program.Tactics.
 
 Generalizable Variables A B C D R S T U l eqA eqB eqC eqD.
 
@@ -32,6 +32,8 @@ Definition arrow (A B : Type) := A -> B.
 Definition flip {A B C : Type} (f : A -> B -> C) := fun x y => f y x.
 
 Definition iffT (A B : Type) := ((A -> B) * (B -> A))%type.
+
+Global Typeclasses Opaque flip arrow iffT.
 
 (** We allow to unfold the [crelation] definition while doing morphism search. *)
 
@@ -70,14 +72,14 @@ Section Defs.
   (** A [PreOrder] is both Reflexive and Transitive. *)
 
   Class PreOrder (R : crelation A)  := {
-    PreOrder_Reflexive :> Reflexive R | 2 ;
-    PreOrder_Transitive :> Transitive R | 2 }.
+    #[global] PreOrder_Reflexive :: Reflexive R | 2 ;
+    #[global] PreOrder_Transitive :: Transitive R | 2 }.
 
   (** A [StrictOrder] is both Irreflexive and Transitive. *)
 
   Class StrictOrder (R : crelation A)  := {
-    StrictOrder_Irreflexive :> Irreflexive R ;
-    StrictOrder_Transitive :> Transitive R }.
+    #[global] StrictOrder_Irreflexive :: Irreflexive R ;
+    #[global] StrictOrder_Transitive :: Transitive R }.
 
   (** By definition, a strict order is also asymmetric *)
   Global Instance StrictOrder_Asymmetric `(StrictOrder R) : Asymmetric R.
@@ -86,15 +88,15 @@ Section Defs.
   (** A partial equivalence crelation is Symmetric and Transitive. *)
   
   Class PER (R : crelation A)  := {
-    PER_Symmetric :> Symmetric R | 3 ;
-    PER_Transitive :> Transitive R | 3 }.
+    #[global] PER_Symmetric :: Symmetric R | 3 ;
+    #[global] PER_Transitive :: Transitive R | 3 }.
 
   (** Equivalence crelations. *)
 
   Class Equivalence (R : crelation A)  := {
-    Equivalence_Reflexive :> Reflexive R ;
-    Equivalence_Symmetric :> Symmetric R ;
-    Equivalence_Transitive :> Transitive R }.
+    #[global] Equivalence_Reflexive :: Reflexive R ;
+    #[global] Equivalence_Symmetric :: Symmetric R ;
+    #[global] Equivalence_Transitive :: Transitive R }.
 
   (** An Equivalence is a PER plus reflexivity. *)
   
@@ -132,7 +134,7 @@ Section Defs.
     Program Definition flip_Transitive `(Transitive R) : Transitive (flip R) :=
       fun x y z H H' => transitivity (R:=R) H' H.
 
-    Program Definition flip_Antisymmetric `(Antisymmetric eqA R) :
+    Program Lemma flip_Antisymmetric `(Antisymmetric eqA R) :
       Antisymmetric eqA (flip R).
     Proof. firstorder. Qed.
 
@@ -154,11 +156,11 @@ Section Defs.
 
   Section complement.
 
-    Definition complement_Irreflexive `(Reflexive R)
+    Lemma complement_Irreflexive `(Reflexive R)
       : Irreflexive (complement R).
     Proof. firstorder. Qed.
 
-    Definition complement_Symmetric `(Symmetric R) : Symmetric (complement R).
+    Lemma complement_Symmetric `(Symmetric R) : Symmetric (complement R).
     Proof. firstorder. Qed.
   End complement.
 
@@ -273,7 +275,7 @@ Tactic Notation "apply" "*" constr(t) :=
 
 Ltac simpl_crelation :=
   unfold flip, impl, arrow ; try reduce ; program_simpl ;
-    try ( solve [ dintuition ]).
+    try ( solve [ dintuition auto with crelations ]).
 
 Local Obligation Tactic := simpl_crelation.
 
@@ -388,6 +390,18 @@ Hint Extern 3 (PartialOrder (flip _)) => class_apply PartialOrder_inverse : type
 (*   intros x. refine (fun x => x). *)
 (* Qed. *)
 
-Typeclasses Opaque relation_equivalence.
+Global Typeclasses Opaque relation_equivalence.
 
+(* Register bindings for the generalized rewriting tactic *)
 
+Register arrow as rewrite.type.arrow.
+Register flip as rewrite.type.flip.
+Register crelation as rewrite.type.relation.
+Register subrelation as rewrite.type.subrelation.
+Register Reflexive as rewrite.type.Reflexive.
+Register reflexivity as rewrite.type.reflexivity.
+Register Symmetric as rewrite.type.Symmetric.
+Register symmetry as rewrite.type.symmetry.
+Register Transitive as rewrite.type.Transitive.
+Register transitivity as rewrite.type.transitivity.
+Register RewriteRelation as rewrite.type.RewriteRelation.

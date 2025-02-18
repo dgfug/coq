@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,7 +8,8 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
-Require Import ZArith Uint63 SpecFloat PrimFloat FloatOps.
+From Corelib Require Import BinNums IntDef Uint63Axioms.
+From Corelib Require Import SpecFloat PrimFloat FloatOps.
 
 (** * Properties of the primitive operators for the Binary64 format *)
 
@@ -51,6 +52,10 @@ Definition flatten_cmp_opt c :=
   end.
 Axiom compare_spec : forall x y, (x ?= y)%float = flatten_cmp_opt (SFcompare (Prim2SF x) (Prim2SF y)).
 
+Module Leibniz.
+Axiom eqb_spec : forall x y, Leibniz.eqb x y = true <-> x = y.
+End Leibniz.
+
 Axiom classify_spec : forall x, classify x = SF64classify (Prim2SF x).
 Axiom mul_spec : forall x y, Prim2SF (x * y)%float = SF64mul (Prim2SF x) (Prim2SF y).
 Axiom add_spec : forall x y, Prim2SF (x + y)%float = SF64add (Prim2SF x) (Prim2SF y).
@@ -58,14 +63,14 @@ Axiom sub_spec : forall x y, Prim2SF (x - y)%float = SF64sub (Prim2SF x) (Prim2S
 Axiom div_spec : forall x y, Prim2SF (x / y)%float = SF64div (Prim2SF x) (Prim2SF y).
 Axiom sqrt_spec : forall x, Prim2SF (sqrt x) = SF64sqrt (Prim2SF x).
 
-Axiom of_uint63_spec : forall n, Prim2SF (of_uint63 n) = binary_normalize prec emax (to_Z n) 0%Z false.
+Axiom of_uint63_spec : forall n, Prim2SF (of_uint63 n) = binary_normalize prec emax (to_Z n) Z0 false.
 Axiom normfr_mantissa_spec : forall f, to_Z (normfr_mantissa f) = Z.of_N (SFnormfr_mantissa prec (Prim2SF f)).
 
-Axiom frshiftexp_spec : forall f, let (m,e) := frshiftexp f in (Prim2SF m, ((to_Z e) - shift)%Z) = SFfrexp prec emax (Prim2SF f).
-Axiom ldshiftexp_spec : forall f e, Prim2SF (ldshiftexp f e) = SFldexp prec emax (Prim2SF f) ((to_Z e) - shift).
+Axiom frshiftexp_spec : forall f,
+  let (m,e) := frshiftexp f in
+  (Prim2SF m, Z.sub (to_Z e) shift) = SFfrexp prec emax (Prim2SF f).
+Axiom ldshiftexp_spec : forall f e,
+  Prim2SF (ldshiftexp f e) = SFldexp prec emax (Prim2SF f) (Z.sub (to_Z e) shift).
 
 Axiom next_up_spec : forall x, Prim2SF (next_up x) = SF64succ (Prim2SF x).
 Axiom next_down_spec : forall x, Prim2SF (next_down x) = SF64pred (Prim2SF x).
-
-#[deprecated(since="8.14",note="Use of_uint63_spec instead.")]
-Notation of_int63_spec := of_uint63_spec (only parsing).

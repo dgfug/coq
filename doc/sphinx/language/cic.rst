@@ -1,7 +1,7 @@
 Typing rules
 ====================================
 
-The underlying formal language of Coq is a
+The underlying formal language of the Rocq Prover is a
 :gdef:`Calculus of Inductive Constructions` (|Cic|) whose inference rules
 are presented in this
 chapter. The history of this formalism as well as pointers to related
@@ -34,7 +34,7 @@ the following rules.
 #. variables, hereafter ranged over by letters :math:`x`, :math:`y`, etc., are terms
 #. constants, hereafter ranged over by letters :math:`c`, :math:`d`, etc., are terms.
 #. if :math:`x` is a variable and :math:`T`, :math:`U` are terms then
-   :math:`∀ x:T,~U` (:g:`forall x:T, U`   in Coq concrete syntax) is a term.
+   :math:`∀ x:T,~U` (:g:`forall x:T, U`   in Rocq concrete syntax) is a term.
    If :math:`x` occurs in :math:`U`, :math:`∀ x:T,~U` reads as
    “for all :math:`x` of type :math:`T`, :math:`U`”.
    As :math:`U` depends on :math:`x`, one says that :math:`∀ x:T,~U` is
@@ -44,11 +44,11 @@ the following rules.
    written: :math:`T \rightarrow U`.
 #. if :math:`x` is a variable and :math:`T`, :math:`u` are terms then
    :math:`λ x:T .~u` (:g:`fun x:T => u`
-   in Coq concrete syntax) is a term. This is a notation for the
+   in Rocq concrete syntax) is a term. This is a notation for the
    λ-abstraction of λ-calculus :cite:`Bar81`. The term :math:`λ x:T .~u` is a function
    which maps elements of :math:`T` to the expression :math:`u`.
 #. if :math:`t` and :math:`u` are terms then :math:`(t~u)` is a term
-   (:g:`t u` in Coq concrete
+   (:g:`t u` in Rocq concrete
    syntax). The term :math:`(t~u)` reads as “:math:`t` applied to :math:`u`”.
 #. if :math:`x` is a variable, and :math:`t`, :math:`T` and :math:`u` are
    terms then :math:`\letin{x}{t:T}{u}` is
@@ -77,7 +77,7 @@ The notion of substituting a term :math:`t` to free occurrences of a variable
 
 **The logical vs programming readings.**
 The constructions of the |Cic| can be used to express both logical and
-programming notions, accordingly to the Curry-Howard correspondence
+programming notions, according to the Curry-Howard correspondence
 between proofs and programs, and between propositions and types
 :cite:`Cur58,How80,Bru72`.
 
@@ -92,10 +92,10 @@ Let us assume that ``mult`` is a function of type :math:`\nat→\nat→\nat` and
 predicate of type :math:`\nat→\nat→ \Prop`. The λ-abstraction can serve to build
 “ordinary” functions as in :math:`λ x:\nat.~(\kw{mult}~x~x)` (i.e.
 :g:`fun x:nat => mult x x`
-in Coq notation) but may build also predicates over the natural
+in Rocq notation) but may build also predicates over the natural
 numbers. For instance :math:`λ x:\nat.~(\kw{eqnat}~x~0)`
 (i.e. :g:`fun x:nat => eqnat x 0`
-in Coq notation) will represent the predicate of one variable :math:`x` which
+in Rocq notation) will represent the predicate of one variable :math:`x` which
 asserts the equality of :math:`x` with :math:`0`. This predicate has type
 :math:`\nat → \Prop`
 and it can be applied to any expression of type :math:`\nat`, say :math:`t`, to give an
@@ -129,7 +129,8 @@ or a definition giving the type :math:`T` to :math:`x` in :math:`Γ`.
 If :math:`Γ` defines :math:`x:=t:T`, we also write :math:`(x:=t:T) ∈ Γ`.
 For the rest of the chapter, :math:`Γ::(y:T)` denotes the local context :math:`Γ`
 enriched with the local assumption :math:`y:T`. Similarly, :math:`Γ::(y:=t:T)` denotes
-the local context :math:`Γ` enriched with the local definition :math:`(y:=t:T)`. The
+the local context :math:`Γ` enriched with the :term:`local definition <context-local definition>`
+:math:`(y:=t:T)`. The
 notation :math:`[]` denotes the empty local context. Writing :math:`Γ_1 ; Γ_2` means
 concatenation of the local context :math:`Γ_1` and the local context :math:`Γ_2`.
 
@@ -140,7 +141,7 @@ A :term:`global environment` is an ordered list of *declarations*.
 Global declarations are either *assumptions*, *definitions*
 or declarations of inductive objects. Inductive
 objects declare both constructors and inductive or
-co-inductive types (see Section :ref:`inductive-definitions`).
+coinductive types (see Section :ref:`inductive-definitions`).
 
 In the global environment,
 *assumptions* are written as
@@ -285,6 +286,8 @@ following rules.
    ------------------------------------
    \WTEG{λ x:T\mto t}{∀ x:T,~U}
 
+.. _app_rule:
+
 .. inference:: App
 
    \WTEG{t}{∀ x:U,~T}
@@ -316,7 +319,10 @@ following rules.
    :math:`((λ x:T.~u)~t)` well-typed (where :math:`T` is a type of
    :math:`t`). This is because the value :math:`t` associated with
    :math:`x` may be used in a conversion rule
-   (see Section :ref:`Conversion-rules`).
+   (see Section :ref:`Conversion-rules`). For example
+   :g:`let A := True in (fun a : A => 42) I` is well-typed and
+   reduces to :g:`42`, while :g:`(fun A => (fun a : A => 42) I) True`
+   is ill-typed.
 
 .. _subtyping-rules:
 
@@ -420,122 +426,25 @@ normal form must not be confused with the normal form since some :math:`u_i`
 can be reducible. Similar notions of head-normal forms involving δ, ι
 and ζ reductions or any combination of those can also be defined.
 
-.. _Admissible-rules-for-global-environments:
-
-Admissible rules for global environments
---------------------------------------------
-
-From the original rules of the type system, one can show the
-admissibility of rules which change the local context of definition of
-objects in the global environment. We show here the admissible rules
-that are used in the discharge mechanism at the end of a section.
-
-
-.. _Abstraction:
-
-**Abstraction.**
-One can modify a global declaration by generalizing it over a
-previously assumed constant :math:`c`. For doing that, we need to modify the
-reference to the global declaration in the subsequent global
-environment and local context by explicitly applying this constant to
-the constant :math:`c`.
-
-Below, if :math:`Γ` is a context of the form :math:`[y_1 :A_1 ;~…;~y_n :A_n]`, we write
-:math:`∀x:U,~\subst{Γ}{c}{x}` to mean
-:math:`[y_1 :∀ x:U,~\subst{A_1}{c}{x};~…;~y_n :∀ x:U,~\subst{A_n}{c}{x}]`
-and :math:`\subst{E}{|Γ|}{|Γ|c}` to mean the parallel substitution
-:math:`E\{y_1 /(y_1~c)\}…\{y_n/(y_n~c)\}`.
-
-
-.. _First-abstracting-property:
-
-**First abstracting property:**
-
-.. math::
-   \frac{\WF{E;~c:U;~E′;~c′:=t:T;~E″}{Γ}}
-        {\WF{E;~c:U;~E′;~c′:=λ x:U.~\subst{t}{c}{x}:∀x:U,~\subst{T}{c}{x};~\subst{E″}{c′}{(c′~c)}}
-        {\subst{Γ}{c′}{(c′~c)}}}
-
-
-.. math::
-   \frac{\WF{E;~c:U;~E′;~c′:T;~E″}{Γ}}
-        {\WF{E;~c:U;~E′;~c′:∀ x:U,~\subst{T}{c}{x};~\subst{E″}{c′}{(c′~c)}}{\subst{Γ}{c′}{(c′~c)}}}
-
-.. math::
-   \frac{\WF{E;~c:U;~E′;~\ind{p}{Γ_I}{Γ_C};~E″}{Γ}}
-        {\WFTWOLINES{E;~c:U;~E′;~\ind{p+1}{∀ x:U,~\subst{Γ_I}{c}{x}}{∀ x:U,~\subst{Γ_C}{c}{x}};~
-          \subst{E″}{|Γ_I ;Γ_C |}{|Γ_I ;Γ_C | c}}
-         {\subst{Γ}{|Γ_I ;Γ_C|}{|Γ_I ;Γ_C | c}}}
-
-One can similarly modify a global declaration by generalizing it over
-a previously defined constant :math:`c`. Below, if :math:`Γ` is a context of the form
-:math:`[y_1 :A_1 ;~…;~y_n :A_n]`, we write :math:`\subst{Γ}{c}{u}` to mean
-:math:`[y_1 :\subst{A_1} {c}{u};~…;~y_n:\subst{A_n} {c}{u}]`.
-
-
-.. _Second-abstracting-property:
-
-**Second abstracting property:**
-
-.. math::
-   \frac{\WF{E;~c:=u:U;~E′;~c′:=t:T;~E″}{Γ}}
-        {\WF{E;~c:=u:U;~E′;~c′:=(\letin{x}{u:U}{\subst{t}{c}{x}}):\subst{T}{c}{u};~E″}{Γ}}
-
-.. math::
-   \frac{\WF{E;~c:=u:U;~E′;~c′:T;~E″}{Γ}}
-        {\WF{E;~c:=u:U;~E′;~c′:\subst{T}{c}{u};~E″}{Γ}}
-
-.. math::
-   \frac{\WF{E;~c:=u:U;~E′;~\ind{p}{Γ_I}{Γ_C};~E″}{Γ}}
-        {\WF{E;~c:=u:U;~E′;~\ind{p}{\subst{Γ_I}{c}{u}}{\subst{Γ_C}{c}{u}};~E″}{Γ}}
-
-.. _Pruning-the-local-context:
-
-**Pruning the local context.**
-If one abstracts or substitutes constants with the above rules then it
-may happen that some declared or defined constant does not occur any
-more in the subsequent global environment and in the local context.
-One can consequently derive the following property.
-
-
-.. _First-pruning-property:
-
-.. inference:: First pruning property:
-
-   \WF{E;~c:U;~E′}{Γ}
-   c~\kw{does not occur in}~E′~\kw{and}~Γ
-   --------------------------------------
-   \WF{E;E′}{Γ}
-
-
-.. _Second-pruning-property:
-
-.. inference:: Second pruning property:
-
-   \WF{E;~c:=u:U;~E′}{Γ}
-   c~\kw{does not occur in}~E′~\kw{and}~Γ
-   --------------------------------------
-   \WF{E;E′}{Γ}
-
 
 .. _The-Calculus-of-Inductive-Construction-with-impredicative-Set:
 
 The Calculus of Inductive Constructions with impredicative Set
 -----------------------------------------------------------------
 
-Coq can be used as a type checker for the Calculus of Inductive
+The Rocq Prover can be used as a type checker for the Calculus of Inductive
 Constructions with an impredicative sort :math:`\Set` by using the compiler
-option ``-impredicative-set``. For example, using the ordinary `coqtop`
+option ``-impredicative-set``. For example, using the ordinary `rocq repl`
 command, the following is rejected,
 
 .. example::
 
-   .. coqtop:: all
+   .. rocqtop:: all
 
       Fail Definition id: Set := forall X:Set,X->X.
 
-while it will type check, if one uses instead the `coqtop`
-``-impredicative-set`` option..
+while it will type check, if one uses instead the
+``-impredicative-set`` command-line flag.
 
 The major change in the theory concerns the rule for product formation
 in the sort :math:`\Set`, which is extended to a domain in any sort:

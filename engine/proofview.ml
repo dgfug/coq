@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -23,9 +23,10 @@ open Context.Named.Declaration
 (** Main state of tactics *)
 type proofview = Proofview_monad.proofview
 
-(* The first items in pairs below are proofs (under construction).
-   The second items in the pairs below are statements that are being proved. *)
-type entry = (EConstr.constr * EConstr.types) list
+(* evar env
+   * proofs (under construction).
+   * statements that are being proved. *)
+type entry = (Environ.named_context_val * EConstr.constr * EConstr.types) list
 
 (** Returns a stylised view of a proofview for use by, for instance,
     ide-s. *)
@@ -40,14 +41,11 @@ let proofview p =
 let compact el ({ solution } as pv) =
   let nf c = Evarutil.nf_evar solution c in
   let nf0 c = EConstr.(to_constr ~abort_on_undefined_evars:false solution (of_constr c)) in
+  let nf_hyps hyps = Environ.map_named_val (fun d -> map_constr nf0 d) hyps in
   let size = Evd.fold (fun _ _ i -> i+1) solution 0 in
-  let new_el = List.map (fun (t,ty) -> nf t, nf ty) el in
+  let new_el = List.map (fun (hyps,t,ty) -> nf_hyps hyps, nf t, nf ty) el in
   let pruned_solution = Evd.drop_all_defined solution in
-  let apply_subst_einfo _ ei =
-    Evd.({ ei with
-       evar_concl =  nf ei.evar_concl;
-       evar_hyps = Environ.map_named_val (fun d -> map_constr nf0 d) ei.evar_hyps;
-       evar_candidates = Option.map (List.map nf) ei.evar_candidates }) in
+  let apply_subst_einfo _ ei = Evd.map_evar_info nf ei in
   let new_solution = Evd.raw_map_undefined apply_subst_einfo pruned_solution in
   let new_size = Evd.fold (fun _ _ i -> i+1) new_solution 0 in
   Feedback.msg_info (Pp.str (Printf.sprintf "Evars: %d -> %d\n" size new_size));
@@ -74,7 +72,7 @@ let dependent_init =
     let (sigma, econstr) = Evarutil.new_evar env sigma ~src ~typeclass_candidate:false typ in
     let (gl, _) = EConstr.destEvar sigma econstr in
     let ret, { solution = sol; comb = comb } = aux (t sigma econstr) in
-    let entry = (econstr, typ) :: ret in
+    let entry = (Environ.named_context_val env, econstr, typ) :: ret in
     entry, { solution = sol; comb = with_empty_state gl :: comb }
   in
   fun t ->
@@ -101,7 +99,7 @@ let return { solution=defs } = defs
 
 let return_constr { solution = defs } c = Evarutil.nf_evar defs c
 
-let partial_proof entry pv = CList.map (return_constr pv) (CList.map fst entry)
+let partial_proof entry pv = CList.map (return_constr pv) (CList.map pi2 entry)
 
 
 (** {6 Focusing commands} *)
@@ -163,16 +161,23 @@ let cleared_alias evd g =
 (** [undefined defs l] is the list of goals in [l] which are still
     unsolved (after advancing cleared goals). Note that order matters. *)
 let undefined_evars defs l =
-  List.fold_right (fun evk l ->
-      match Evarutil.advance defs evk with
-      | Some evk -> List.add_set Evar.equal evk l
-      | None -> l) l []
-let goal_with_state_equal x y = Evar.equal (drop_state x) (drop_state y)
+  let fold evk (seen, ans as accu) = match Evarutil.advance defs evk with
+  | None -> accu
+  | Some evk ->
+    if Evar.Set.mem evk seen then accu
+    else (Evar.Set.add evk seen, evk :: ans)
+  in
+  snd @@ List.fold_right fold l (Evar.Set.empty, [])
+
 let undefined defs l =
-  List.fold_right (fun evk l ->
-      match cleared_alias defs evk with
-      | Some evk -> List.add_set goal_with_state_equal evk l
-      | None -> l) l []
+  let fold gl (seen, ans as accu) = match cleared_alias defs gl with
+  | None -> accu
+  | Some gl ->
+    let evk = drop_state gl in
+    if Evar.Set.mem evk seen then accu
+    else (Evar.Set.add evk seen, gl :: ans)
+  in
+  snd @@ List.fold_right fold l (Evar.Set.empty, [])
 
 (** Unfocuses a proofview with respect to a context. *)
 let unfocus (left, right) sp =
@@ -200,7 +205,7 @@ let goal_with_state = Proofview_monad.goal_with_state
     Tactics of course have arguments, but these are given at the
     meta-level as OCaml functions.  Most tactics in the sense we are
     used to return [()], that is no really interesting values. But
-    some might pass information around.  The tactics seen in Coq's
+    some might pass information around.  The tactics seen in Rocq's
     Ltac are (for now at least) only [unit tactic], the return values
     are kept for the OCaml toolkit.  The operation or the monad are
     [Proofview.tclUNIT] (which is the "return" of the tactic monad)
@@ -230,13 +235,14 @@ type +'a tactic = 'a Proof.t
 (** Applies a tactic to the current proofview. *)
 let apply ~name ~poly env t sp =
   let open Logic_monad in
+  NewProfile.profile "Proofview.apply" (fun () ->
   let ans = Proof.repr (Proof.run t P.{trace=false; name; poly} (sp,env)) in
   let ans = Logic_monad.NonLogical.run ans in
   match ans with
   | Nil (e, info) -> Exninfo.iraise (TacticFailure e, info)
   | Cons ((r, (state, _), status, info), _) ->
-    r, state, status, Trace.to_tree info
-
+    r, state, status, Trace.to_tree info)
+    ()
 
 
 (** {7 Monadic primitives} *)
@@ -413,9 +419,19 @@ let tclFOCUSID ?(nosuchgoal=tclZERO (NoSuchGoals 1)) id t =
     with Not_found ->
       (* otherwise, save current focus and work purely on the shelve *)
       Comb.set [with_empty_state ev] >>
-        t >>= fun result ->
-      Comb.set initial.comb  >>
-        return result
+      t >>= fun result ->
+      Comb.get >>= fun gls' ->
+      Comb.set initial.comb >>
+      let gls' = CList.filter_map (fun ev' ->
+          let ev' = drop_state ev' in
+          (* if ev' is still undefined, leave it on its original shelf *)
+          if (Evar.equal ev ev') then None else Some ev')
+          gls'
+      in
+      Pv.modify (fun pv ->
+          { pv with
+            solution = Evd.shelve pv.solution (undefined_evars pv.solution gls') }) >>
+      return result
   with Not_found -> nosuchgoal
 
 (** {7 Dispatching on goals} *)
@@ -618,7 +634,7 @@ let shelve =
   let open Proof in
   Comb.get >>= fun initial ->
   Comb.set [] >>
-  InfoL.leaf (Info.Tactic (fun _ _ -> Pp.str"shelve")) >>
+  InfoL.leaf (Info.Tactic (fun () -> Pp.str"shelve")) >>
   let initial = CList.map drop_state initial in
   Pv.modify (fun pv -> { pv with solution = Evd.shelve pv.solution initial })
 
@@ -627,14 +643,14 @@ let shelve_goals l =
   Comb.get >>= fun initial ->
   let comb = CList.filter (fun g -> not (CList.mem (drop_state g) l)) initial in
   Comb.set comb >>
-  InfoL.leaf (Info.Tactic (fun _ _ -> Pp.str"shelve_goals")) >>
+  InfoL.leaf (Info.Tactic (fun () -> Pp.str"shelve_goals")) >>
   Pv.modify (fun pv -> { pv with solution = Evd.shelve pv.solution l })
 
 (** [depends_on sigma src tgt] checks whether the goal [src] appears
     as an existential variable in the definition of the goal [tgt] in
     [sigma]. *)
 let depends_on sigma src tgt =
-  let evi = Evd.find sigma tgt in
+  let evi = Evd.find_undefined sigma tgt in
   Evar.Set.mem src (Evd.evars_of_filtered_evar_info sigma (Evarutil.nf_evar_info sigma evi))
 
 let unifiable_delayed g l =
@@ -646,7 +662,7 @@ let free_evars sigma l =
   (* Computes the set of evars appearing in the hypotheses, the conclusion or
      the body of the evar_info [evi]. Note: since we want to use it on goals,
      the body is actually supposed to be empty. *)
-    let evi = Evd.find sigma ev in
+    let EvarInfo evi = Evd.find sigma ev in
     let fevs = lazy (Evarutil.filtered_undefined_evars_of_evar_info ~cache sigma evi) in
     (ev, fevs)
   in
@@ -659,7 +675,7 @@ let free_evars_with_state sigma l =
      the body of the evar_info [evi]. Note: since we want to use it on goals,
      the body is actually supposed to be empty. *)
     let ev = drop_state ev in
-    let evi = Evd.find sigma ev in
+    let EvarInfo evi = Evd.find sigma ev in
     let fevs = lazy (Evarutil.filtered_undefined_evars_of_evar_info ~cache sigma evi) in
     (ev, fevs)
   in
@@ -693,7 +709,7 @@ let shelve_unifiable_informative =
   Pv.get >>= fun initial ->
   let (u,n) = partition_unifiable initial.solution initial.comb in
   Comb.set n >>
-  InfoL.leaf (Info.Tactic (fun _ _ -> Pp.str"shelve_unifiable")) >>
+  InfoL.leaf (Info.Tactic (fun () -> Pp.str"shelve_unifiable")) >>
   let u = CList.map drop_state u in
   Pv.modify (fun pv -> { pv with solution = Evd.shelve pv.solution u }) >>
   tclUNIT u
@@ -731,18 +747,18 @@ let mark_in_evm ~goal evd evars =
   let evd =
     if goal then
       let mark evd content =
-        let info = Evd.find evd content in
-        let info =
-          { info with Evd.evar_source = match info.Evd.evar_source with
-                (* Two kinds for goal evars:
-                   - GoalEvar (morally not dependent)
-                   - VarInstance (morally dependent of some name).
-                   This is a heuristic for naming these evars. *)
-                | loc, (Evar_kinds.QuestionMark { Evar_kinds.qm_name=Names.Name id} |
-                        Evar_kinds.ImplicitArg (_,(_,Some id),_)) -> loc, Evar_kinds.VarInstance id
-                | _, (Evar_kinds.VarInstance _ | Evar_kinds.GoalEvar) as x -> x
-                | loc,_ -> loc,Evar_kinds.GoalEvar }
-        in Evd.add evd content info
+        let EvarInfo info = Evd.find evd content in
+        let source = match Evd.evar_source info with
+        (* Two kinds for goal evars:
+            - GoalEvar (morally not dependent)
+            - VarInstance (morally dependent of some name).
+            This is a heuristic for naming these evars. *)
+        | loc, (Evar_kinds.QuestionMark { Evar_kinds.qm_name=Names.Name id} |
+                Evar_kinds.ImplicitArg (_,(_,Some id),_)) -> loc, Evar_kinds.VarInstance id
+        | _, (Evar_kinds.VarInstance _ | Evar_kinds.GoalEvar) as x -> x
+        | loc,_ -> loc,Evar_kinds.GoalEvar
+        in
+        Evd.update_source evd content source
       in CList.fold_left mark evd evars
     else evd
   in
@@ -759,11 +775,12 @@ let with_shelf tac =
   Pv.get >>= fun npv ->
   let { solution = sigma } = npv in
   let gls, sigma = Evd.pop_shelf sigma in
-  (* The pending future goals are necessarily coming from V82.tactic *)
+  (* The pending future goals are necessarily coming from legacy tactics *)
   (* and thus considered as to shelve, as in Proof.run_tactic *)
+  (* TODO: is it still relevant since the removal of the compat layer? *)
   let fgl, sigma = Evd.pop_future_goals sigma in
   (* Ensure we mark and return only unsolved goals *)
-  let gls' = CList.rev_append fgl.Evd.FutureGoals.comb gls in
+  let gls' = CList.rev_append (Evd.FutureGoals.comb fgl) gls in
   let gls' = undefined_evars sigma gls' in
   let sigma = mark_in_evm ~goal:false sigma gls' in
   let npv = { npv with solution = sigma } in
@@ -781,7 +798,7 @@ let goodmod p m =
 
 let cycle n =
   let open Proof in
-  InfoL.leaf (Info.Tactic (fun _ _ -> Pp.(str"cycle "++int n))) >>
+  InfoL.leaf (Info.Tactic (fun () -> Pp.(str"cycle "++int n))) >>
   Comb.modify begin fun initial ->
     let l = CList.length initial in
     let n' = goodmod n l in
@@ -791,7 +808,7 @@ let cycle n =
 
 let swap i j =
   let open Proof in
-  InfoL.leaf (Info.Tactic (fun _ _ -> Pp.(hov 2 (str"swap"++spc()++int i++spc()++int j)))) >>
+  InfoL.leaf (Info.Tactic (fun () -> Pp.(hov 2 (str"swap"++spc()++int i++spc()++int j)))) >>
   Comb.modify begin fun initial ->
     let l = CList.length initial in
     let i = if i>0 then i-1 else i and j = if j>0 then j-1 else j in
@@ -806,7 +823,7 @@ let swap i j =
 
 let revgoals =
   let open Proof in
-  InfoL.leaf (Info.Tactic (fun _ _ -> Pp.str"revgoals")) >>
+  InfoL.leaf (Info.Tactic (fun () -> Pp.str"revgoals")) >>
   Comb.modify CList.rev
 
 let numgoals =
@@ -850,12 +867,11 @@ let give_up =
   Comb.get >>= fun initial ->
   Comb.set [] >>
   mark_as_unsafe >>
-  InfoL.leaf (Info.Tactic (fun _ _ -> Pp.str"give_up")) >>
+  InfoL.leaf (Info.Tactic (fun () -> Pp.str"give_up")) >>
   Pv.modify (give_up initial)
 
 
 (** {7 Control primitives} *)
-
 
 module Progress = struct
 
@@ -864,36 +880,69 @@ module Progress = struct
 
   (** equality function on hypothesis contexts *)
   let eq_named_context_val sigma1 sigma2 ctx1 ctx2 =
+    let r_eq _ _ = true (* ignore relevances *) in
     let c1 = EConstr.named_context_of_val ctx1 and c2 = EConstr.named_context_of_val ctx2 in
     let eq_named_declaration d1 d2 =
       match d1, d2 with
       | LocalAssum (i1,t1), LocalAssum (i2,t2) ->
-         Context.eq_annot Names.Id.equal i1 i2 && eq_constr sigma1 sigma2 t1 t2
+         Context.eq_annot Names.Id.equal r_eq i1 i2 && eq_constr sigma1 sigma2 t1 t2
       | LocalDef (i1,c1,t1), LocalDef (i2,c2,t2) ->
-         Context.eq_annot Names.Id.equal i1 i2 && eq_constr sigma1 sigma2 c1 c2
+         Context.eq_annot Names.Id.equal r_eq i1 i2 && eq_constr sigma1 sigma2 c1 c2
          && eq_constr sigma1 sigma2 t1 t2
       | _ ->
          false
-    in List.equal eq_named_declaration c1 c2
+    in
+    (* NB: can't use List.equal because it shortcuts on physical equality *)
+    List.for_all2eq eq_named_declaration c1 c2
 
-  let eq_evar_body sigma1 sigma2 b1 b2 =
+  let eq_evar_body (type a1 a2) sigma1 sigma2 (b1 : a1 Evd.evar_body) (b2 : a2 Evd.evar_body) =
     let open Evd in
     match b1, b2 with
     | Evar_empty, Evar_empty -> true
     | Evar_defined t1, Evar_defined t2 -> eq_constr sigma1 sigma2 t1 t2
     | _ -> false
 
-  let eq_evar_info sigma1 sigma2 ei1 ei2 =
+  let eq_evar_concl (type a1 a2) sigma1 sigma2 (e1 : a1 Evd.evar_info) (e2 : a2 Evd.evar_info) =
     let open Evd in
-    eq_constr sigma1 sigma2 ei1.evar_concl ei2.evar_concl &&
-    eq_named_context_val sigma1 sigma2 (ei1.evar_hyps) (ei2.evar_hyps) &&
-    eq_evar_body sigma1 sigma2 ei1.evar_body ei2.evar_body
+    match Evd.evar_body e1, Evd.evar_body e2 with
+    | Evar_empty, Evar_empty -> eq_constr sigma1 sigma2 (Evd.evar_concl e1) (Evd.evar_concl e2)
+    | Evar_defined _, Evar_defined _ -> true
+    | _ -> false
+
+  let eq_evar_info sigma1 sigma2 ei1 ei2 =
+    eq_evar_concl sigma1 sigma2 ei1 ei2 &&
+    eq_named_context_val sigma1 sigma2 (Evd.evar_hyps ei1) (Evd.evar_hyps ei2) &&
+    eq_evar_body sigma1 sigma2 (Evd.evar_body ei1) (Evd.evar_body ei2)
+
+  let fast_eq_evar_body (type a1 a2) (e1 : a1 Evd.evar_info) (e2 : a2 Evd.evar_info) =
+    let open Evd in
+    match Evd.evar_body e1, Evd.evar_body e2 with
+    | Evar_empty, Evar_empty -> true
+    | Evar_defined _, Evar_defined _ -> true
+    | _ -> false
+
+  let fast_eq_named_context_val ctx1 ctx2 =
+    let r_eq _ _ = true (* ignore relevances *) in
+    let c1 = EConstr.named_context_of_val ctx1 in
+    let c2 = EConstr.named_context_of_val ctx2 in
+    let eq_named_declaration d1 d2 = match d1, d2 with
+    | LocalAssum (i1, _), LocalAssum (i2, _) -> Context.eq_annot Names.Id.equal r_eq i1 i2
+    | LocalDef (i1, _, _), LocalDef (i2, _, _) -> Context.eq_annot Names.Id.equal r_eq i1 i2
+    | _ -> false
+    in
+    List.for_all2eq eq_named_declaration c1 c2
+
+  let fast_eq_evar_info ei1 ei2 =
+    fast_eq_evar_body ei1 ei2 &&
+    fast_eq_named_context_val (Evd.evar_hyps ei1) (Evd.evar_hyps ei2)
 
   (** Equality function on goals *)
   let goal_equal ~evd ~extended_evd evar extended_evar =
-    let evi = Evd.find evd evar in
-    let extended_evi = Evd.find extended_evd extended_evar in
-    eq_evar_info evd extended_evd evi extended_evi
+    let EvarInfo evi = Evd.find evd evar in
+    let EvarInfo extended_evi = Evd.find extended_evd extended_evar in
+    if fast_eq_evar_info evi extended_evi then
+      eq_evar_info evd extended_evd evi extended_evi
+    else false
 
 end
 
@@ -919,7 +968,7 @@ let tclPROGRESS t =
     tclUNIT res
   else
     let info = Exninfo.reify () in
-    tclZERO ~info (CErrors.UserError (Some "Proofview.tclPROGRESS", Pp.str "Failed to progress."))
+    tclZERO ~info (CErrors.UserError Pp.(str "Failed to progress."))
 
 let _ = CErrors.register_handler begin function
   | Logic_monad.Tac_Timeout ->
@@ -995,10 +1044,11 @@ module Unsafe = struct
   let tclEVARS evd =
     Pv.modify (fun ps -> { ps with solution = evd })
 
-  let tclNEWGOALS gls =
+  let tclNEWGOALS ?(before = false) gls =
     Pv.modify begin fun step ->
       let gls = undefined step.solution gls in
-      { step with comb = step.comb @ gls }
+      let comb = if before then gls @ step.comb else step.comb @ gls in
+      { step with comb }
     end
 
   let tclNEWSHELVED gls =
@@ -1048,17 +1098,6 @@ let (>>=) = tclBIND
 
 (** {6 Goal-dependent tactics} *)
 
-let goal_env env evars gl =
-  let evi = Evd.find evars gl in
-  Evd.evar_filtered_env env evi
-
-let goal_nf_evar sigma gl =
-  let evi = Evd.find sigma gl in
-  let evi = Evarutil.nf_evar_info sigma evi in
-  let sigma = Evd.add sigma gl evi in
-  (gl, sigma)
-
-
 let catchable_exception = function
   | Logic_monad.Exception _ -> false
   | e -> CErrors.noncritical e
@@ -1074,14 +1113,14 @@ module Goal = struct
     self : Evar.t ; (* for compatibility with old-style definitions *)
   }
 
-  let print { sigma; self } = { Evd.it = self; sigma }
-
   let state { state=state } = state
 
   let env {env} = env
   let sigma {sigma} = sigma
   let hyps {env} = EConstr.named_context env
   let concl {concl} = concl
+  let relevance {sigma; self} =
+    Evd.evar_relevance (Evd.find_undefined sigma self)
 
   let gmake_with info env sigma goal state =
     { env = Environ.reset_with_named_context (Evd.evar_filtered_hyps info) env ;
@@ -1090,30 +1129,10 @@ module Goal = struct
       state = state ;
       self = goal }
 
-  let nf_gmake env sigma goal =
-    let state = get_state goal in
-    let goal = drop_state goal in
-    let info = Evarutil.nf_evar_info sigma (Evd.find sigma goal) in
-    let sigma = Evd.add sigma goal info in
-    gmake_with info env sigma goal state , sigma
-
-  let nf_enter f =
-    InfoL.tag (Info.Dispatch) begin
-    iter_goal begin fun goal ->
-      tclENV >>= fun env ->
-      tclEVARMAP >>= fun sigma ->
-      try
-        let (gl, sigma) = nf_gmake env sigma goal in
-        tclTHEN (Unsafe.tclEVARS sigma) (InfoL.tag (Info.DBranch) (f gl))
-      with e when catchable_exception e ->
-        let (e, info) = Exninfo.capture e in
-        tclZERO ~info e
-    end
-    end
   let gmake env sigma goal =
     let state = get_state goal in
     let goal = drop_state goal in
-    let info = Evd.find sigma goal in
+    let info = Evd.find_undefined sigma goal in
     gmake_with info env sigma goal state
 
   let enter f =
@@ -1150,10 +1169,21 @@ module Goal = struct
       match cleared_alias sigma goal with
       | None -> None (* ppedrot: Is this check really necessary? *)
       | Some goal ->
+        let oinfo = Evd.find_undefined sigma (drop_state goal) in
         let gl =
           Env.get >>= fun env ->
           tclEVARMAP >>= fun sigma ->
-          tclUNIT (gmake env sigma goal)
+          let state = get_state goal in
+          let goal = drop_state goal in
+          let EvarInfo info = Evd.find sigma goal in
+          let goal = {
+            env = Environ.reset_with_named_context (Evd.evar_filtered_hyps info) env ;
+            sigma = sigma ;
+            concl = Evd.evar_concl oinfo;
+            state = state;
+            self = goal;
+          } in
+          tclUNIT goal
         in
         Some gl
     in
@@ -1196,94 +1226,10 @@ let tclLIFT = Proof.lift
 let tclCHECKINTERRUPT =
    tclLIFT (NonLogical.make Control.check_for_interrupt)
 
-(*** Compatibility layer with <= 8.2 tactics ***)
-module V82 = struct
-  type tac = Evar.t Evd.sigma -> Evar.t list Evd.sigma
-
-  let tactic ?(nf_evars=true) tac =
-    (* spiwack: we ignore the dependencies between goals here,
-       expectingly preserving the semantics of <= 8.2 tactics *)
-    (* spiwack: convenience notations, waiting for ocaml 3.12 *)
-    let open Proof in
-    Pv.get >>= fun ps ->
-    try
-      let tac g_w_s evd =
-        let g, w = drop_state g_w_s, get_state g_w_s in
-        let glsigma  =
-          tac { Evd.it = g ; sigma = evd; }  in
-        let sigma = glsigma.Evd.sigma in
-        let g = CList.map (fun g -> goal_with_state g w) glsigma.Evd.it in
-        ( g, sigma )
-      in
-        (* Old style tactics expect the goals normalized with respect to evars. *)
-      let (initgoals_w_state, initevd) =
-        Evd.Monad.List.map (fun g_w_s s ->
-          let g, w = drop_state g_w_s, get_state g_w_s in
-          let g, s = if nf_evars then goal_nf_evar s g else g, s in
-          goal_with_state g w, s) ps.comb ps.solution
-      in
-      let (goalss,evd) = Evd.Monad.List.map tac initgoals_w_state initevd in
-      let sgs = CList.flatten goalss in
-      let sgs = undefined evd sgs in
-      InfoL.leaf (Info.Tactic (fun _ _ -> Pp.str"<unknown>")) >>
-      Pv.set { solution = evd; comb = sgs; }
-    with e when catchable_exception e ->
-      let (e, info) = Exninfo.capture e in
-      tclZERO ~info e
-
-
-  (* normalises the evars in the goals, and stores the result in
-     solution. *)
-  let nf_evar_goals =
-    Pv.modify begin fun ps ->
-    let map g s = goal_nf_evar s g in
-    let comb = CList.map drop_state ps.comb in
-    let (_goals,evd) = Evd.Monad.List.map map comb ps.solution in
-    { ps with solution = evd; }
-    end
-
-  let has_unresolved_evar pv =
-    Evd.has_undefined pv.solution
-
-  (* Main function in the implementation of Grab Existential Variables.*)
-  let grab pv =
-    let undef = Evd.undefined_map pv.solution in
-    let goals = CList.rev_map fst (Evar.Map.bindings undef) in
-    { pv with comb = List.map with_empty_state goals }
-
-
-
-  let top_goals initial { solution=solution; } =
-    let goals = CList.map (fun (t,_) -> fst (Constr.destEvar (EConstr.Unsafe.to_constr t))) initial in
-    { Evd.it = goals ; sigma=solution; }
-
-  let top_evars initial { solution=sigma; } =
-    let evars_of_initial (c,_) =
-      Evar.Set.elements (Evd.evar_nodes_of_term c)
-    in
-    CList.flatten (CList.map evars_of_initial initial)
-
-  let of_tactic t gls =
-    try
-      let env = Global.env () in
-      let init = { solution = gls.Evd.sigma ; comb = [with_empty_state gls.Evd.it] } in
-      let name, poly = Names.Id.of_string "legacy_pe", false in
-      let (_,final,_,_) = apply ~name ~poly (goal_env env gls.Evd.sigma gls.Evd.it) t init in
-      { Evd.sigma = final.solution ; it = CList.map drop_state final.comb }
-    with Logic_monad.TacticFailure e as src ->
-      let (_, info) = Exninfo.capture src in
-      Exninfo.iraise (e, info)
-
-  let put_status = Status.put
-
-  let catchable_exception = catchable_exception
-
-  let wrap_exceptions f =
-    try f ()
-    with e when catchable_exception e ->
-      let (e, info) = Exninfo.capture e in tclZERO ~info e
-
-end
+let wrap_exceptions f =
+  try f ()
+  with e when catchable_exception e ->
+    let (e, info) = Exninfo.capture e in tclZERO ~info e
 
 (** {7 Notations} *)
 

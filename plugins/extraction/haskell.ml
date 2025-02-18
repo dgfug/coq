@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -26,8 +26,8 @@ let pr_upper_id id = str (String.capitalize_ascii (Id.to_string id))
 let keywords =
   List.fold_right (fun s -> Id.Set.add (Id.of_string s))
   [ "Any"; "case"; "class"; "data"; "default"; "deriving"; "do"; "else";
-    "if"; "import"; "in"; "infix"; "infixl"; "infixr"; "instance";
-    "let"; "module"; "newtype"; "of"; "then"; "type"; "where"; "_"; "__";
+    "family"; "forall"; "foreign"; "if"; "import"; "in"; "infix"; "infixl"; "infixr"; "instance";
+    "let"; "mdo"; "module"; "newtype"; "of"; "proc"; "rec"; "then"; "type"; "where"; "_"; "__";
     "as"; "qualified"; "hiding" ; "unit" ; "unsafeCoerce" ]
   Id.Set.empty
 
@@ -117,7 +117,7 @@ let rec pp_type par vl t =
        with Failure _ -> (str "a" ++ int i))
     | Tglob (r,[]) -> pp_global Type r
     | Tglob (gr,l)
-        when not (keep_singleton ()) && GlobRef.equal gr (sig_type_ref ()) ->
+        when not (keep_singleton ()) && Rocqlib.check_ref sig_type_name gr ->
           pp_type true vl (List.hd l)
     | Tglob (r,l) ->
           pp_par par
@@ -220,11 +220,13 @@ let rec pp_expr par env args =
          | s -> str "__" ++ spc () ++ pp_bracket_comment (str s))
     | MLmagic a ->
         pp_apply (str "unsafeCoerce") par (pp_expr true env [] a :: args)
-    | MLaxiom -> pp_par par (str "Prelude.error \"AXIOM TO BE REALIZED\"")
+    | MLaxiom s -> pp_par par (str "Prelude.error \"AXIOM TO BE REALIZED (" ++ str s ++ str ")\"")
     | MLuint _ ->
       pp_par par (str "Prelude.error \"EXTRACTION OF UINT NOT IMPLEMENTED\"")
     | MLfloat _ ->
       pp_par par (str "Prelude.error \"EXTRACTION OF FLOAT NOT IMPLEMENTED\"")
+    | MLstring _ ->
+      pp_par par (str "Prelude.error \"EXTRACTION OF STRING NOT IMPLEMENTED\"")
     | MLparray _ ->
       pp_par par (str "Prelude.error \"EXTRACTION OF ARRAY NOT IMPLEMENTED\"")
 
@@ -277,9 +279,9 @@ and pp_function env f t =
 (*s Pretty-printing of inductive types declaration. *)
 
 let pp_logical_ind packet =
-  pp_comment (Id.print packet.ip_typename ++ str " : logical inductive") ++
-  pp_comment (str "with constructors : " ++
-              prvect_with_sep spc Id.print packet.ip_consnames)
+  pp_bracket_comment
+    (Id.print packet.ip_typename ++ str " : logical inductive" ++ fnl () ++
+     str "with constructors : " ++ prvect_with_sep spc Id.print packet.ip_consnames)
 
 let pp_singleton kn packet =
   let name = pp_global Type (GlobRef.IndRef (kn,0)) in

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -50,7 +50,7 @@ let keywords =
     "done"; "downto"; "else"; "end"; "exception"; "external"; "false";
     "for"; "fun"; "function"; "functor"; "if"; "in"; "include";
     "inherit"; "initializer"; "lazy"; "let"; "match"; "method";
-    "module"; "mutable"; "new"; "object"; "of"; "open"; "or";
+    "module"; "mutable"; "new"; "nonrec"; "object"; "of"; "open"; "or";
     "parser"; "private"; "rec"; "sig"; "struct"; "then"; "to"; "true";
     "try"; "type"; "val"; "virtual"; "when"; "while"; "with"; "mod";
     "land"; "lor"; "lxor"; "lsl"; "lsr"; "asr" ; "unit" ; "_" ; "__" ]
@@ -94,8 +94,12 @@ let sig_preamble _ comment used_modules usf =
    below should not be altered since they force evaluation order.
 *)
 
-let str_global k r =
-  if is_inline_custom r then find_custom r else Common.pp_global k r
+let str_global_with_key k key r =
+  if is_inline_custom r then find_custom r else Common.pp_global_with_key k key r
+
+let str_global k r = str_global_with_key k (repr_of_r r) r
+
+let pp_global_with_key k key r = str (str_global_with_key k key r)
 
 let pp_global k r = str (str_global k r)
 
@@ -148,8 +152,12 @@ let get_ind = let open GlobRef in function
   | ConstructRef (ind,_) -> IndRef ind
   | _ -> assert false
 
+let kn_of_ind = let open GlobRef in function
+  | IndRef (kn,_) -> MutInd.user kn
+  | _ -> assert false
+
 let pp_one_field r i = function
-  | Some r -> pp_global Term r
+  | Some r' -> pp_global_with_key Term (kn_of_ind (get_ind r)) r'
   | None -> pp_global Type (get_ind r) ++ str "__" ++ int i
 
 let pp_field r fields i = pp_one_field r i (List.nth fields i)
@@ -168,7 +176,7 @@ let pp_type par vl t =
         pp_par par (pp_rec true a1 ++ str (get_infix r) ++ pp_rec true a2)
     | Tglob (r,[]) -> pp_global Type r
     | Tglob (gr,l)
-        when not (keep_singleton ()) && GlobRef.equal gr (sig_type_ref ()) ->
+        when not (keep_singleton ()) && Rocqlib.check_ref sig_type_name gr ->
         pp_tuple_light pp_rec l
     | Tglob (r,l) ->
         pp_tuple_light pp_rec l ++ spc () ++ pp_global Type r
@@ -245,8 +253,8 @@ let rec pp_expr par env args =
          | s -> str "__" ++ spc () ++ str ("(* "^s^" *)"))
     | MLmagic a ->
         pp_apply (str "Obj.magic") par (pp_expr true env [] a :: args)
-    | MLaxiom ->
-        pp_par par (str "failwith \"AXIOM TO BE REALIZED\"")
+    | MLaxiom s ->
+        pp_par par (str "failwith \"AXIOM TO BE REALIZED (" ++ str s ++ str ")\"")
     | MLcons (_,r,a) as c ->
         assert (List.is_empty args);
         begin match a with
@@ -313,6 +321,9 @@ let rec pp_expr par env args =
     | MLfloat f ->
         assert (args=[]);
         str "(" ++ str (Float64.compile f) ++ str ")"
+    | MLstring s ->
+        assert (args=[]);
+        str "(" ++ str (Pstring.compile s) ++ str ")"
     | MLparray(t,def) ->
       assert (args=[]);
       let tuple = pp_array (pp_expr true env []) (Array.to_list t) in
@@ -414,7 +425,7 @@ and pp_function env t =
     | MLcase(Tglob(r,_),MLrel 1,pv) when
         not (is_coinductive r) && List.is_empty (get_record_fields r) &&
         not (is_custom_match pv) ->
-        if not (ast_occurs 1 (MLcase(Tunknown,MLaxiom,pv))) then
+        if not (ast_occurs 1 (MLcase(Tunknown,MLaxiom "",pv))) then
           pr_binding (List.rev (List.tl bl)) ++
           str " = function" ++ fnl () ++
           v 0 (pp_pat env' pv)
@@ -495,7 +506,7 @@ let pp_one_ind prefix ip_equiv pl name cnames ctyps =
   in
   pp_parameters pl ++ str prefix ++ name ++
   pp_equiv pl name ip_equiv ++ str " =" ++
-  if Int.equal (Array.length ctyps) 0 then str " unit (* empty inductive *)"
+  if Int.equal (Array.length ctyps) 0 then str " |"
   else fnl () ++ v 0 (prvecti pp_constructor ctyps)
 
 let pp_logical_ind packet =
@@ -591,11 +602,30 @@ let pp_decl = function
         hov 2 (str "type " ++ ids ++ name ++ def)
     | Dterm (r, a, t) ->
         let def =
-          if is_custom r then str (" = " ^ find_custom r)
+          (* If it it is an foreign custom, set the def to ': type =  <quote>foreign_fun_name<quote> '.
+             TODO: I'm not sure, but could we use pp_native_string for quoting the custom name of r?
+          *)
+          if is_foreign_custom r then str ": " ++ pp_type false [] t ++ str " = \"" ++ str (find_custom r) ++ str "\""
+          (* Otherwise, check if it is a regular custom term. *)
+          else if is_custom r then str (" = " ^ find_custom r)
           else pp_function (empty_env ()) a
         in
         let name = pp_global_name Term r in
-        pp_val name t ++ hov 0 (str "let " ++ name ++ def ++ mt ())
+        (* If it is an foreign custom, begin the expression with 'external'/'foreign' instead of 'let' *)
+        let expr_begin = if is_foreign_custom r then str "external " else str "let " in
+        (* Make sure that a callback registration is synthesised, if specified for that term. *)
+        let callback_def =
+          try
+            let alias =
+              match find_callback r with
+                | Some s -> str s
+                | None   -> name (* No alias specified, use the qualid name. *)
+            in
+            cut2 () ++ hov 0 ((str "let () = Stdlib.Callback.register \"") ++ alias ++ (str "\" ") ++ name)
+          with Not_found -> (* No callback registration specified for qualid. *)
+            mt()
+        in pp_val name t ++ hov 0 (expr_begin ++ name ++ def ++ mt ()) ++ callback_def;
+
     | Dfix (rv,defs,typs) ->
         pp_Dfix (rv,defs,typs)
 
@@ -702,7 +732,7 @@ let rec pp_structure_elem = function
      (match Common.get_duplicate (top_visible_mp ()) l with
       | None -> pp_decl d
       | Some ren ->
-         hov 1 (str ("module "^ren^" = struct") ++ fnl () ++ pp_decl d) ++
+         v 1 (str ("module "^ren^" = struct") ++ fnl () ++ pp_decl d) ++
          fnl () ++ str "end" ++ fnl () ++ str ("include "^ren))
   | (l,SEmodule m) ->
       let typ =

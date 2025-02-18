@@ -2,7 +2,6 @@ open Names
 open Pp
 open Constr
 open Libnames
-open Tacmach
 
 let mk_prefix pre id = Id.of_string (pre ^ Id.to_string id)
 let mk_rel_id = mk_prefix "R_"
@@ -11,7 +10,7 @@ let mk_complete_id id = Nameops.add_suffix (mk_rel_id id) "_complete"
 let mk_equation_id id = Nameops.add_suffix id "_equation"
 
 let fresh_id avoid s =
-  Namegen.next_ident_away_in_goal (Id.of_string s) (Id.Set.of_list avoid)
+  Namegen.next_ident_away_in_goal (Global.env ()) (Id.of_string s) (Id.Set.of_list avoid)
 
 let fresh_name avoid s = Name (fresh_id avoid s)
 
@@ -42,12 +41,12 @@ let chop_rlambda_n =
     if n == 0 then (List.rev acc, rt)
     else
       match DAst.get rt with
-      | Glob_term.GLambda (name, k, t, b) ->
+      | Glob_term.GLambda (name, _, k, t, b) ->
         chop_lambda_n ((name, t, None) :: acc) (n - 1) b
-      | Glob_term.GLetIn (name, v, t, b) ->
+      | Glob_term.GLetIn (name, _, v, t, b) ->
         chop_lambda_n ((name, v, t) :: acc) (n - 1) b
       | _ ->
-        CErrors.user_err ~hdr:"chop_rlambda_n"
+        CErrors.user_err
           (str "chop_rlambda_n: Not enough Lambdas")
   in
   chop_lambda_n []
@@ -57,10 +56,10 @@ let chop_rprod_n =
     if n == 0 then (List.rev acc, rt)
     else
       match DAst.get rt with
-      | Glob_term.GProd (name, k, t, b) ->
+      | Glob_term.GProd (name, _, k, t, b) ->
         chop_prod_n ((name, t) :: acc) (n - 1) b
       | _ ->
-        CErrors.user_err ~hdr:"chop_rprod_n"
+        CErrors.user_err
           (str "chop_rprod_n: Not enough products")
   in
   chop_prod_n []
@@ -73,14 +72,14 @@ let list_union_eq eq_fun l1 l2 =
   urec l1
 
 let list_add_set_eq eq_fun x l = if List.exists (eq_fun x) l then l else x :: l
-let coq_constant s = UnivGen.constr_of_monomorphic_global @@ Coqlib.lib_ref s
+let rocq_constant s = UnivGen.constr_of_monomorphic_global (Global.env ()) @@ Rocqlib.lib_ref s
 
 let find_reference sl s =
   let dp = Names.DirPath.make (List.rev_map Id.of_string sl) in
   Nametab.locate (make_qualid dp (Id.of_string s))
 
-let eq = lazy (EConstr.of_constr (coq_constant "core.eq.type"))
-let refl_equal = lazy (EConstr.of_constr (coq_constant "core.eq.refl"))
+let eq = lazy (EConstr.of_constr (rocq_constant "core.eq.type"))
+let refl_equal = lazy (EConstr.of_constr (rocq_constant "core.eq.refl"))
 
 let with_full_print f a =
   let old_implicit_args = Impargs.is_implicit_args ()
@@ -165,7 +164,7 @@ let cache_Function (_,(finfos)) =
   then function_table := new_tbl
 *)
 
-let cache_Function (_, finfos) =
+let cache_Function finfos =
   from_function := Cmap_env.add finfos.function_constant finfos !from_function;
   from_graph := Indmap.add finfos.graph_ind finfos !from_graph
 
@@ -208,16 +207,16 @@ let subst_Function (subst, finfos) =
     ; sprop_lemma = sprop_lemma'
     ; is_general = finfos.is_general }
 
-let discharge_Function (_, finfos) = Some finfos
+let discharge_Function finfos = Some finfos
 
 let pr_ocst env sigma c =
   Option.fold_right
-    (fun v acc -> Printer.pr_lconstr_env env sigma (mkConst v))
+    (fun v acc -> Printer.pr_global_env (Termops.vars_of_env env) (ConstRef v))
     c (mt ())
 
 let pr_info env sigma f_info =
   str "function_constant := "
-  ++ Printer.pr_lconstr_env env sigma (mkConst f_info.function_constant)
+  ++ Printer.pr_global_env (Termops.vars_of_env env) (ConstRef f_info.function_constant)
   ++ fnl ()
   ++ str "function_constant_type := "
   ++ ( try
@@ -241,7 +240,7 @@ let pr_info env sigma f_info =
   ++ fnl () ++ str "prop_lemma := "
   ++ pr_ocst env sigma f_info.prop_lemma
   ++ fnl () ++ str "graph_ind := "
-  ++ Printer.pr_lconstr_env env sigma (mkInd f_info.graph_ind)
+  ++ Printer.pr_global_env (Termops.vars_of_env env) (IndRef f_info.graph_ind)
   ++ fnl ()
 
 let pr_table env sigma tb =
@@ -267,7 +266,7 @@ let find_Function_of_graph ind = Indmap.find_opt ind !from_graph
 
 let update_Function finfo =
   (* Pp.msgnl (pr_info finfo); *)
-  Lib.add_anonymous_leaf (in_Function finfo)
+  Lib.add_leaf (in_Function finfo)
 
 let add_Function is_general f =
   let f_id = Label.to_id (Constant.label f) in
@@ -302,14 +301,17 @@ let pr_table env sigma = pr_table env sigma !from_function
 (*********************************)
 (* Debugging *)
 
-let do_rewrite_dependent =
-  Goptions.declare_bool_option_and_ref ~depr:false
+let { Goptions.get = do_rewrite_dependent } =
+  Goptions.declare_bool_option_and_ref
     ~key:["Functional"; "Induction"; "Rewrite"; "Dependent"]
     ~value:true
+    ()
 
-let do_observe =
-  Goptions.declare_bool_option_and_ref ~depr:false ~key:["Function_debug"]
+let { Goptions.get = do_observe } =
+  Goptions.declare_bool_option_and_ref
+    ~key:["Function_debug"]
     ~value:false
+    ()
 
 let observe strm = if do_observe () then Feedback.msg_debug strm else ()
 let debug_queue = Stack.create ()
@@ -329,52 +331,34 @@ let print_debug_queue b e =
 
 (* print_debug_queue false e; *)
 
-let do_observe_tac s tac g =
-  let goal = Printer.pr_goal g in
-  let s = s (pf_env g) (project g) in
-  let lmsg = str "observation : " ++ s in
-  Stack.push (lmsg, goal) debug_queue;
-  try
-    let v = tac g in
-    ignore (Stack.pop debug_queue);
-    v
-  with reraise ->
-    let reraise = Exninfo.capture reraise in
-    if not (Stack.is_empty debug_queue) then
-      print_debug_queue true (fst reraise);
-    Exninfo.iraise reraise
+let do_observe_tac ~header s tac =
+  let open Proofview.Notations in
+  let open Proofview in
+  Goal.enter (fun gl ->
+      let goal = Printer.Debug.pr_goal gl in
+      let env, sigma = (Goal.env gl, Goal.sigma gl) in
+      let s = s env sigma in
+      let lmsg = seq [header; str " : " ++ s] in
+      tclLIFT (NonLogical.make (fun () -> Feedback.msg_debug (s ++ fnl ())))
+      >>= fun () ->
+      tclOR
+        ( Stack.push (lmsg, goal) debug_queue;
+          tac
+          >>= fun v ->
+          ignore (Stack.pop debug_queue);
+          Proofview.tclUNIT v )
+        (fun (exn, info) ->
+           if not (Stack.is_empty debug_queue) then print_debug_queue true exn;
+           tclZERO ~info exn))
 
-let observe_tac s tac g =
-  if do_observe () then do_observe_tac s tac g else tac g
+let observe_tac ~header s tac =
+  if do_observe () then do_observe_tac ~header s tac else tac
 
-module New = struct
-  let do_observe_tac ~header s tac =
-    let open Proofview.Notations in
-    let open Proofview in
-    Goal.enter (fun gl ->
-        let goal = Printer.pr_goal (Goal.print gl) in
-        let env, sigma = (Goal.env gl, Goal.sigma gl) in
-        let s = s env sigma in
-        let lmsg = seq [header; str " : " ++ s] in
-        tclLIFT (NonLogical.make (fun () -> Feedback.msg_debug (s ++ fnl ())))
-        >>= fun () ->
-        tclOR
-          ( Stack.push (lmsg, goal) debug_queue;
-            tac
-            >>= fun v ->
-            ignore (Stack.pop debug_queue);
-            Proofview.tclUNIT v )
-          (fun (exn, info) ->
-            if not (Stack.is_empty debug_queue) then print_debug_queue true exn;
-            tclZERO ~info exn))
-
-  let observe_tac ~header s tac =
-    if do_observe () then do_observe_tac ~header s tac else tac
-end
-
-let is_strict_tcc =
-  Goptions.declare_bool_option_and_ref ~depr:false ~key:["Function_raw_tcc"]
+let { Goptions.get = is_strict_tcc } =
+  Goptions.declare_bool_option_and_ref
+    ~key:["Function_raw_tcc"]
     ~value:false
+    ()
 
 exception Building_graph of exn
 exception Defining_principle of exn
@@ -382,51 +366,50 @@ exception ToShow of exn
 
 let jmeq () =
   try
-    Coqlib.check_required_library Coqlib.jmeq_module_name;
-    EConstr.of_constr @@ UnivGen.constr_of_monomorphic_global
-    @@ Coqlib.lib_ref "core.JMeq.type"
+    Rocqlib.check_required_library Rocqlib.jmeq_module_name;
+    EConstr.of_constr @@ UnivGen.constr_of_monomorphic_global (Global.env ())
+    @@ Rocqlib.lib_ref "core.JMeq.type"
   with e when CErrors.noncritical e -> raise (ToShow e)
 
 let jmeq_refl () =
   try
-    Coqlib.check_required_library Coqlib.jmeq_module_name;
-    EConstr.of_constr @@ UnivGen.constr_of_monomorphic_global
-    @@ Coqlib.lib_ref "core.JMeq.refl"
+    Rocqlib.check_required_library Rocqlib.jmeq_module_name;
+    EConstr.of_constr @@ UnivGen.constr_of_monomorphic_global (Global.env ())
+    @@ Rocqlib.lib_ref "core.JMeq.refl"
   with e when CErrors.noncritical e -> raise (ToShow e)
 
-let h_intros l = Tacticals.New.tclMAP (fun x -> Tactics.Simple.intro x) l
+let h_intros l = Tacticals.tclMAP (fun x -> Tactics.Simple.intro x) l
 let h_id = Id.of_string "h"
 let hrec_id = Id.of_string "hrec"
 
 let well_founded = function
-  | () -> EConstr.of_constr (coq_constant "core.wf.well_founded")
+  | () -> EConstr.of_constr (rocq_constant "core.wf.well_founded")
 
-let acc_rel = function () -> EConstr.of_constr (coq_constant "core.wf.acc")
+let acc_rel = function () -> EConstr.of_constr (rocq_constant "core.wf.acc")
 
 let acc_inv_id = function
-  | () -> EConstr.of_constr (coq_constant "core.wf.acc_inv")
+  | () -> EConstr.of_constr (rocq_constant "core.wf.acc_inv")
 
 let well_founded_ltof () =
-  EConstr.of_constr (coq_constant "num.nat.well_founded_ltof")
+  EConstr.of_constr (rocq_constant "num.nat.well_founded_ltof")
 
-let ltof_ref = function () -> find_reference ["Coq"; "Arith"; "Wf_nat"] "ltof"
+let ltof_ref = function () -> find_reference ["Stdlib"; "Arith"; "Wf_nat"] "ltof"
 
 let make_eq () =
   try
     EConstr.of_constr
-      (UnivGen.constr_of_monomorphic_global (Coqlib.lib_ref "core.eq.type"))
-  with _ -> assert false
+      (UnivGen.constr_of_monomorphic_global (Global.env ()) (Rocqlib.lib_ref "core.eq.type"))
+  with e when CErrors.noncritical e -> assert false
 
 let evaluable_of_global_reference r =
-  let open Tacred in
   (* Tacred.evaluable_of_global_reference (Global.env ()) *)
   match r with
-  | GlobRef.ConstRef sp -> EvalConstRef sp
-  | GlobRef.VarRef id -> EvalVarRef id
+  | GlobRef.ConstRef sp -> Evaluable.EvalConstRef sp
+  | GlobRef.VarRef id -> Evaluable.EvalVarRef id
   | _ -> assert false
 
 let list_rewrite (rev : bool) (eqs : (EConstr.constr * bool) list) =
-  let open Tacticals.New in
+  let open Tacticals in
   (tclREPEAT
      (List.fold_right
         (fun (eq, b) i ->
@@ -434,12 +417,12 @@ let list_rewrite (rev : bool) (eqs : (EConstr.constr * bool) list) =
             ((if b then Equality.rewriteLR else Equality.rewriteRL) eq)
             i)
         (if rev then List.rev eqs else eqs)
-        (tclFAIL 0 (mt ()))) [@ocaml.warning "-3"])
+        (tclFAIL (mt ()))))
 
-let decompose_lam_n sigma n =
+let decompose_lambda_n sigma n =
   if n < 0 then
     CErrors.user_err
-      Pp.(str "decompose_lam_n: integer parameter must be positive");
+      Pp.(str "decompose_lambda_n: integer parameter must be positive");
   let rec lamdec_rec l n c =
     if Int.equal n 0 then (l, c)
     else
@@ -447,7 +430,7 @@ let decompose_lam_n sigma n =
       | Lambda (x, t, c) -> lamdec_rec ((x, t) :: l) (n - 1) c
       | Cast (c, _, _) -> lamdec_rec l n c
       | _ ->
-        CErrors.user_err Pp.(str "decompose_lam_n: not enough abstractions")
+        CErrors.user_err Pp.(str "decompose_lambda_n: not enough abstractions")
   in
   lamdec_rec [] n
 
@@ -480,13 +463,9 @@ type tcc_lemma_value = Undefined | Value of constr | Not_needed
 
 (* We only "purify" on exceptions. XXX: What is this doing here? *)
 let funind_purify f x =
-  let st = Vernacstate.freeze_interp_state ~marshallable:false in
+  let st = Vernacstate.freeze_full_state () in
   try f x
   with e ->
     let e = Exninfo.capture e in
-    Vernacstate.unfreeze_interp_state st;
+    Vernacstate.unfreeze_full_state st;
     Exninfo.iraise e
-
-let tac_type_of g c =
-  let sigma, t = Tacmach.pf_type_of g c in
-  ({g with Evd.sigma}, t)

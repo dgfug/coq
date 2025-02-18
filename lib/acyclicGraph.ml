@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -13,18 +13,13 @@ type constraint_type = Lt | Le | Eq
 module type Point = sig
   type t
 
-  module Set : CSig.SetS with type elt = t
-  module Map : CMap.ExtS with type key = t and module Set := Set
-
-  module Constraints : CSet.S with type elt = (t * constraint_type * t)
+  module Set : CSig.USetS with type elt = t
+  module Map : CMap.UExtS with type key = t and module Set := Set
 
   val equal : t -> t -> bool
   val compare : t -> t -> int
 
-  type explanation = (constraint_type * t) list
-  val error_inconsistency : constraint_type -> t -> t -> explanation lazy_t option -> 'a
-
-  val pr : t -> Pp.t
+  val raw_pr : t -> Pp.t
 end
 
 module Make (Point:Point) = struct
@@ -70,6 +65,7 @@ module Make (Point:Point) = struct
     val mem : Point.t -> table -> bool
     val find : Point.t -> table -> t
     val repr : t -> table -> Point.t
+    val hash : t -> int
   end =
   struct
     type t = int
@@ -100,13 +96,11 @@ module Make (Point:Point) = struct
         tab_fwd = Int.Map.add n x t.tab_fwd;
         tab_bwd = Point.Map.add x n t.tab_bwd;
       }
+    let hash x = x
   end
 
   module PMap = Index.Map
   module PSet = Index.Set
-  module Constraint = Point.Constraints
-
-  type status = NoMark | Visited | WeakVisited | ToMerge
 
   (* Comparison on this type is pointer equality *)
   type canonical_node =
@@ -117,7 +111,6 @@ module Make (Point:Point) = struct
       rank : int;
       klvl: int;
       ilvl: int;
-      mutable status: status
     }
 
   (* A Point.t is either an alias for another one, or a canonical one,
@@ -133,23 +126,23 @@ module Make (Point:Point) = struct
       n_nodes : int; n_edges : int;
       table : Index.table }
 
-  (** Used to cleanup mutable marks if a traversal function is
-      interrupted before it has the opportunity to do it itself. *)
-  let unsafe_cleanup_marks g =
-    let iter _ n = match n with
-      | Equiv _ -> ()
-      | Canonical n -> n.status <- NoMark
-    in
-    PMap.iter iter g.entries
+  module CN = struct
+    type t = canonical_node
+    let equal x y = x.canon == y.canon
+    let hash x = Index.hash x.canon
+  end
 
-  let rec cleanup_marks g =
-    try unsafe_cleanup_marks g
-    with e ->
-      (* The only way unsafe_cleanup_marks may raise an exception is when
-         a serious error (stack overflow, out of memory) occurs, or a signal is
-         sent. In this unlikely event, we relaunch the cleanup until we finally
-         succeed. *)
-      cleanup_marks g; raise e
+  module Status = struct
+    module Internal = Hashtbl.Make(CN)
+
+    (** we could experiment with creation size based on the size of [g] *)
+    let create (g:t) = Internal.create 17
+
+    let mem = Internal.mem
+    let find = Internal.find
+    let replace = Internal.replace
+    let fold = Internal.fold
+  end
 
   (* Every Point.t has a unique canonical arc representative *)
 
@@ -161,7 +154,6 @@ module Make (Point:Point) = struct
         PMap.modify u (fun _ a ->
             match a with
             | Canonical n ->
-              n.status <- NoMark;
               Equiv v
             | _ -> assert false) g.entries;
       index = g.index;
@@ -178,8 +170,7 @@ module Make (Point:Point) = struct
                PMap.modify n.canon
                  (fun _ a ->
                     match a with
-                    | Canonical n' ->
-                      n'.status <- NoMark;
+                    | Canonical _ ->
                       Canonical n
                     | _ -> assert false)
                  g.entries }
@@ -194,7 +185,7 @@ module Make (Point:Point) = struct
     try repr g (Index.find u g.table)
     with Not_found ->
       CErrors.anomaly ~label:"Univ.repr"
-        Pp.(str"Universe " ++ Point.pr u ++ str" undefined.")
+        Pp.(str"Universe " ++ Point.raw_pr u ++ str" undefined.")
 
   exception AlreadyDeclared
 
@@ -237,7 +228,6 @@ module Make (Point:Point) = struct
                       (PMap.mem u.canon v.ltle ||
                        PMap.exists (fun l _ -> u == repr g l) v.ltle))
             ) u.gtge;
-          assert (u.status = NoMark);
           assert (Index.equal l u.canon);
           assert (u.ilvl > g.index);
           assert (not (PMap.mem u.canon u.ltle));
@@ -287,16 +277,6 @@ module Make (Point:Point) = struct
       let g = change_node g u in
       u.gtge, u, g
 
-  (* [revert_graph] rollbacks the changes made to mutable fields in
-     nodes in the graph.
-     [to_revert] contains the touched nodes. *)
-  let revert_graph to_revert g =
-    List.iter (fun t ->
-        match PMap.find t g.entries with
-        | Equiv _ -> ()
-        | Canonical t ->
-          t.status <- NoMark) to_revert
-
   exception AbortBackward of t
   exception CycleDetected
 
@@ -310,25 +290,25 @@ module Make (Point:Point) = struct
      corresponding step numbers of the algorithm described in Section
      5.1 of this paper.  *)
 
-  let rec backward_traverse to_revert b_traversed count g x =
+  let rec backward_traverse status b_traversed count g x =
     let count = count - 1 in
     if count < 0 then begin
-      revert_graph to_revert g;
-      raise (AbortBackward g)
+      raise_notrace (AbortBackward g)
     end;
-    if x.status = NoMark then begin
-      x.status <- Visited;
-      let to_revert = x.canon::to_revert in
+    if Status.mem status x then b_traversed, count, g
+    else begin
+      Status.replace status x ();
       let gtge, x, g = get_gtge g x in
-      let to_revert, b_traversed, count, g =
-        PSet.fold (fun y (to_revert, b_traversed, count, g) ->
+      let b_traversed, count, g =
+        PSet.fold (fun y (b_traversed, count, g) ->
             let y = repr g y in
-            backward_traverse to_revert b_traversed count g y)
-          gtge (to_revert, b_traversed, count, g)
+            backward_traverse status b_traversed count g y)
+          gtge (b_traversed, count, g)
       in
-      to_revert, x.canon::b_traversed, count, g
+      x.canon::b_traversed, count, g
     end
-    else to_revert, b_traversed, count, g
+
+  let backward_traverse count g x = backward_traverse (Status.create g) [] count g x
 
   let rec forward_traverse f_traversed g v_klvl x y =
     let y = repr g y in
@@ -351,25 +331,29 @@ module Make (Point:Point) = struct
       f_traversed, g
     else f_traversed, g
 
-  let rec find_to_merge to_revert g x v =
+  let rec find_to_merge status g x v =
     let x = repr g x in
-    match x.status with
-    | Visited -> false, to_revert   | ToMerge -> true, to_revert
-    | NoMark ->
-      let to_revert = x::to_revert in
-      if Index.equal x.canon v then
-        begin x.status <- ToMerge; true, to_revert end
+    match Status.find status x with
+    | merge -> merge
+    | exception Not_found ->
+      if Index.equal x.canon v then begin
+        Status.replace status x true;
+        true
+      end
       else
         begin
-          let merge, to_revert = PSet.fold
-              (fun y (merge, to_revert) ->
-                 let merge', to_revert = find_to_merge to_revert g y v in
-                 merge' || merge, to_revert) x.gtge (false, to_revert)
+          let merge = PSet.fold
+              (fun y merge ->
+                 let merge' = find_to_merge status g y v in
+                 merge' || merge) x.gtge false
           in
-          x.status <- if merge then ToMerge else Visited;
-          merge, to_revert
+          Status.replace status x merge;
+          merge
         end
-    | _ -> assert false
+
+  let find_to_merge g x v =
+    let status = Status.create g in
+    status, find_to_merge status g x v
 
   let get_new_edges g to_merge =
     (* Computing edge sets. *)
@@ -393,7 +377,7 @@ module Make (Point:Point) = struct
       | true ->
         (* There is a lt edge inside the new component. This is a
             "bad cycle". *)
-        raise CycleDetected
+        raise_notrace CycleDetected
       | false -> PMap.remove a.canon accu
       | exception Not_found -> accu
     in
@@ -415,8 +399,7 @@ module Make (Point:Point) = struct
     let b_traversed, v_klvl, g =
       let u = repr g u in
       try
-        let to_revert, b_traversed, _, g = backward_traverse [] [] (u.klvl + 1) g u in
-        revert_graph to_revert g;
+        let b_traversed, _, g = backward_traverse (u.klvl + 1) g u in
         let v_klvl = u.klvl in
         b_traversed, v_klvl, g
       with AbortBackward g ->
@@ -436,16 +419,13 @@ module Make (Point:Point) = struct
     let to_merge, b_reindex, f_reindex =
       if (repr g u).klvl = v_klvl then
         begin
-          let merge, to_revert = find_to_merge [] g u v in
-          let r =
-            if merge then
-              List.filter (fun u -> u.status = ToMerge) to_revert,
-              List.filter (fun u -> (repr g u).status <> ToMerge) b_traversed,
-              List.filter (fun u -> (repr g u).status <> ToMerge) f_traversed
-            else [], b_traversed, f_traversed
-          in
-          List.iter (fun u -> u.status <- NoMark) to_revert;
-          r
+          let status, merge = find_to_merge g u v in
+          if merge then
+            let not_merged u = try not (Status.find status (repr g u)) with Not_found -> true in
+            Status.fold (fun u merged acc -> if merged then u::acc else acc) status [],
+            List.filter not_merged b_traversed,
+            List.filter not_merged f_traversed
+          else [], b_traversed, f_traversed
         end
       else [], b_traversed, f_traversed
     in
@@ -501,7 +481,7 @@ module Make (Point:Point) = struct
       let u = repr g u in
       let v = repr g v in
       if u == v then
-        if strict then raise CycleDetected else g
+        if strict then raise_notrace CycleDetected else g
       else
         let g =
           try let oldstrict = PMap.find v.canon u.ltle in
@@ -517,11 +497,7 @@ module Make (Point:Point) = struct
           let v = { v with gtge = PSet.add u.canon v.gtge } in
           change_node g v
     with
-    | CycleDetected as e -> raise e
-    | e ->
-      (* Unlikely event: fatal error or signal *)
-      let () = cleanup_marks g in
-      raise e
+    | CycleDetected as e -> raise_notrace e
 
   let add ?(rank=0) v g =
     if Index.mem v g.table then raise AlreadyDeclared
@@ -535,22 +511,23 @@ module Make (Point:Point) = struct
         rank;
         klvl = 0;
         ilvl = g.index;
-        status = NoMark;
       }
       in
       let entries = PMap.add v (Canonical node) g.entries in
       { entries; index = g.index - 1; n_nodes = g.n_nodes + 1; n_edges = g.n_edges; table }
 
-  exception Undeclared of Point.t
   let check_declared g us =
-    let check l = if not (Index.mem l g.table) then raise (Undeclared l) in
-    Point.Set.iter check us
+    let check l = not (Index.mem l g.table) in
+    let undeclared = Point.Set.filter check us in
+    if Point.Set.is_empty undeclared then Ok ()
+    else Error undeclared
 
   exception Found_explanation of (constraint_type * Point.t) list
 
-  let get_explanation strict u v g =
-    let u = Index.find u g.table in
-    let v = repr_node g v in
+  type explanation = Point.t * (constraint_type * Point.t) list
+
+  let get_explanation strict pu pv g =
+    let v = repr_node g pv in
     let visited_strict = ref PMap.empty in
     let rec traverse strict u =
       if u == v then
@@ -570,19 +547,21 @@ module Make (Point:Point) = struct
                 | None -> ()
                 | Some exp ->
                   let typ = if strictu' then Lt else Le in
-                  let u' = Index.repr u' g.table in
-                  raise (Found_explanation ((typ, u') :: exp)))
+                  let exp = if CList.is_empty exp then [typ, pv] else
+                      let u' = Index.repr u' g.table in
+                      (typ, u') :: exp
+                  in
+                  raise_notrace (Found_explanation exp))
               u.ltle;
             None
           with Found_explanation exp -> Some exp
         end
     in
-    let u = repr g u in
-    if u == v then [(Eq, Index.repr v.canon g.table)]
+    let u = repr_node g pu in
+    if u == v then begin assert (not strict); [(Eq, pv)] end
     else match traverse strict u with Some exp -> exp | None -> assert false
 
-  let get_explanation strict u v g =
-    Some (lazy (get_explanation strict u v g))
+  let get_explanation strict u v g = u, get_explanation strict u v g
 
   (* To compare two nodes, we simply do a forward search.
      We implement two improvements:
@@ -590,50 +569,45 @@ module Make (Point:Point) = struct
      - we do a BFS rather than a DFS because we expect to have a short
          path (typically, the shortest path has length 1)
   *)
-  exception Found of canonical_node list
+  exception Found
+  type visited = WeakVisited | Visited
   let search_path strict u v g =
-    let rec loop to_revert todo next_todo =
+    let rec loop status todo next_todo =
       match todo, next_todo with
-      | [], [] -> to_revert (* No path found *)
-      | [], _ -> loop to_revert next_todo []
+      | [], [] -> () (* No path found *)
+      | [], _ -> loop status next_todo []
       | (u, strict)::todo, _ ->
-        if u.status = Visited || (u.status = WeakVisited && strict)
-        then loop to_revert todo next_todo
-        else
-          let to_revert =
-            if u.status = NoMark then u::to_revert else to_revert
-          in
-          u.status <- if strict then WeakVisited else Visited;
+        let is_visited = match Status.find status u with
+          | Visited -> true
+          | WeakVisited -> strict
+          | exception Not_found -> false
+        in
+        if is_visited
+        then loop status todo next_todo
+        else begin
+          Status.replace status u (if strict then WeakVisited else Visited);
           if try PMap.find v.canon u.ltle || not strict
             with Not_found -> false
-          then raise (Found to_revert)
+          then raise_notrace Found
           else
             begin
               let next_todo =
                 PMap.fold (fun u strictu next_todo ->
                     let strict = not strictu && strict in
                     let u = repr g u in
-                    if u == v && not strict then raise (Found to_revert)
+                    if u == v && not strict then raise_notrace Found
                     else if topo_compare u v = 1 then next_todo
                     else (u, strict)::next_todo)
                   u.ltle next_todo
               in
-              loop to_revert todo next_todo
+              loop status todo next_todo
             end
+        end
     in
     if u == v then not strict
     else
-      try
-        let res, to_revert =
-          try false, loop [] [u, strict] []
-          with Found to_revert -> true, to_revert
-        in
-        List.iter (fun u -> u.status <- NoMark) to_revert;
-        res
-      with e ->
-        (* Unlikely event: fatal error or signal *)
-        let () = cleanup_marks g in
-        raise e
+      try loop (Status.create g) [u, strict] []; false
+      with Found -> true
 
   (** Uncomment to debug the cycle detection algorithm. *)
   (*let insert_edge strict ucan vcan g =
@@ -661,46 +635,51 @@ module Make (Point:Point) = struct
   let check_leq g u v = check_smaller g false u v
   let check_lt g u v = check_smaller g true u v
 
+  let get_explanation (u, c, v) g = match c with
+  | Eq ->
+    (* Redo the search, not important because this is only used for display. *)
+    if check_lt g u v then get_explanation true u v g else get_explanation true v u g
+  | Le -> get_explanation true v u g
+  | Lt -> get_explanation false v u g
+
   (* enforce_eq g u v will force u=v if possible, will fail otherwise *)
 
   let enforce_eq u v g =
     let ucan = repr_node g u in
     let vcan = repr_node g v in
-    if ucan == vcan then g
+    if ucan == vcan then Some g
     else if topo_compare ucan vcan = 1 then
       let ucan = vcan and vcan = ucan in
       let g = insert_edge false ucan vcan g in  (* Cannot fail *)
-      try insert_edge false vcan ucan g
-      with CycleDetected ->
-        Point.error_inconsistency Eq v u (get_explanation true v u g)
+      try Some (insert_edge false vcan ucan g)
+      with CycleDetected -> None
     else
       let g = insert_edge false ucan vcan g in  (* Cannot fail *)
-      try insert_edge false vcan ucan g
-      with CycleDetected ->
-        Point.error_inconsistency Eq v u (get_explanation true u v g)
+      try Some (insert_edge false vcan ucan g)
+      with CycleDetected -> None
 
   (* enforce_leq g u v will force u<=v if possible, will fail otherwise *)
   let enforce_leq u v g =
     let ucan = repr_node g u in
     let vcan = repr_node g v in
-    try insert_edge false ucan vcan g
-    with CycleDetected ->
-      Point.error_inconsistency Le u v (get_explanation true v u g)
+    try Some (insert_edge false ucan vcan g)
+    with CycleDetected -> None
 
   (* enforce_lt u v will force u<v if possible, will fail otherwise *)
   let enforce_lt u v g =
     let ucan = repr_node g u in
     let vcan = repr_node g v in
-    try insert_edge true ucan vcan g
-    with CycleDetected ->
-      Point.error_inconsistency Lt u v (get_explanation false v u g)
+    try Some (insert_edge true ucan vcan g)
+    with CycleDetected -> None
 
   let empty =
     { entries = PMap.empty; index = 0; n_nodes = 0; n_edges = 0; table = Index.empty }
 
   (* Normalization *)
 
-  let constraints_of g =
+  type 'a constraint_fold = Point.t * constraint_type * Point.t -> 'a -> 'a
+
+  let constraints_of g fold accu =
     let module UF = Unionfind.Make (Point.Set) (Point.Map) in
     let uf = UF.create () in
     let constraints_of u v acc =
@@ -710,20 +689,20 @@ module Make (Point:Point) = struct
             let typ = if strict then Lt else Le in
             let u = Index.repr u g.table in
             let v = Index.repr v g.table in
-            Constraint.add (u,typ,v) acc) ltle acc
+            fold (u,typ,v) acc) ltle acc
       | Equiv v ->
         let u = Index.repr u g.table in
         let v = Index.repr v g.table in
         UF.union u v uf; acc
     in
-    let csts = PMap.fold constraints_of g.entries Constraint.empty in
+    let csts = PMap.fold constraints_of g.entries accu in
     csts, UF.partition uf
 
   (* domain g.entries = kept + removed *)
-  let constraints_for ~kept g =
+  let constraints_for ~kept g fold accu =
     (* rmap: partial map from canonical points to kept points *)
     let add_cst u knd v cst =
-      Constraint.add (Index.repr u g.table, knd, Index.repr v g.table) cst
+      fold (Index.repr u g.table, knd, Index.repr v g.table) cst
     in
     let kept = Point.Set.fold (fun u accu -> PSet.add (Index.find u g.table) accu) kept PSet.empty in
     let rmap, csts = PSet.fold (fun u (rmap,csts) ->
@@ -737,7 +716,7 @@ module Make (Point:Point) = struct
           match PMap.find arcu.canon rmap with
           | v -> rmap, add_cst u Eq v csts
           | exception Not_found -> PMap.add arcu.canon u rmap, csts)
-        kept (PMap.empty,Constraint.empty)
+        kept (PMap.empty, accu)
     in
     let rec add_from u csts todo = match todo with
       | [] -> csts
@@ -778,7 +757,7 @@ module Make (Point:Point) = struct
             let rv = (repr g v').canon in
             if rv == ru then
               let v = Index.repr v g.table in
-              if p v then raise (Found v)
+              if p v then raise_notrace (Found v)
             (* NB: we could also try [p v'] but it will come up in the
                rest of the iteration regardless. *)
         ) g.entries; None

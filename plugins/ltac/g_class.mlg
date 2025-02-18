@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,32 +12,26 @@
 
 open Class_tactics
 open Stdarg
-open Tacarg
+open Classes
 
 }
 
-DECLARE PLUGIN "ltac_plugin"
+DECLARE PLUGIN "rocq-runtime.plugins.ltac"
 
 (** Options: depth, debug and transparency settings. *)
 
-{
-
-let set_transparency cl b =
-  List.iter (fun r ->
-    let gr = Smartlocate.global_with_alias r in
-    let ev = Tacred.evaluable_of_global_reference (Global.env ()) gr in
-      Classes.set_typeclass_transparency ev (Locality.make_section_locality None) b) cl
-
-}
-
 VERNAC COMMAND EXTEND Typeclasses_Unfold_Settings CLASSIFIED AS SIDEFF
-| [ "Typeclasses" "Transparent" ne_reference_list(cl) ] -> {
-    set_transparency cl true }
+| #[ locality = Attributes.hint_locality ]
+  [ "Typeclasses" "Transparent" ne_reference_list(cl) ] -> {
+    set_typeclass_transparency_com ~locality cl true
+  }
 END
 
 VERNAC COMMAND EXTEND Typeclasses_Rigid_Settings CLASSIFIED AS SIDEFF
-| [ "Typeclasses" "Opaque" ne_reference_list(cl) ] -> {
-    set_transparency cl false }
+| #[ locality = Attributes.hint_locality ]
+  [ "Typeclasses" "Opaque" ne_reference_list(cl) ] -> {
+    set_typeclass_transparency_com ~locality cl false
+  }
 END
 
 {
@@ -89,12 +83,16 @@ TACTIC EXTEND typeclasses_eauto
     { typeclasses_eauto ~depth:d ~strategy:Dfs l }
  | [ "typeclasses" "eauto" "bfs" nat_or_var_opt(d) "with" ne_preident_list(l) ] ->
     { typeclasses_eauto ~depth:d ~strategy:Bfs l }
+ | [ "typeclasses" "eauto" "best_effort" nat_or_var_opt(d) "with" ne_preident_list(l) ] ->
+    { typeclasses_eauto ~depth:d ~best_effort:true l }
  | [ "typeclasses" "eauto" nat_or_var_opt(d) "with" ne_preident_list(l) ] ->
     { typeclasses_eauto ~depth:d l }
  | [ "typeclasses" "eauto" "bfs" nat_or_var_opt(d) ] -> {
      typeclasses_eauto ~depth:d ~strategy:Bfs ~only_classes:true [Class_tactics.typeclasses_db] }
  | [ "typeclasses" "eauto" "dfs" nat_or_var_opt(d) ] -> {
      typeclasses_eauto ~depth:d ~strategy:Dfs ~only_classes:true [Class_tactics.typeclasses_db] }
+ | [ "typeclasses" "eauto" "best_effort" nat_or_var_opt(d) ] -> {
+      typeclasses_eauto ~depth:d ~only_classes:true ~best_effort:true [Class_tactics.typeclasses_db] }
  | [ "typeclasses" "eauto" nat_or_var_opt(d) ] -> {
      typeclasses_eauto ~depth:d ~only_classes:true [Class_tactics.typeclasses_db] }
 END
@@ -111,52 +109,6 @@ TACTIC EXTEND is_ground
 | [ "is_ground" constr(ty) ] -> { is_ground ty }
 END
 
-{
-let deprecated_autoapply_using =
-  CWarnings.create
-    ~name:"autoapply-using" ~category:"deprecated"
-    (fun () -> Pp.str "The syntax [autoapply ... using] is deprecated. Use [autoapply ... with] instead.")
-}
-
 TACTIC EXTEND autoapply
-| [ "autoapply" constr(c) "using" preident(i) ] -> {
-    deprecated_autoapply_using ();
-    autoapply c i
-  }
 | [ "autoapply" constr(c) "with" preident(i) ] -> { autoapply c i }
-END
-
-{
-
-(** TODO: DEPRECATE *)
-(* A progress test that allows to see if the evars have changed *)
-open Constr
-open Proofview.Notations
-
-let rec eq_constr_mod_evars sigma x y =
-  let open EConstr in
-  match EConstr.kind sigma x, EConstr.kind sigma y with
-  | Evar (e1, l1), Evar (e2, l2) when not (Evar.equal e1 e2) -> true
-  | _, _ -> compare_constr sigma (fun x y -> eq_constr_mod_evars sigma x y) x y
-
-let progress_evars t =
-  Proofview.Goal.enter begin fun gl ->
-    let concl = Proofview.Goal.concl gl in
-    let check =
-      Proofview.Goal.enter begin fun gl' ->
-        let sigma = Tacmach.New.project gl' in
-        let newconcl = Proofview.Goal.concl gl' in
-        if eq_constr_mod_evars sigma concl newconcl
-        then
-          let info = Exninfo.reify () in
-          Tacticals.New.tclFAIL ~info 0 (Pp.str"No progress made (modulo evars)")
-        else Proofview.tclUNIT ()
-      end
-    in t <*> check
-  end
-
-}
-
-TACTIC EXTEND progress_evars
-| [ "progress_evars" tactic(t) ] -> { progress_evars (Tacinterp.tactic_of_value ist t) }
 END

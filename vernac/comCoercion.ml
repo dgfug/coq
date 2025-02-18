@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -16,7 +16,6 @@ open Term
 open Constr
 open Context
 open Vars
-open Termops
 open Environ
 open Coercionops
 open Declare
@@ -95,7 +94,7 @@ let class_of_global = function
   | GlobRef.IndRef sp -> CL_IND sp
   | GlobRef.VarRef id -> CL_SECVAR id
   | GlobRef.ConstructRef _ as c ->
-      user_err ~hdr:"class_of_global"
+      user_err
         (str "Constructors, such as " ++ Printer.pr_global c ++
            str ", cannot be used as a class.")
 
@@ -120,27 +119,27 @@ let get_source env lp source =
          | [] -> raise Not_found
          | LocalDef _ :: lt -> aux lt
          | LocalAssum (_,t1) :: lt ->
-            let cl1,u1,lv1 = find_class_type env Evd.empty (EConstr.of_constr t1) in
+            let cl1,u1,lv1 = find_class_type (push_rel_context lt env) Evd.empty (EConstr.of_constr t1) in
             cl1,lt,lv1,1
        in aux lp
     | Some cl ->
        (* Take the first argument that matches *)
-       let rec aux acc = function
+       let rec aux env acc = function
          | [] -> raise Not_found
-         | LocalDef _ as decl :: lt -> aux (decl::acc) lt
+         | LocalDef _ as decl :: lt -> aux (push_rel decl env) (decl::acc) lt
          | LocalAssum (_,t1) as decl :: lt ->
             try
               let cl1,u1,lv1 = find_class_type env Evd.empty (EConstr.of_constr t1) in
               if cl_typ_eq cl cl1 then cl1,acc,lv1,Context.Rel.nhyps lt+1
               else raise Not_found
-            with Not_found -> aux (decl::acc) lt
-       in aux [] (List.rev lp)
+            with Not_found -> aux (push_rel decl env) (decl::acc) lt
+       in aux env [] (List.rev lp)
 
-let get_target env t ind =
+let get_target env lp t ind =
   if (ind > 1) then
     CL_FUN
   else
-    match pi1 (find_class_type env Evd.empty (EConstr.of_constr t)) with
+    match pi1 (find_class_type (push_rel_context lp env) Evd.empty (EConstr.of_constr t)) with
     | CL_CONST p when Structures.PrimitiveProjections.mem p ->
       CL_PROJ (Option.get @@ Structures.PrimitiveProjections.find_opt p)
     | x -> x
@@ -171,7 +170,7 @@ let ident_key_of_class = function
 (* Identity coercion *)
 
 let error_not_transparent source =
-  user_err ~hdr:"build_id_coercion"
+  user_err
     (pr_class source ++ str " must be a transparent constant.")
 
 let build_id_coercion idf_opt source poly =
@@ -184,9 +183,9 @@ let build_id_coercion idf_opt source poly =
   let c = match constant_opt_value_in env (destConst vs) with
     | Some c -> c
     | None -> error_not_transparent source in
-  let lams,t = decompose_lam_assum c in
+  let lams,t = decompose_lambda_decls c in
   let val_f =
-    it_mkLambda_or_LetIn
+    Term.it_mkLambda_or_LetIn
       (mkLambda (make_annot (Name Namegen.default_dependent_ident) Sorts.Relevant,
                  applistc vs (Context.Rel.instance_list mkRel 0 lams),
                  mkRel 1))
@@ -227,22 +226,20 @@ let check_source = function
 | Some (CL_FUN as s) -> raise (CoercionError (ForbiddenSourceClass s))
 | _ -> ()
 
-let cache_coercion (_,c) =
+let cache_coercion ?(update=false) c =
   let env = Global.env () in
   let sigma = Evd.from_env env in
-  Coercionops.declare_coercion env sigma c
+  Coercionops.declare_coercion env sigma ~update c
 
 let open_coercion i o =
   if Int.equal i 1 then
     cache_coercion o
 
-let discharge_coercion (_, c) =
+let discharge_coercion c =
   if c.coe_local then None
   else
     let n =
-      try
-        let ins = Lib.section_instance c.coe_value in
-        Array.length (snd ins)
+      try Array.length (Lib.section_instance c.coe_value)
       with Not_found -> 0
     in
     let nc = { c with
@@ -251,22 +248,21 @@ let discharge_coercion (_, c) =
     } in
     Some nc
 
-let rebuild_coercion c =
-  { c with coe_typ = fst (Typeops.type_of_global_in_context (Global.env ()) c.coe_value) }
-
 let classify_coercion obj =
-  if obj.coe_local then Dispose else Substitute obj
+  if obj.coe_local then Dispose else Substitute
+
+let coe_cat = create_category "coercions"
 
 let inCoercion : coe_info_typ -> obj =
   declare_object {(default_object "COERCION") with
-    open_function = simple_open open_coercion;
+    open_function = simple_open ~cat:coe_cat open_coercion;
     cache_function = cache_coercion;
     subst_function = (fun (subst,c) -> subst_coercion subst c);
     classify_function = classify_coercion;
     discharge_function = discharge_coercion;
-    rebuild_function = rebuild_coercion }
+  }
 
-let declare_coercion coef typ ?(local = false) ~isid ~src:cls ~target:clt ~params:ps () =
+let declare_coercion coef ?(local = false) ~reversible ~isid ~src:cls ~target:clt ~params:ps () =
   let isproj =
     match coef with
     | GlobRef.ConstRef c -> Structures.PrimitiveProjections.find_opt c
@@ -274,15 +270,15 @@ let declare_coercion coef typ ?(local = false) ~isid ~src:cls ~target:clt ~param
   in
   let c = {
     coe_value = coef;
-    coe_typ = typ;
     coe_local = local;
+    coe_reversible = reversible;
     coe_is_identity = isid;
     coe_is_projection = isproj;
     coe_source = cls;
     coe_target = clt;
     coe_param = ps;
   } in
-  Lib.add_anonymous_leaf (inCoercion c)
+  Lib.add_leaf (inCoercion c)
 
 (*
 nom de la fonction coercion
@@ -296,17 +292,17 @@ lorque source est None alors target est None aussi.
 *)
 
 let warn_uniform_inheritance =
-  CWarnings.create ~name:"uniform-inheritance" ~category:"typechecker"
+  CWarnings.create ~name:"uniform-inheritance" ~category:CWarnings.CoreCategories.coercions
          (fun g ->
           Printer.pr_global g ++
-            strbrk" does not respect the uniform inheritance condition")
+            strbrk" does not respect the uniform inheritance condition.")
 
-let add_new_coercion_core coef stre poly source target isid : unit =
+let add_new_coercion_core coef stre ~reversible source target isid : unit =
   check_source source;
   let env = Global.env () in
   let t, _ = Typeops.type_of_global_in_context env coef in
   if coercion_exists coef then raise (CoercionError AlreadyExists);
-  let lp,tg = decompose_prod_assum t in
+  let lp,tg = decompose_prod_decls t in
   let llp = List.length lp in
   if Int.equal llp 0 then raise (CoercionError NotAFunction);
   let (cls,ctx,lvs,ind) =
@@ -317,11 +313,11 @@ let add_new_coercion_core coef stre poly source target isid : unit =
   in
   check_source (Some cls);
   if not (uniform_cond Evd.empty (* FIXME - for when possibly called with unresolved evars in the future *)
-                       ctx lvs) then
+                          ctx lvs) then
     warn_uniform_inheritance coef;
   let clt =
     try
-      get_target env tg ind
+      get_target env lp tg ind
     with Not_found ->
       raise (CoercionError NoTarget)
   in
@@ -332,44 +328,47 @@ let add_new_coercion_core coef stre poly source target isid : unit =
   | `LOCAL -> true
   | `GLOBAL -> false
   in
-  declare_coercion coef t ~local ~isid ~src:cls ~target:clt ~params:(List.length lvs) ()
+  let params = List.length (Context.Rel.instance_list EConstr.mkRel 0 ctx) in
+  declare_coercion coef ~local ~reversible ~isid ~src:cls ~target:clt ~params ()
 
-
-let try_add_new_coercion_core ref ~local c d e f =
-  try add_new_coercion_core ref (loc_of_bool local) c d e f
+let try_add_new_coercion_core ref ~local c ~reversible d e =
+  try add_new_coercion_core ref (loc_of_bool local) c ~reversible d e
   with CoercionError e ->
-      user_err ~hdr:"try_add_new_coercion_core"
+      user_err
         (explain_coercion_error ref e ++ str ".")
 
-let try_add_new_coercion ref ~local ~poly =
-  try_add_new_coercion_core ref ~local poly None None false
+let try_add_new_coercion ref ~local ~reversible =
+  try_add_new_coercion_core ref ~local ~reversible None None false
 
-let try_add_new_coercion_subclass cl ~local ~poly =
+let try_add_new_coercion_subclass cl ~local ~poly ~reversible =
   let coe_ref = build_id_coercion None cl poly in
-  try_add_new_coercion_core coe_ref ~local poly (Some cl) None true
+  try_add_new_coercion_core coe_ref ~local ~reversible (Some cl) None true
 
-let try_add_new_coercion_with_target ref ~local ~poly ~source ~target =
-  try_add_new_coercion_core ref ~local poly (Some source) (Some target) false
+let try_add_new_coercion_with_target ref ~local ~reversible ~source ~target =
+  try_add_new_coercion_core ref ~local ~reversible
+    (Some source) (Some target) false
 
 let try_add_new_identity_coercion id ~local ~poly ~source ~target =
   let ref = build_id_coercion (Some id) source poly in
-  try_add_new_coercion_core ref ~local poly (Some source) (Some target) true
+  try_add_new_coercion_core ref ~local ~reversible:true
+    (Some source) (Some target) true
 
-let try_add_new_coercion_with_source ref ~local ~poly ~source =
-  try_add_new_coercion_core ref ~local poly (Some source) None false
+let try_add_new_coercion_with_source ref ~local ~reversible ~source =
+  try_add_new_coercion_core ref ~local ~reversible (Some source) None false
 
-let add_coercion_hook poly { Declare.Hook.S.scope; dref; _ } =
+let add_coercion_hook reversible { Declare.Hook.S.scope; dref; _ } =
   let open Locality in
   let local = match scope with
   | Discharge -> assert false (* Local Coercion in section behaves like Local Definition *)
   | Global ImportNeedQualified -> true
   | Global ImportDefaultBehavior -> false
   in
-  let () = try_add_new_coercion dref ~local ~poly in
+  let () = try_add_new_coercion dref ~local ~reversible in
   let msg = Nametab.pr_global_env Id.Set.empty dref ++ str " is now a coercion" in
   Flags.if_verbose Feedback.msg_info msg
 
-let add_coercion_hook ~poly = Declare.Hook.make (add_coercion_hook poly)
+let add_coercion_hook ~reversible =
+  Declare.Hook.make (add_coercion_hook reversible)
 
 let add_subclass_hook ~poly { Declare.Hook.S.scope; dref; _ } =
   let open Locality in
@@ -381,4 +380,18 @@ let add_subclass_hook ~poly { Declare.Hook.S.scope; dref; _ } =
   let cl = class_of_global dref in
   try_add_new_coercion_subclass cl ~local:stre ~poly
 
-let add_subclass_hook ~poly = Declare.Hook.make (add_subclass_hook ~poly)
+let nonuniform = Attributes.bool_attribute ~name:"nonuniform"
+
+let add_subclass_hook ~poly ~reversible =
+  Declare.Hook.make (add_subclass_hook ~poly ~reversible)
+
+let warn_reverse_no_change =
+  CWarnings.create ~name:"reversible-no-change" ~category:CWarnings.CoreCategories.coercions
+    (fun () -> str "The reversible attribute is unchanged.")
+
+let change_reverse ref ~reversible =
+  if not (coercion_exists ref) then
+    user_err (Printer.pr_global ref ++ str" is not a coercion.");
+  let coe_info = coercion_info ref in
+  if reversible = coe_info.coe_reversible then warn_reverse_no_change ()
+  else cache_coercion ~update:true { coe_info with coe_reversible = reversible }

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -14,9 +14,9 @@
    Institution: LRI, CNRS UMR 8623 - University Paris Sud
 *)
 
-Require Import Coq.Classes.Morphisms.
-Require Import Coq.Program.Basics.
-Require Import Coq.Program.Tactics.
+Require Import Corelib.Classes.Morphisms.
+Require Import Corelib.Program.Basics.
+Require Import Corelib.Program.Tactics.
 
 Local Obligation Tactic := try solve [simpl_relation | firstorder auto].
 
@@ -89,9 +89,10 @@ Instance Acc_pt_morphism {A:Type}(E R : A->A->Prop)
  `(Equivalence _ E) `(Proper _ (E==>E==>iff) R) :
  Proper (E==>iff) (Acc R).
 Proof.
- apply proper_sym_impl_iff. auto with relations.
- intros x y EQ WF. apply Acc_intro; intros z Hz.
-rewrite <- EQ in Hz. now apply Acc_inv with x.
+  apply proper_sym_impl_iff.
+  - auto with relations.
+  - intros x y EQ WF. apply Acc_intro; intros z Hz.
+    rewrite <- EQ in Hz. now apply Acc_inv with x.
 Qed.
 
 (** Equivalent relations have the same accessible points *)

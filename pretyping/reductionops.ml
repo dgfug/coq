@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,7 +12,6 @@ open CErrors
 open Util
 open Names
 open Constr
-open Context
 open Termops
 open Univ
 open Evd
@@ -45,20 +44,21 @@ let effect_table = ref String.Map.empty
 let reduction_effect_hook env sigma con c =
   try
     let funkey = Cmap.find con !constant_effect_table in
-    let effect = String.Map.find funkey !effect_table in
-    effect env sigma (Lazy.force c)
+    let effect_function = String.Map.find funkey !effect_table in
+    effect_function env sigma (Lazy.force c)
   with Not_found -> ()
 
-let cache_reduction_effect (_,(con,funkey)) =
+let cache_reduction_effect (con,funkey) =
   constant_effect_table := Cmap.add con funkey !constant_effect_table
 
 let subst_reduction_effect (subst,(con,funkey)) =
   (subst_constant subst con,funkey)
 
-let inReductionEffect : Constant.t * string -> obj =
-  declare_object @@ global_object_nodischarge "REDUCTION-EFFECT"
+let inReductionEffect : Libobject.locality * (Constant.t * string) -> obj =
+  declare_object @@ object_with_locality "REDUCTION-EFFECT"
     ~cache:cache_reduction_effect
     ~subst:(Some subst_reduction_effect)
+    ~discharge:(fun x -> x)
 
 let declare_reduction_effect funkey f =
   if String.Map.mem funkey !effect_table then
@@ -66,13 +66,12 @@ let declare_reduction_effect funkey f =
   effect_table := String.Map.add funkey f !effect_table
 
 (** A function to set the value of the print function *)
-let set_reduction_effect x funkey =
-  Lib.add_anonymous_leaf (inReductionEffect (x,funkey))
+let set_reduction_effect local x funkey =
+  Lib.add_leaf (inReductionEffect (local,(x,funkey)))
 
 
 (** Machinery to custom the behavior of the reduction *)
 module ReductionBehaviour = struct
-  open Globnames
   open Names
   open Libobject
 
@@ -89,55 +88,63 @@ module ReductionBehaviour = struct
     | UnfoldWhen x -> UnfoldWhen (more_args_when k x)
     | UnfoldWhenNoMatch x -> UnfoldWhenNoMatch (more_args_when k x)
 
-  let table =
-    Summary.ref (GlobRef.Map.empty : t GlobRef.Map.t) ~name:"reductionbehaviour"
+  type table = Cpred.t * t Cmap.t
 
-  let load _ (_,(_,(r, b))) =
-    table := GlobRef.Map.add r b !table
+(* We need to have a fast way to know the set of all constants that
+  have the NeverUnfold flag.  Therefore, the table has a distinct subpart
+  that is this set. *)
+  let table =
+    Summary.ref ((Cpred.empty, Cmap.empty)) ~name:"reductionbehaviour"
+
+  let load _ (_,(r, b)) =
+    table := (match b with
+                | None -> Cpred.remove r (fst !table), Cmap.remove r (snd !table)
+                | Some NeverUnfold -> Cpred.add r (fst !table), Cmap.remove r (snd !table)
+                | Some b -> Cpred.remove r (fst !table), Cmap.add r b (snd !table))
 
   let cache o = load 1 o
 
-  let classify (local,_ as o) = if local then Dispose else Substitute o
+  let classify (local,_) = if local then Dispose else Substitute
 
   let subst (subst, (local, (r,o) as orig)) =
-    let r' = subst_global_reference subst r in if r==r' then orig
+    let r' = subst_constant subst r in if r==r' then orig
     else (local,(r',o))
 
   let discharge = function
-    | _,(false, (gr, b)) ->
+    | false, (gr, b) ->
       let b =
+        let gr = GlobRef.ConstRef gr in
         if Lib.is_in_section gr then
-          let vars = Lib.variable_section_segment_of_reference gr in
-          let extra = List.length vars in
-          more_args extra b
+          let vars = Lib.section_instance gr in
+          let extra = Array.length vars in
+          Option.map (more_args extra) b
         else b
       in
       Some (false, (gr, b))
-    | _ -> None
-
-  let rebuild = function
-    | req, (GlobRef.ConstRef c, _ as x) -> req, x
-    | _ -> assert false
+    | true, _ -> None
 
   let inRedBehaviour = declare_object {
-                        (default_object "REDUCTIONBEHAVIOUR") with
-                        load_function = load;
-                        cache_function = cache;
-                        classify_function = classify;
-                        subst_function = subst;
-                        discharge_function = discharge;
-                        rebuild_function = rebuild;
-                      }
+      (default_object "REDUCTIONBEHAVIOUR") with
+      load_function = load;
+      cache_function = cache;
+      classify_function = classify;
+      subst_function = subst;
+      discharge_function = discharge;
+    }
 
   let set ~local r b =
-    Lib.add_anonymous_leaf (inRedBehaviour (local, (r, b)))
+    Lib.add_leaf (inRedBehaviour (local, (r, b)))
 
-  let get r = GlobRef.Map.find_opt r !table
+  let get_from_db table r =
+    if Cpred.mem r (fst table) then
+      Some NeverUnfold
+    else
+      Cmap.find_opt r (snd table)
 
-  let print ref =
+  let print_from_db table ref =
     let open Pp in
-    let pr_global = Nametab.pr_global_env Id.Set.empty in
-    match get ref with
+    let pr_global c = Nametab.pr_global_env Id.Set.empty (ConstRef c) in
+    match get_from_db table ref with
     | None -> mt ()
     | Some b ->
        let pp_nomatch = spc () ++ str "but avoid exposing match constructs" in
@@ -168,6 +175,18 @@ module ReductionBehaviour = struct
        in
        hov 2 (str "The reduction tactics " ++ pp_behavior b)
 
+  module Db = struct
+    type t = table
+    let get () = !table
+    let empty = (Cpred.empty, Cmap.empty)
+    let print = print_from_db
+    let all_never_unfold table = fst table
+  end
+
+  let get r = get_from_db (Db.get ()) r
+
+  let print c = print_from_db (Db.get ()) c
+
 end
 
 (** The type of (machine) stacks (= lambda-bar-calculus' contexts) *)
@@ -177,13 +196,14 @@ sig
   type app_node
   val pr_app_node : (EConstr.t -> Pp.t) -> app_node -> Pp.t
 
-  type case_stk =
-    case_info * EInstance.t * EConstr.t array * EConstr.t pcase_return * EConstr.t  pcase_invert * EConstr.t pcase_branch array
+  type case_stk = case_info * EInstance.t * EConstr.t array * EConstr.case_return * EConstr.t pcase_invert * EConstr.case_branch array
+
+  val mkCaseStk : case_info * EInstance.t * EConstr.t array * EConstr.case_return * EConstr.t pcase_invert * EConstr.case_branch array -> case_stk
 
   type member =
   | App of app_node
   | Case of case_stk
-  | Proj of Projection.t
+  | Proj of Projection.t * ERelevance.t
   | Fix of fixpoint * t
   | Primitive of CPrimitives.t * (Constant.t * EInstance.t) * t * CPrimitives.args_red
 
@@ -210,7 +230,7 @@ sig
   val zip : evar_map -> constr * t -> constr
   val check_native_args : CPrimitives.t -> t -> bool
   val get_next_primitive_args : CPrimitives.args_red -> t -> CPrimitives.args_red * (t * EConstr.t * t) option
-  val expand_case : env -> evar_map -> case_stk -> constr * constr array
+  val expand_case : env -> evar_map -> case_stk -> case_info * EInstance.t * constr array * ((rel_context * constr) * ERelevance.t) * (rel_context * constr) array
 end =
 struct
   open EConstr
@@ -231,12 +251,14 @@ struct
 
 
   type case_stk =
-    case_info * EInstance.t * EConstr.t array * EConstr.t pcase_return * EConstr.t  pcase_invert * EConstr.t pcase_branch array
+    case_info * EInstance.t * EConstr.t array * EConstr.case_return * EConstr.t pcase_invert * EConstr.case_branch array
+
+  let mkCaseStk x = x
 
   type member =
   | App of app_node
   | Case of case_stk
-  | Proj of Projection.t
+  | Proj of Projection.t * ERelevance.t
   | Fix of fixpoint * t
   | Primitive of CPrimitives.t * (Constant.t * EInstance.t) * t * CPrimitives.args_red
 
@@ -252,8 +274,8 @@ struct
        str "ZCase(" ++
          prvect_with_sep (pr_bar) (fun (_, c) -> pr_c c) br
        ++ str ")"
-    | Proj p  ->
-      str "ZProj(" ++ Constant.debug_print (Projection.constant p) ++ str ")"
+    | Proj (p,_)  ->
+      str "ZProj(" ++ Projection.debug_print p ++ str ")"
     | Fix (f,args) ->
        str "ZFix(" ++ Constr.debug_print_fix pr_c f
        ++ pr_comma () ++ pr pr_c args ++ str ")"
@@ -289,7 +311,7 @@ struct
       | (_, App (i,_,j)::s2) -> compare_rec (bal - j - 1 + i) stk1 s2
       | (Case _ :: s1, Case _::s2) ->
         Int.equal bal 0 (* && c1.ci_ind  = c2.ci_ind *) && compare_rec 0 s1 s2
-      | (Proj (p)::s1, Proj(p2)::s2) ->
+      | (Proj (p,_)::s1, Proj(p2,_)::s2) ->
         Int.equal bal 0 && compare_rec 0 s1 s2
       | (Fix(_,a1)::s1, Fix(_,a2)::s2) ->
         Int.equal bal 0 && compare_rec 0 a1 a2 && compare_rec 0 s1 s2
@@ -307,10 +329,10 @@ struct
         let t1,l1 = decomp_node_last n1 q1 in
         let t2,l2 = decomp_node_last n2 q2 in
         aux (f o t1 t2) l1 l2
-      | Case ((_,_,pms1,(_, t1),_,a1)) :: q1, Case ((_,_,pms2, (_, t2),_,a2)) :: q2 ->
+      | Case ((_,_,pms1,((_, t1),_),_,a1)) :: q1, Case ((_,_,pms2, ((_, t2),_),_,a2)) :: q2 ->
         let f' o (_, t1) (_, t2) = f o t1 t2 in
         aux (Array.fold_left2 f' (f (Array.fold_left2 f o pms1 pms2) t1 t2) a1 a2) q1 q2
-      | Proj (p1) :: q1, Proj (p2) :: q2 ->
+      | Proj (p1,_) :: q1, Proj (p2,_) :: q2 ->
         aux o q1 q2
       | Fix ((_,(_,a1,b1)),s1) :: q1, Fix ((_,(_,a2,b2)),s2) :: q2 ->
         let o' = aux (Array.fold_left2 f (Array.fold_left2 f o b1 b2) a1 a2) (List.rev s1) (List.rev s2) in
@@ -397,7 +419,7 @@ struct
     | f, (Case (ci,u,pms,rt,iv,br)::s) -> zip (mkCase (ci,u,pms,rt,iv,f,br), s)
   | f, (Fix (fix,st)::s) -> zip
     (mkFix fix, st @ (append_app [|f|] s))
-  | f, (Proj (p)::s) -> zip (mkProj (p,f),s)
+  | f, (Proj (p,r)::s) -> zip (mkProj (p,r,f),s)
   | f, (Primitive (p,c,args,kargs)::s) ->
       zip (mkConstU c, args @ append_app [|f|] s)
   in
@@ -420,8 +442,8 @@ struct
 
   let expand_case env sigma ((ci, u, pms, t, iv, br) : case_stk) =
     let dummy = mkProp in
-    let (_, t, _, _, br) = EConstr.expand_case env sigma (ci, u, pms, t, iv, dummy, br) in
-    (t, br)
+    let (ci, u, pms, t, _, _, br) = EConstr.annotate_case env sigma (ci, u, pms, t, iv, dummy, br) in
+    (ci, u, pms, t, br)
 
 end
 
@@ -446,9 +468,11 @@ let pr_state env sigma (tm,sk) =
 (*** Reduction Functions Operators ***)
 (*************************************)
 
-let safe_meta_value sigma ev =
-  try Some (Evd.meta_value sigma ev)
-  with Not_found -> None
+type meta_handler = { meta_value : metavariable -> EConstr.t option }
+
+let safe_meta_value metas ev = match metas with
+| None -> None
+| Some f -> f.meta_value ev
 
 (*************************************)
 (*** Reduction using bindingss ***)
@@ -456,20 +480,17 @@ let safe_meta_value sigma ev =
 
 (* Beta Reduction tools *)
 
-let apply_subst recfun env sigma t stack =
+let apply_subst env sigma t stack =
   let rec aux env t stack =
     match (Stack.decomp stack, EConstr.kind sigma t) with
     | Some (h,stacktl), Lambda (_,_,c) ->
        aux (h::env) c stacktl
-    | _ -> recfun sigma (substl env t, stack)
-  in aux env t stack
-
-let stacklam recfun env sigma t stack =
-  apply_subst (fun _ s -> recfun s) env sigma t stack
+    | _ -> (substl env t, stack)
+  in
+  aux env t stack
 
 let beta_applist sigma (c,l) =
-  let zip s = Stack.zip sigma s in
-  stacklam zip [] sigma c (Stack.append_app_list l Stack.empty)
+  Stack.zip sigma (apply_subst [] sigma c (Stack.append_app_list l Stack.empty))
 
 (* Iota reduction tools *)
 
@@ -487,40 +508,36 @@ let contract_cofix sigma (bodynum,(names,types,bodies as typedbodies)) =
   substl closure bodies.(bodynum)
 
 (** Similar to the "fix" case below *)
-let reduce_and_refold_cofix recfun env sigma cofix sk =
-  let raw_answer =
-    contract_cofix sigma cofix in
-  apply_subst
-    (fun _ (t,sk') -> recfun (t,sk'))
-    [] sigma raw_answer sk
+let reduce_and_refold_cofix env sigma cofix sk =
+  let raw_answer = contract_cofix sigma cofix in
+  apply_subst [] sigma raw_answer sk
 
 (* contracts fix==FIX[nl;i](A1...Ak;[F1...Fk]{B1....Bk}) to produce
    Bi[Fj --> FIX[nl;j](A1...Ak;[F1...Fk]{B1...Bk})] *)
 
 let contract_fix sigma ((recindices,bodynum),(names,types,bodies as typedbodies)) =
-    let nbodies = Array.length recindices in
-    let make_Fi j =
-      let ind = nbodies-j-1 in
-      mkFix ((recindices,ind),typedbodies)
-    in
-    let closure = List.init nbodies make_Fi in
-    substl closure bodies.(bodynum)
+  let nbodies = Array.length recindices in
+  let make_Fi j =
+    let ind = nbodies-j-1 in
+    mkFix ((recindices,ind),typedbodies)
+  in
+  let closure = List.init nbodies make_Fi in
+  substl closure bodies.(bodynum)
 
 (** First we substitute the Rel bodynum by the fixpoint and then we try to
     replace the fixpoint by the best constant from [cst_l]
     Other rels are directly substituted by constants "magically found from the
     context" in contract_fix *)
-let reduce_and_refold_fix recfun env sigma fix sk =
-  let raw_answer =
-    contract_fix sigma fix in
-  apply_subst
-    (fun _ (t,sk') -> recfun (t,sk'))
-    [] sigma raw_answer sk
+let reduce_and_refold_fix env sigma fix sk =
+  let raw_answer = contract_fix sigma fix in
+  apply_subst [] sigma raw_answer sk
 
 open Primred
 
 module CNativeEntries =
 struct
+
+  open UnsafeMonomorphic
 
   type elem = EConstr.t
   type args = EConstr.t array
@@ -539,6 +556,11 @@ struct
     | Float f -> f
     | _ -> raise Primred.NativeDestKO
 
+  let get_string evd e =
+    match EConstr.kind evd e with
+    | String s -> s
+    | _ -> raise Primred.NativeDestKO
+
   let get_parray evd e =
     match EConstr.kind evd e with
     | Array(_u,t,def,_ty) -> Parray.of_array t def
@@ -549,6 +571,9 @@ struct
 
   let mkFloat env f =
     mkFloat f
+
+  let mkString env s =
+    mkString s
 
   let mkBool env b =
     let (ct,cf) = get_bool_constructors env in
@@ -682,7 +707,119 @@ let apply_branch env sigma (ind, i) args (ci, u, pms, iv, r, lf) =
     let ctx = expand_branch env sigma u pms (ind, i) br in
     applist (it_mkLambda_or_LetIn (snd br) ctx, args)
 
-let whd_state_gen flags env sigma =
+
+exception PatternFailure
+
+let match_einstance sigma pu u psubst =
+  match UVars.Instance.pattern_match pu (EInstance.kind sigma u) psubst with
+  | Some psubst -> psubst
+  | None -> raise PatternFailure
+
+let match_sort ps s psubst =
+  match Sorts.pattern_match ps s psubst with
+  | Some psubst -> psubst
+  | None -> raise PatternFailure
+
+let rec match_arg_pattern whrec env sigma ctx psubst p t =
+  let open Declarations in
+  let t' = EConstr.it_mkLambda_or_LetIn t ctx in
+  match p with
+  | EHole i -> Partial_subst.add_term i t' psubst
+  | EHoleIgnored -> psubst
+  | ERigid (ph, es) ->
+      let t, stk = whrec (t, Stack.empty) in
+      let psubst = match_rigid_arg_pattern whrec env sigma ctx psubst ph t in
+      let psubst, stk = apply_rule whrec env sigma ctx psubst es stk in
+      if Stack.is_empty stk then psubst else raise PatternFailure
+
+and match_rigid_arg_pattern whrec env sigma ctx psubst p t =
+  match [@ocaml.warning "-4"] p, EConstr.kind sigma t with
+  | PHInd (ind, pu), Ind (ind', u) ->
+    if QInd.equal env ind ind' then match_einstance sigma pu u psubst else raise PatternFailure
+  | PHConstr (constr, pu), Construct (constr', u) ->
+    if QConstruct.equal env constr constr' then match_einstance sigma pu u psubst else raise PatternFailure
+  | PHRel i, Rel n when i = n -> psubst
+  | PHSort ps, Sort s -> match_sort ps (ESorts.kind sigma s) psubst
+  | PHSymbol (c, pu), Const (c', u) ->
+    if QConstant.equal env c c' then match_einstance sigma pu u psubst else raise PatternFailure
+  | PHInt i, Int i' ->
+    if Uint63.equal i i' then psubst else raise PatternFailure
+  | PHFloat f, Float f' ->
+    if Float64.equal f f' then psubst else raise PatternFailure
+  | PHString s, String s' ->
+    if Pstring.equal s s' then psubst else raise PatternFailure
+  | PHLambda (ptys, pbod), _ ->
+    let ntys, _ = EConstr.decompose_lambda sigma t in
+    let na = List.length ntys and np = Array.length ptys in
+    if np > na then raise PatternFailure;
+    let ntys, body = EConstr.decompose_lambda_n sigma np t in
+    let ctx' = List.map (fun (n, ty) -> Context.Rel.Declaration.LocalAssum (n, ty)) ntys in
+    let tys = Array.of_list @@ List.rev_map snd ntys in
+    let na = Array.length tys in
+    let contexts_upto = Array.init na (fun i -> List.skipn (na - i) ctx' @ ctx) in
+    let psubst = Array.fold_left3 (fun psubst ctx -> match_arg_pattern whrec env sigma ctx psubst) psubst contexts_upto ptys tys in
+    let psubst = match_arg_pattern whrec env sigma (ctx' @ ctx) psubst pbod body in
+    psubst
+  | PHProd (ptys, pbod), _ ->
+    let ntys, _ = EConstr.decompose_prod sigma t in
+    let na = List.length ntys and np = Array.length ptys in
+    if np > na then raise PatternFailure;
+    let ntys, body = EConstr.decompose_prod_n sigma np t in
+    let ctx' = List.map (fun (n, ty) -> Context.Rel.Declaration.LocalAssum (n, ty)) ntys in
+    let tys = Array.of_list @@ List.rev_map snd ntys in
+    let na = Array.length tys in
+    let contexts_upto = Array.init na (fun i -> List.skipn (na - i) ctx' @ ctx) in
+    let psubst = Array.fold_left3 (fun psubst ctx -> match_arg_pattern whrec env sigma ctx psubst) psubst contexts_upto ptys tys in
+    let psubst = match_arg_pattern whrec env sigma (ctx' @ ctx) psubst pbod body in
+    psubst
+  | (PHInd _ | PHConstr _ | PHRel _ | PHSort _ | PHSymbol _ | PHInt _ | PHFloat _ | PHString _), _ -> raise PatternFailure
+
+and extract_n_stack args n s =
+  if n = 0 then List.rev args, s else
+  match Stack.decomp s with
+  | Some (arg, rest) -> extract_n_stack (arg :: args) (n-1) rest
+  | None -> raise PatternFailure
+
+and apply_rule whrec env sigma ctx psubst es stk =
+  match [@ocaml.warning "-4"] es, stk with
+  | [], _ -> psubst, stk
+  | Declarations.PEApp pargs :: e, s ->
+      let np = Array.length pargs in
+      let pargs = Array.to_list pargs in
+      let args, s = extract_n_stack [] np s in
+      let psubst = List.fold_left2 (match_arg_pattern whrec env sigma ctx) psubst pargs args in
+      apply_rule whrec env sigma ctx psubst e s
+  | Declarations.PECase (pind, pu, pret, pbrs) :: e, Stack.Case (ci, u, pms, p, iv, brs) :: s ->
+      if not @@ QInd.equal env pind ci.ci_ind then raise PatternFailure;
+      let dummy = mkProp in
+      let psubst = match_einstance sigma pu u psubst in
+      let (_, _, _, ((ntys_ret, ret), _), _, _, brs) = EConstr.annotate_case env sigma (ci, u, pms, p, NoInvert, dummy, brs) in
+      let psubst = match_arg_pattern whrec env sigma (ntys_ret @ ctx) psubst pret ret in
+      let psubst = Array.fold_left2 (fun psubst pat (ctx', br) -> match_arg_pattern whrec env sigma (ctx' @ ctx) psubst pat br) psubst pbrs brs in
+      apply_rule whrec env sigma ctx psubst e s
+  | Declarations.PEProj proj :: e, Stack.Proj (proj', r) :: s ->
+      if not @@ QProjection.Repr.equal env proj (Projection.repr proj') then raise PatternFailure;
+      apply_rule whrec env sigma ctx psubst e s
+  | _, _ -> raise PatternFailure
+
+
+let rec apply_rules whrec env sigma u r stk =
+  let open Declarations in
+  match r with
+  | [] -> raise PatternFailure
+  | { lhs_pat = (pu, elims); nvars; rhs } :: rs ->
+    try
+      let psubst = Partial_subst.make nvars in
+      let psubst = match_einstance sigma pu u psubst in
+      let psubst, stk = apply_rule whrec env sigma [] psubst elims stk in
+      let subst, qsubst, usubst = Partial_subst.to_arrays psubst in
+      let usubst = UVars.Instance.of_array (qsubst, usubst) in
+      let rhsu = subst_instance_constr (EConstr.EInstance.make usubst) (EConstr.of_constr rhs) in
+      let rhs' = substl (Array.to_list subst) rhsu in
+      (rhs', stk)
+    with PatternFailure -> apply_rules whrec env sigma u rs stk
+
+let whd_state_gen flags ?metas env sigma =
   let open Context.Named.Declaration in
   let rec whrec (x, stack) : state =
     let () =
@@ -700,24 +837,24 @@ let whd_state_gen flags env sigma =
       ((EConstr.of_kind c0, stack))
     in
     match c0 with
-    | Rel n when CClosure.RedFlags.red_set flags CClosure.RedFlags.fDELTA ->
+    | Rel n when RedFlags.red_set flags RedFlags.fDELTA ->
       (match lookup_rel n env with
       | LocalDef (_,body,_) -> whrec (lift n body, stack)
       | _ -> fold ())
-    | Var id when CClosure.RedFlags.red_set flags (CClosure.RedFlags.fVAR id) ->
+    | Var id when RedFlags.red_set flags (RedFlags.fVAR id) ->
       (match lookup_named id env with
       | LocalDef (_,body,_) ->
         whrec (body, stack)
       | _ -> fold ())
     | Evar ev -> fold ()
     | Meta ev ->
-      (match safe_meta_value sigma ev with
+      (match safe_meta_value metas ev with
       | Some body -> whrec (body, stack)
       | None -> fold ())
     | Const (c,u as const) ->
       reduction_effect_hook env sigma c
          (lazy (EConstr.to_constr sigma (Stack.zip sigma (x,fst (Stack.strip_app stack)))));
-      if CClosure.RedFlags.red_set flags (CClosure.RedFlags.fCONST c) then
+      if RedFlags.red_set flags (RedFlags.fCONST c) then
        let u' = EInstance.kind sigma u in
        match constant_value_in env (c, u') with
        | body ->
@@ -731,22 +868,35 @@ let whd_state_gen flags env sigma =
           (* Should not fail thanks to [check_native_args] *)
           let (before,a,after) = Option.get o in
           whrec (a,Stack.Primitive(p,const,before,kargs)::after)
+       | exception NotEvaluableConst (HasRules (u', b, r)) ->
+          begin try
+            let rhs, stack = apply_rules whrec env sigma u r stack in
+            whrec (rhs, stack)
+          with PatternFailure ->
+            if not b then fold () else
+            match Stack.strip_app stack with
+            | args, (Stack.Fix (f,s')::s'') when RedFlags.red_set flags RedFlags.fFIX ->
+              let x' = Stack.zip sigma (x, args) in
+              let out_sk = s' @ (Stack.append_app [|x'|] s'') in
+              whrec (reduce_and_refold_fix env sigma f out_sk)
+            | _ -> fold ()
+          end
        | exception NotEvaluableConst _ -> fold ()
       else fold ()
-    | Proj (p, c) when CClosure.RedFlags.red_projection flags p ->
-      let stack' = (c, Stack.Proj (p) :: stack) in
+    | Proj (p, r, c) when RedFlags.red_projection flags p ->
+      let stack' = (c, Stack.Proj (p,r) :: stack) in
       whrec stack'
 
-    | LetIn (_,b,_,c) when CClosure.RedFlags.red_set flags CClosure.RedFlags.fZETA ->
-      apply_subst (fun _ -> whrec) [b] sigma c stack
+    | LetIn (_,b,_,c) when RedFlags.red_set flags RedFlags.fZETA ->
+      whrec (apply_subst [b] sigma c stack)
     | Cast (c,_,_) -> whrec (c, stack)
     | App (f,cl)  ->
       whrec
         (f, Stack.append_app cl stack)
     | Lambda (na,t,c) ->
       (match Stack.decomp stack with
-      | Some _ when CClosure.RedFlags.red_set flags CClosure.RedFlags.fBETA ->
-        apply_subst (fun _ -> whrec) [] sigma x stack
+      | Some _ when RedFlags.red_set flags RedFlags.fBETA ->
+        whrec (apply_subst [] sigma x stack)
       | _ -> fold ())
 
     | Case (ci,u,pms,p,iv,d,lf) ->
@@ -759,32 +909,32 @@ let whd_state_gen flags env sigma =
         whrec (arg, Stack.Fix(f,bef)::s'))
 
     | Construct (cstr ,u) ->
-      let use_match = CClosure.RedFlags.red_set flags CClosure.RedFlags.fMATCH in
-      let use_fix = CClosure.RedFlags.red_set flags CClosure.RedFlags.fFIX in
+      let use_match = RedFlags.red_set flags RedFlags.fMATCH in
+      let use_fix = RedFlags.red_set flags RedFlags.fFIX in
       if use_match || use_fix then
         match Stack.strip_app stack with
         |args, (Stack.Case case::s') when use_match ->
           let r = apply_branch env sigma cstr args case in
           whrec (r, s')
-        |args, (Stack.Proj (p)::s') when use_match ->
+        |args, (Stack.Proj (p,_)::s') when use_match ->
           whrec (Stack.nth args (Projection.npars p + Projection.arg p), s')
         |args, (Stack.Fix (f,s')::s'') when use_fix ->
           let x' = Stack.zip sigma (x, args) in
           let out_sk = s' @ (Stack.append_app [|x'|] s'') in
-          reduce_and_refold_fix whrec env sigma f out_sk
+          whrec (reduce_and_refold_fix env sigma f out_sk)
         |_, (Stack.App _)::_ -> assert false
         |_, _ -> fold ()
       else fold ()
 
     | CoFix cofix ->
-      if CClosure.RedFlags.red_set flags CClosure.RedFlags.fCOFIX then
+      if RedFlags.red_set flags RedFlags.fCOFIX then
         match Stack.strip_app stack with
         |args, ((Stack.Case _ |Stack.Proj _)::s') ->
-          reduce_and_refold_cofix whrec env sigma cofix stack
+          whrec (reduce_and_refold_cofix env sigma cofix stack)
         |_ -> fold ()
       else fold ()
 
-    | Int _ | Float _ | Array _ ->
+    | Int _ | Float _ | String _ | Array _ ->
       begin match Stack.strip_app stack with
        | (_, Stack.Primitive(p,(_, u as kn),rargs,kargs)::s) ->
          let more_to_reduce = List.exists (fun k -> CPrimitives.Kwhnf = k) kargs in
@@ -815,23 +965,23 @@ let whd_state_gen flags env sigma =
   whrec
 
 (** reduction machine without global env and refold machinery *)
-let local_whd_state_gen flags env sigma =
+let local_whd_state_gen flags ?metas env sigma =
   let rec whrec (x, stack) =
     let c0 = EConstr.kind sigma x in
     let s = (EConstr.of_kind c0, stack) in
     match c0 with
-    | LetIn (_,b,_,c) when CClosure.RedFlags.red_set flags CClosure.RedFlags.fZETA ->
-      stacklam whrec [b] sigma c stack
+    | LetIn (_,b,_,c) when RedFlags.red_set flags RedFlags.fZETA ->
+      whrec (apply_subst [b] sigma c stack)
     | Cast (c,_,_) -> whrec (c, stack)
     | App (f,cl)  -> whrec (f, Stack.append_app cl stack)
     | Lambda (_,_,c) ->
       (match Stack.decomp stack with
-      | Some (a,m) when CClosure.RedFlags.red_set flags CClosure.RedFlags.fBETA ->
-        stacklam whrec [a] sigma c m
+      | Some (a,m) when RedFlags.red_set flags RedFlags.fBETA ->
+        whrec (apply_subst [a] sigma c m)
       | _ -> s)
 
-    | Proj (p,c) when CClosure.RedFlags.red_projection flags p ->
-      (whrec (c, Stack.Proj (p) :: stack))
+    | Proj (p,r,c) when RedFlags.red_projection flags p ->
+      (whrec (c, Stack.Proj (p,r) :: stack))
 
     | Case (ci,u,pms,p,iv,d,lf) ->
       whrec (d, Stack.Case (ci,u,pms,p,iv,lf) :: stack)
@@ -843,19 +993,19 @@ let local_whd_state_gen flags env sigma =
 
     | Evar ev -> s
     | Meta ev ->
-      (match safe_meta_value sigma ev with
+      (match safe_meta_value metas ev with
         Some c -> whrec (c,stack)
       | None -> s)
 
     | Construct (cstr, u) ->
-      let use_match = CClosure.RedFlags.red_set flags CClosure.RedFlags.fMATCH in
-      let use_fix = CClosure.RedFlags.red_set flags CClosure.RedFlags.fFIX in
+      let use_match = RedFlags.red_set flags RedFlags.fMATCH in
+      let use_fix = RedFlags.red_set flags RedFlags.fFIX in
       if use_match || use_fix then
         match Stack.strip_app stack with
         |args, (Stack.Case case :: s') when use_match ->
           let r = apply_branch env sigma cstr args case in
           whrec (r, s')
-        |args, (Stack.Proj (p) :: s') when use_match ->
+        |args, (Stack.Proj (p,_) :: s') when use_match ->
           whrec (Stack.nth args (Projection.npars p + Projection.arg p), s')
         |args, (Stack.Fix (f,s')::s'') when use_fix ->
           let x' = Stack.zip sigma (x,args) in
@@ -865,7 +1015,7 @@ let local_whd_state_gen flags env sigma =
       else s
 
     | CoFix cofix ->
-      if CClosure.RedFlags.red_set flags CClosure.RedFlags.fCOFIX then
+      if RedFlags.red_set flags RedFlags.fCOFIX then
         match Stack.strip_app stack with
         |args, ((Stack.Case _ | Stack.Proj _)::s') ->
           whrec (contract_cofix sigma cofix, stack)
@@ -873,68 +1023,77 @@ let local_whd_state_gen flags env sigma =
       else s
 
     | Rel _ | Var _ | Sort _ | Prod _ | LetIn _ | Const _  | Ind _ | Proj _
-      | Int _ | Float _ | Array _ -> s
+      | Int _ | Float _ | String _ | Array _ -> s
 
   in
   whrec
 
-let raw_whd_state_gen flags env =
-  let f sigma s = whd_state_gen flags env sigma s in
+let stack_red_of_state_red f ?metas =
+  let f env sigma x = EConstr.decompose_app_list sigma (Stack.zip sigma (f ?metas env sigma (x, Stack.empty))) in
   f
 
-let stack_red_of_state_red f =
-  let f env sigma x = EConstr.decompose_app sigma (Stack.zip sigma (f env sigma (x, Stack.empty))) in
-  f
-
-let red_of_state_red f env sigma x =
-  Stack.zip sigma (f env sigma (x,Stack.empty))
+let red_of_state_red ?metas ~delta f env sigma x =
+  let rec is_whnf c = match Constr.kind c with
+    | Const _ | Var _ -> not delta
+    | Construct _ | Ind _ | Int _ | Float _ | String _
+    | Sort _ | Prod _ -> true
+    | App (h,_) -> is_whnf h
+    | _ -> false
+  in
+  (* preserve physical equality if possible
+     not sure if anything relies on reduction unfolding head evars
+     for now use Unsafe.to_constr to keep such unfolds *)
+  if is_whnf (EConstr.Unsafe.to_constr x) then x
+  else Stack.zip sigma (f ?metas env sigma (x,Stack.empty))
 
 (* 0. No Reduction Functions *)
 
-let whd_nored_state = local_whd_state_gen CClosure.nored
+let whd_nored_state = local_whd_state_gen RedFlags.nored
 let whd_nored_stack = stack_red_of_state_red whd_nored_state
-let whd_nored = red_of_state_red whd_nored_state
+let whd_nored ?metas = red_of_state_red ?metas ~delta:false whd_nored_state
 
 (* 1. Beta Reduction Functions *)
 
-let whd_beta_state = local_whd_state_gen CClosure.beta
+let whd_beta_state = local_whd_state_gen RedFlags.beta
 let whd_beta_stack = stack_red_of_state_red whd_beta_state
-let whd_beta = red_of_state_red whd_beta_state
+let whd_beta = red_of_state_red ~delta:false whd_beta_state
 
-let whd_betalet_state = local_whd_state_gen CClosure.betazeta
+let whd_betalet_state = local_whd_state_gen RedFlags.betazeta
 let whd_betalet_stack = stack_red_of_state_red whd_betalet_state
-let whd_betalet = red_of_state_red whd_betalet_state
+let whd_betalet = red_of_state_red ~delta:false whd_betalet_state
 
 (* 2. Delta Reduction Functions *)
 
-let whd_const_state c e = raw_whd_state_gen CClosure.RedFlags.(mkflags [fCONST c]) e
-let whd_const c = red_of_state_red (whd_const_state c)
+let whd_const_state c e = whd_state_gen RedFlags.(mkflags [fCONST c]) e
+let whd_const c = red_of_state_red ~delta:true (fun ?metas -> whd_const_state c)
 
-let whd_delta_state e = raw_whd_state_gen CClosure.delta e
+let whd_delta_state = whd_state_gen RedFlags.delta
 let whd_delta_stack = stack_red_of_state_red whd_delta_state
-let whd_delta = red_of_state_red whd_delta_state
+let whd_delta = red_of_state_red ~delta:true whd_delta_state
 
-let whd_betadeltazeta_state = raw_whd_state_gen CClosure.betadeltazeta
+let whd_betadeltazeta_state = whd_state_gen RedFlags.betadeltazeta
 let whd_betadeltazeta_stack = stack_red_of_state_red whd_betadeltazeta_state
-let whd_betadeltazeta = red_of_state_red whd_betadeltazeta_state
+let whd_betadeltazeta = red_of_state_red ~delta:true whd_betadeltazeta_state
 
 (* 3. Iota reduction Functions *)
 
-let whd_betaiota_state = local_whd_state_gen CClosure.betaiota
+let whd_betaiota_state = local_whd_state_gen RedFlags.betaiota
 let whd_betaiota_stack = stack_red_of_state_red whd_betaiota_state
-let whd_betaiota = red_of_state_red whd_betaiota_state
+let whd_betaiota ?metas = red_of_state_red ?metas ~delta:false whd_betaiota_state
 
-let whd_betaiotazeta_state = local_whd_state_gen CClosure.betaiotazeta
+let whd_betaiotazeta_state = local_whd_state_gen RedFlags.betaiotazeta
 let whd_betaiotazeta_stack = stack_red_of_state_red whd_betaiotazeta_state
-let whd_betaiotazeta = red_of_state_red whd_betaiotazeta_state
+let whd_betaiotazeta ?metas = red_of_state_red ?metas ~delta:false whd_betaiotazeta_state
 
-let whd_all_state = raw_whd_state_gen CClosure.all
+let whd_all_state = whd_state_gen RedFlags.all
 let whd_all_stack = stack_red_of_state_red whd_all_state
-let whd_all = red_of_state_red whd_all_state
+let whd_all ?metas = red_of_state_red ?metas ~delta:true whd_all_state
 
-let whd_allnolet_state = raw_whd_state_gen CClosure.allnolet
+let whd_allnolet_state = whd_state_gen RedFlags.allnolet
 let whd_allnolet_stack = stack_red_of_state_red whd_allnolet_state
-let whd_allnolet = red_of_state_red whd_allnolet_state
+let whd_allnolet = red_of_state_red ~delta:true whd_allnolet_state
+
+let whd_stack_gen reds = stack_red_of_state_red (whd_state_gen reds)
 
 let is_head_evar env sigma c =
   let head, _ = whd_all_state env sigma (c,Stack.empty) in
@@ -946,7 +1105,7 @@ let shrink_eta sigma c =
   let rec whrec x = match EConstr.kind sigma x with
     | Cast (c, _, _) -> whrec c
     | Lambda (_, _, c) ->
-      let (f, cl) = decompose_app_vect sigma (whrec c) in
+      let (f, cl) = decompose_app sigma (whrec c) in
       let napp = Array.length cl in
       if napp > 0 then
         let x' = whrec (Array.last cl) in
@@ -957,20 +1116,16 @@ let shrink_eta sigma c =
           if noccurn sigma 1 u then pop u else x
         | _ -> x
       else x
-    | Meta ev ->
-      (match safe_meta_value sigma ev with
-        Some c -> whrec c
-      | None -> x)
-    | App _ | Case _ | Fix _ | Construct _ | CoFix _ | Evar _ | Rel _ | Var _ | Sort _ | Prod _
-    | LetIn _ | Const _  | Ind _ | Proj _ | Int _ | Float _ | Array _ -> x
+    | Meta _ | App _ | Case _ | Fix _ | Construct _ | CoFix _ | Evar _ | Rel _ | Var _ | Sort _ | Prod _
+    | LetIn _ | Const _  | Ind _ | Proj _ | Int _ | Float _ | String _ | Array _ -> x
   in
   whrec c
 
 (* 5. Zeta Reduction Functions *)
 
-let whd_zeta_state = local_whd_state_gen CClosure.zeta
+let whd_zeta_state = local_whd_state_gen RedFlags.zeta
 let whd_zeta_stack = stack_red_of_state_red whd_zeta_state
-let whd_zeta = red_of_state_red whd_zeta_state
+let whd_zeta = red_of_state_red ~delta:false whd_zeta_state
 
 (****************************************************************************)
 (*                   Reduction Functions                                    *)
@@ -985,10 +1140,10 @@ let nf_evar = Evarutil.nf_evar
    a [nf_evar] here *)
 let clos_norm_flags flgs env sigma t =
   try
-    EConstr.of_constr (CClosure.norm_val
+    EConstr.of_constr (CClosure.norm_term
       (Evarutil.create_clos_infos env sigma flgs)
       (CClosure.create_tab ())
-      (CClosure.inject (EConstr.Unsafe.to_constr t)))
+      (Esubst.subs_id 0, UVars.Instance.empty) (EConstr.Unsafe.to_constr t))
   with e when is_anomaly e -> user_err Pp.(str "Tried to normalize ill-typed term")
 
 let clos_whd_flags flgs env sigma t =
@@ -999,12 +1154,12 @@ let clos_whd_flags flgs env sigma t =
       (CClosure.inject (EConstr.Unsafe.to_constr t)))
   with e when is_anomaly e -> user_err Pp.(str "Tried to normalize ill-typed term")
 
-let nf_beta = clos_norm_flags CClosure.beta
-let nf_betaiota = clos_norm_flags CClosure.betaiota
-let nf_betaiotazeta = clos_norm_flags CClosure.betaiotazeta
-let nf_zeta = clos_norm_flags CClosure.zeta
+let nf_beta = clos_norm_flags RedFlags.beta
+let nf_betaiota = clos_norm_flags RedFlags.betaiota
+let nf_betaiotazeta = clos_norm_flags RedFlags.betaiotazeta
+let nf_zeta = clos_norm_flags RedFlags.zeta
 let nf_all env sigma =
-  clos_norm_flags CClosure.all env sigma
+  clos_norm_flags RedFlags.all env sigma
 
 
 (********************************************************************)
@@ -1012,19 +1167,13 @@ let nf_all env sigma =
 (********************************************************************)
 
 let is_transparent e k =
-  match Conv_oracle.get_strategy (Environ.oracle e) k with
+  match Conv_oracle.get_strategy (Environ.oracle e) (Evaluable.to_kevaluable k) with
   | Conv_oracle.Opaque -> false
   | _ -> true
 
 (* Conversion utility functions *)
 
 type conversion_test = Constraints.t -> Constraints.t
-
-let pb_is_equal pb = pb == Reduction.CONV
-
-let pb_equal = function
-  | Reduction.CUMUL -> Reduction.CONV
-  | Reduction.CONV -> Reduction.CONV
 
 (* NOTE: We absorb anomalies happening in the conversion tactic, which
    is a bit ugly. This is mostly due to efficiency both in tactics and
@@ -1049,82 +1198,138 @@ let report_anomaly (e, info) =
   in
   Exninfo.iraise (e, info)
 
-let f_conv ?l2r ?reds env ?evars x y =
-  let inj = EConstr.Unsafe.to_constr in
-  Reduction.conv ?l2r ?reds env ?evars (inj x) (inj y)
+module CheckUnivs =
+struct
 
-let f_conv_leq ?l2r ?reds env ?evars x y =
-  let inj = EConstr.Unsafe.to_constr in
-  Reduction.conv_leq ?l2r ?reds env ?evars (inj x) (inj y)
+open Conversion
 
-let test_trans_conversion (f: constr Reduction.extended_conversion_function) reds env sigma x y =
-  try
-    let evars ev = existential_opt_value0 sigma ev in
-    let env = Environ.set_universes (Evd.universes sigma) env in
-    let _ = f ~reds env ~evars x y in
-    true
-  with Reduction.NotConvertible -> false
-    | e ->
-      let e = Exninfo.capture e in
-      report_anomaly e
+let check_eq univs u u' =
+  if Evd.check_eq univs u u' then Result.Ok univs else Result.Error None
 
-let is_conv ?(reds=TransparentState.full) env sigma = test_trans_conversion f_conv reds env sigma
-let is_conv_leq ?(reds=TransparentState.full) env sigma = test_trans_conversion f_conv_leq reds env sigma
-let is_fconv ?(reds=TransparentState.full) = function
-  | Reduction.CONV -> is_conv ~reds
-  | Reduction.CUMUL -> is_conv_leq ~reds
+let check_leq univs u u' =
+  if Evd.check_leq univs u u' then Result.Ok univs else Result.Error None
 
-let check_conv ?(pb=Reduction.CUMUL) ?(ts=TransparentState.full) env sigma x y =
-  let f = match pb with
-    | Reduction.CONV -> f_conv
-    | Reduction.CUMUL -> f_conv_leq
-  in
-    let env = Environ.set_universes (Evd.universes sigma) env in
-    try f ~reds:ts env ~evars:(existential_opt_value0 sigma) x y; true
-    with Reduction.NotConvertible -> false
-    | Univ.UniverseInconsistency _ -> false
-    | e ->
-      let e = Exninfo.capture e in
-      report_anomaly e
-
-let sigma_compare_sorts env pb s0 s1 sigma =
+let checked_sort_cmp_universes _env pb s0 s1 univs =
+  let s0 = ESorts.make s0 in
+  let s1 = ESorts.make s1 in
   match pb with
-  | Reduction.CONV -> Evd.set_eq_sort env sigma s0 s1
-  | Reduction.CUMUL -> Evd.set_leq_sort env sigma s0 s1
+  | CUMUL -> check_leq univs s0 s1
+  | CONV -> check_eq univs s0 s1
+
+let check_convert_instances ~flex:_ u u' univs =
+  let csts = UVars.enforce_eq_instances u u' (Sorts.QConstraints.empty,Constraints.empty) in
+  if Evd.check_quconstraints univs csts then Result.Ok univs else Result.Error None
+
+(* general conversion and inference functions *)
+let check_inductive_instances cv_pb variance u1 u2 univs =
+  let csts = get_cumulativity_constraints cv_pb variance u1 u2 in
+  if (Evd.check_quconstraints univs csts) then Result.Ok univs
+  else Result.Error None
+
+let checked_universes =
+  { compare_sorts = checked_sort_cmp_universes;
+    compare_instances = check_convert_instances;
+    compare_cumul_instances = check_inductive_instances; }
+
+end
+
+let is_fconv ?(reds=TransparentState.full) pb env sigma t1 t2 =
+  let univs = Evd.universes sigma in
+  let t1 = EConstr.Unsafe.to_constr t1 in
+  let t2 = EConstr.Unsafe.to_constr t2 in
+  let b = match pb with
+  | Conversion.CUMUL -> leq_constr_univs univs t1 t2
+  | Conversion.CONV -> eq_constr_univs univs t1 t2
+  in
+  if b then true
+  else
+    let evars = Evd.evar_handler sigma in
+    try
+      let env = Environ.set_universes (Evd.universes sigma) env in
+      begin match Conversion.generic_conv ~l2r:false pb ~evars reds env (sigma, CheckUnivs.checked_universes) t1 t2 with
+      | Result.Ok (_ : Evd.evar_map) -> true
+      | Result.Error None -> false
+      | Result.Error (Some e) -> Empty.abort e
+      end
+    with
+    | e ->
+      let e = Exninfo.capture e in
+      report_anomaly e
+
+let is_conv ?(reds=TransparentState.full) env sigma x y =
+  is_fconv ~reds Conversion.CONV env sigma x y
+let is_conv_leq ?(reds=TransparentState.full) env sigma x y =
+  is_fconv ~reds Conversion.CUMUL env sigma x y
+let check_conv ?(pb=Conversion.CUMUL) ?(ts=TransparentState.full) env sigma x y =
+  is_fconv ~reds:ts pb env sigma x y
+
+let sigma_compare_sorts _env pb s0 s1 sigma =
+  match pb with
+  | Conversion.CONV ->
+    begin
+      try Result.Ok (Evd.set_eq_sort sigma (ESorts.make s0) (ESorts.make s1))
+      with UGraph.UniverseInconsistency err -> Result.Error (Some err)
+    end
+  | Conversion.CUMUL ->
+    begin
+      try Result.Ok (Evd.set_leq_sort sigma (ESorts.make s0) (ESorts.make s1))
+      with UGraph.UniverseInconsistency err -> Result.Error (Some err)
+    end
 
 let sigma_compare_instances ~flex i0 i1 sigma =
-  try Evd.set_eq_instances ~flex sigma i0 i1
-  with Evd.UniversesDiffer
-     | Univ.UniverseInconsistency _ ->
-        raise Reduction.NotConvertible
+  match Evd.set_eq_instances ~flex sigma i0 i1 with
+  | sigma -> Result.Ok sigma
+  | exception Evd.UniversesDiffer -> Result.Error None
+  | exception UGraph.UniverseInconsistency err -> Result.Error (Some err)
 
 let sigma_check_inductive_instances cv_pb variance u1 u2 sigma =
   match Evarutil.compare_cumulative_instances cv_pb variance u1 u2 sigma with
-  | Inl sigma -> sigma
-  | Inr _ ->
-    raise Reduction.NotConvertible
+  | Inl sigma -> Result.Ok sigma
+  | Inr err -> Result.Error (Some err)
 
 let sigma_univ_state =
-  let open Reduction in
+  let open Conversion in
   { compare_sorts = sigma_compare_sorts;
     compare_instances = sigma_compare_instances;
     compare_cumul_instances = sigma_check_inductive_instances; }
 
-let infer_conv_gen conv_fun ?(catch_incon=true) ?(pb=Reduction.CUMUL)
+let univproblem_compare_sorts env pb s0 s1 uset =
+  let open UnivProblem in
+  match pb with
+  | Conversion.CONV -> Result.Ok (UnivProblem.Set.add (UEq (s0, s1)) uset)
+  | Conversion.CUMUL -> Result.Ok (UnivProblem.Set.add (ULe (s0, s1)) uset)
+
+let univproblem_compare_instances ~flex i0 i1 uset =
+  Result.Ok (UnivProblem.enforce_eq_instances_univs flex i0 i1 uset)
+
+let univproblem_check_inductive_instances cv_pb variance u1 u2 sigma =
+  Result.Ok (UnivProblem.compare_cumulative_instances cv_pb variance u1 u2 sigma)
+
+let univproblem_univ_state =
+  let open Conversion in
+  { compare_sorts = univproblem_compare_sorts;
+    compare_instances = univproblem_compare_instances;
+    compare_cumul_instances = univproblem_check_inductive_instances; }
+
+type genconv = {
+  genconv : 'a 'err. conv_pb -> l2r:bool -> Evd.evar_map -> TransparentState.t ->
+    Environ.env -> ('a, 'err) Conversion.generic_conversion_function
+}
+
+let infer_conv_gen conv_fun ?(catch_incon=true) ?(pb=Conversion.CUMUL)
     ?(ts=TransparentState.full) env sigma x y =
-  (* FIXME *)
   try
       let ans = match pb with
-      | Reduction.CUMUL ->
+      | Conversion.CUMUL ->
           EConstr.leq_constr_universes env sigma x y
-      | Reduction.CONV ->
+      | Conversion.CONV ->
           EConstr.eq_constr_universes env sigma x y
       in
       let ans = match ans with
       | None -> None
       | Some cstr ->
         try Some (Evd.add_universe_constraints sigma cstr)
-        with Univ.UniverseInconsistency _ | Evd.UniversesDiffer -> None
+        with UGraph.UniverseInconsistency _ | Evd.UniversesDiffer -> None
       in
       match ans with
       | Some sigma -> ans
@@ -1132,105 +1337,87 @@ let infer_conv_gen conv_fun ?(catch_incon=true) ?(pb=Reduction.CUMUL)
         let x = EConstr.Unsafe.to_constr x in
         let y = EConstr.Unsafe.to_constr y in
         let env = Environ.set_universes (Evd.universes sigma) env in
-        let sigma' =
-          conv_fun pb ~l2r:false sigma ts
-            env (sigma, sigma_univ_state) x y in
-        Some sigma'
+        (* First try conversion with postponed universe problems as a kind of FO
+           approximation. This may result in unsatisfiable constraints even if
+           some unfoldings of the arguments could have been unified, but this
+           should be exceedingly rare. *)
+        let ans = match conv_fun.genconv pb ~l2r:false sigma ts env (UnivProblem.Set.empty, univproblem_univ_state) x y with
+        | Result.Ok cstr -> Some cstr
+        | Result.Error None ->
+          None (* no universe unification can make these terms convertible *)
+        | Result.Error (Some e) -> Empty.abort e
+        in
+        match ans with
+        | None -> None
+        | Some cstr ->
+          match Evd.add_universe_constraints sigma cstr with
+          | sigma -> Some sigma
+          | exception UGraph.UniverseInconsistency _ | exception Evd.UniversesDiffer ->
+            (* Retry with local universe checking, which may imply constant unfolding *)
+            match conv_fun.genconv pb ~l2r:false sigma ts env (sigma, sigma_univ_state) x y with
+            | Result.Ok sigma -> Some sigma
+            | Result.Error None -> None
+            | Result.Error (Some e) -> raise (UGraph.UniverseInconsistency e)
   with
-  | Reduction.NotConvertible -> None
-  | Univ.UniverseInconsistency _ when catch_incon -> None
+  | UGraph.UniverseInconsistency _ when catch_incon -> None
   | e ->
     let e = Exninfo.capture e in
     report_anomaly e
 
-let infer_conv = infer_conv_gen (fun pb ~l2r sigma ->
-      Reduction.generic_conv pb ~l2r (existential_opt_value0 sigma))
+let infer_conv = infer_conv_gen { genconv = fun pb ~l2r sigma ->
+      Conversion.generic_conv pb ~l2r ~evars:(Evd.evar_handler sigma) }
 
-(* This reference avoids always having to link C code with the kernel *)
-let vm_infer_conv = ref (infer_conv ~catch_incon:true ~ts:TransparentState.full)
-let set_vm_infer_conv f = vm_infer_conv := f
-let vm_infer_conv ?(pb=Reduction.CUMUL) env t1 t2 =
-  !vm_infer_conv ~pb env t1 t2
+let infer_conv_ustate ?(catch_incon=true) ?(pb=Conversion.CUMUL)
+    ?(ts=TransparentState.full) env sigma x y =
+  try
+      let ans = match pb with
+      | Conversion.CUMUL ->
+          EConstr.leq_constr_universes env sigma x y
+      | Conversion.CONV ->
+          EConstr.eq_constr_universes env sigma x y
+      in
+      match ans with
+      | Some cstr -> Some cstr
+      | None ->
+        let x = EConstr.Unsafe.to_constr x in
+        let y = EConstr.Unsafe.to_constr y in
+        let env = Environ.set_universes (Evd.universes sigma) env in
+        match
+          Conversion.generic_conv pb ~l2r:false ~evars:(Evd.evar_handler sigma) ts
+            env (UnivProblem.Set.empty, univproblem_univ_state) x y
+        with
+        | Result.Ok cstr -> Some cstr
+        | Result.Error None -> None
+        | Result.Error (Some e) -> raise (UGraph.UniverseInconsistency e)
+  with
+  | UGraph.UniverseInconsistency _ when catch_incon -> None
+  | e ->
+    let e = Exninfo.capture e in
+    report_anomaly e
+
+let evars_of_evar_map sigma =
+  { Genlambda.evars_val = Evd.evar_handler sigma }
+
+let vm_infer_conv ?(pb=Conversion.CUMUL) env sigma t1 t2 =
+  infer_conv_gen { genconv = fun pb ~l2r sigma ts ->
+      Vconv.vm_conv_gen pb (evars_of_evar_map sigma) }
+    ~catch_incon:true ~pb env sigma t1 t2
+
+let native_conv_generic pb sigma t =
+  Nativeconv.native_conv_gen pb (evars_of_evar_map sigma) t
+
+let native_infer_conv ?(pb=Conversion.CUMUL) env sigma t1 t2 =
+  infer_conv_gen { genconv = fun pb ~l2r sigma ts -> native_conv_generic pb sigma }
+    ~catch_incon:true ~pb env sigma t1 t2
+
+let check_hyps_inclusion env sigma x hyps =
+  let env = Environ.set_universes (Evd.universes sigma) env in
+  let evars = Evd.evar_handler sigma in
+  Typeops.check_hyps_inclusion env ~evars x hyps
 
 (********************************************************************)
 (*             Special-Purpose Reduction                            *)
 (********************************************************************)
-
-let default_plain_instance_ident = Id.of_string "H"
-
-type subst_fun = { sfun : metavariable -> EConstr.t }
-
-(* Try to replace all metas. Does not replace metas in the metas' values
- * Differs from (strong whd_meta). *)
-let plain_instance sigma s c = match s with
-| None -> c
-| Some s ->
-  let rec irec n u = match EConstr.kind sigma u with
-    | Meta p -> (try lift n (s.sfun p) with Not_found -> u)
-    | App (f,l) when isCast sigma f ->
-        let (f,_,t) = destCast sigma f in
-        let l' = Array.Fun1.Smart.map irec n l in
-        (match EConstr.kind sigma f with
-        | Meta p ->
-            (* Don't flatten application nodes: this is used to extract a
-               proof-term from a proof-tree and we want to keep the structure
-               of the proof-tree *)
-            (try let g = s.sfun p in
-            match EConstr.kind sigma g with
-            | App _ ->
-                let l' = Array.Fun1.Smart.map lift 1 l' in
-                let r = Sorts.Relevant in (* TODO fix relevance *)
-                let na = make_annot (Name default_plain_instance_ident) r in
-                mkLetIn (na,g,t,mkApp(mkRel 1, l'))
-            | _ -> mkApp (g,l')
-            with Not_found -> mkApp (f,l'))
-        | _ -> mkApp (irec n f,l'))
-    | Cast (m,_,_) when isMeta sigma m ->
-        (try lift n (s.sfun (destMeta sigma m)) with Not_found -> u)
-    | _ ->
-        map_with_binders sigma succ irec n u
-  in
-  irec 0 c
-
-(* [instance] is used for [res_pf]; the call to [local_strong whd_betaiota]
-   has (unfortunately) different subtle side effects:
-
-   - ** Order of subgoals **
-     If the lemma is a case analysis with parameters, it will move the
-     parameters as first subgoals (e.g. "case H" applied on
-     "H:D->A/\B|-C" will present the subgoal |-D first while w/o
-     betaiota the subgoal |-D would have come last).
-
-   - ** Betaiota-contraction in statement **
-     If the lemma has a parameter which is a function and this
-     function is applied in the lemma, then the _strong_ betaiota will
-     contract the application of the function to its argument (e.g.
-     "apply (H (fun x => x))" in "H:forall f, f 0 = 0 |- 0=0" will
-     result in applying the lemma 0=0 in which "(fun x => x) 0" has
-     been contracted). A goal to rewrite may then fail or succeed
-     differently.
-
-   - ** Naming of hypotheses **
-     If a lemma is a function of the form "fun H:(forall a:A, P a)
-     => .. F H .." where the expected type of H is "forall b:A, P b",
-     then, without reduction, the application of the lemma will
-     generate a subgoal "forall a:A, P a" (and intro will use name
-     "a"), while with reduction, it will generate a subgoal "forall
-     b:A, P b" (and intro will use name "b").
-
-   - ** First-order pattern-matching **
-     If a lemma has the type "(fun x => p) t" then rewriting t may fail
-     if the type of the lemma is first beta-reduced (this typically happens
-     when rewriting a single variable and the type of the lemma is obtained
-     by meta_instance (with empty map) which itself calls instance with this
-     empty map).
- *)
-
-let instance env sigma s c =
-  (* if s = [] then c else *)
-  (* No need to compute contexts under binders as whd_betaiota is local *)
-  let rec strongrec t = EConstr.map sigma strongrec (whd_betaiota env sigma t) in
-  strongrec (plain_instance sigma s c)
 
 (* pseudo-reduction rule:
  * [hnf_prod_app env s (Prod(_,B)) N --> B[N]
@@ -1260,38 +1447,61 @@ let hnf_lam_appvect env sigma t nl =
 let hnf_lam_applist env sigma t nl =
   List.fold_left (fun acc t -> hnf_lam_app env sigma acc t) t nl
 
-let splay_prod env sigma =
-  let rec decrec env m c =
+let whd_decompose_prod env sigma =
+  let rec decrec env hyps c =
     let t = whd_all env sigma c in
     match EConstr.kind sigma t with
       | Prod (n,a,c0) ->
-         decrec (push_rel (LocalAssum (n,a)) env) ((n,a)::m) c0
-      | _ -> m,t
+         decrec (push_rel (LocalAssum (n,a)) env) ((n,a)::hyps) c0
+      | _ -> hyps, t
   in
   decrec env []
 
-let splay_lam env sigma =
-  let rec decrec env m c =
+let whd_decompose_lambda env sigma =
+  let rec decrec env hyps c =
     let t = whd_all env sigma c in
     match EConstr.kind sigma t with
       | Lambda (n,a,c0) ->
-         decrec (push_rel (LocalAssum (n,a)) env) ((n,a)::m) c0
-      | _ -> m,t
+         decrec (push_rel (LocalAssum (n,a)) env) ((n,a)::hyps) c0
+      | _ -> hyps, t
   in
   decrec env []
 
-let splay_prod_assum env sigma =
+let whd_decompose_prod_n env sigma n =
+  let rec decrec env m hyps c = if Int.equal m 0 then (hyps,c) else
+    match EConstr.kind sigma (whd_all env sigma c) with
+      | Prod (n,a,c0) ->
+         decrec (push_rel (LocalAssum (n,a)) env) (m-1) ((n,a)::hyps) c0
+      | _ -> invalid_arg "whd_decompose_prod_n"
+  in
+  decrec env n []
+
+let whd_decompose_lambda_n env sigma n =
+  let rec decrec env m hyps c = if Int.equal m 0 then (hyps,c) else
+    match EConstr.kind sigma (whd_all env sigma c) with
+      | Lambda (n,a,c0) ->
+         decrec (push_rel (LocalAssum (n,a)) env) (m-1) ((n,a)::hyps) c0
+      | _ -> invalid_arg "whd_decompose_lambda_n"
+  in
+  decrec env n []
+
+let whd_decompose_prod_decls env sigma =
   let rec prodec_rec env l c =
     let t = whd_allnolet env sigma c in
     match EConstr.kind sigma t with
     | Prod (x,t,c)  ->
-        prodec_rec (push_rel (LocalAssum (x,t)) env)
-          (Context.Rel.add (LocalAssum (x,t)) l) c
+        let d = LocalAssum (x,t) in
+        prodec_rec (push_rel d env) (Context.Rel.add d l) c
     | LetIn (x,b,t,c) ->
-        prodec_rec (push_rel (LocalDef (x,b,t)) env)
-          (Context.Rel.add (LocalDef (x,b,t)) l) c
-    | Cast (c,_,_)    -> prodec_rec env l c
+        (* note: there is a compromise in situations such as
+           "let x := forall y, P in x": expose the let-in and stop looking
+            for products or ignore the let and find a new product *)
+        let d = LocalDef (x,b,t) in
+        prodec_rec (push_rel d env) (Context.Rel.add d l) c
     | _               ->
+      (* deal with situations of the form "(let x:=t in fun y => u) v", or even
+         "(let x:=fun y => u in x) v", ...
+         ideally, shouldn't we move instead the let-ins outside the redexes? *)
       let t' = whd_all env sigma t in
         if EConstr.eq_constr sigma t t' then l,t
         else prodec_rec env l t'
@@ -1299,30 +1509,95 @@ let splay_prod_assum env sigma =
   prodec_rec env Context.Rel.empty
 
 let splay_arity env sigma c =
-  let l, c = splay_prod env sigma c in
+  let l, c = whd_decompose_prod env sigma c in
   match EConstr.kind sigma c with
     | Sort s -> l,s
     | _ -> raise Reduction.NotArity
 
-let sort_of_arity env sigma c = snd (splay_arity env sigma c)
+let dest_arity env sigma c =
+  let l, c = whd_decompose_prod_decls env sigma c in
+  match EConstr.kind sigma c with
+    | Sort s -> l,s
+    | _ -> raise Reduction.NotArity
 
-let splay_prod_n env sigma n =
+let sort_of_arity env sigma c = snd (dest_arity env sigma c)
+
+(* deprecated (wrong behavior)  *)
+let hnf_decompose_prod_n_decls env sigma n =
   let rec decrec env m ln c = if Int.equal m 0 then (ln,c) else
     match EConstr.kind sigma (whd_all env sigma c) with
       | Prod (n,a,c0) ->
           decrec (push_rel (LocalAssum (n,a)) env)
             (m-1) (Context.Rel.add (LocalAssum (n,a)) ln) c0
-      | _                      -> invalid_arg "splay_prod_n"
+      | _                      -> invalid_arg "whd_decompose_prod_n_decls"
   in
   decrec env n Context.Rel.empty
 
-let splay_lam_n env sigma n =
+(* deprecated (wrong behavior) *)
+let hnf_decompose_lambda_n_assum env sigma n =
   let rec decrec env m ln c = if Int.equal m 0 then (ln,c) else
     match EConstr.kind sigma (whd_all env sigma c) with
       | Lambda (n,a,c0) ->
           decrec (push_rel (LocalAssum (n,a)) env)
             (m-1) (Context.Rel.add (LocalAssum (n,a)) ln) c0
-      | _                      -> invalid_arg "splay_lam_n"
+      | _                      -> invalid_arg "whd_decompose_lambda_n_assum"
+  in
+  decrec env n Context.Rel.empty
+
+let whd_decompose_prod_n_assum env sigma n =
+  let rec decrec env m ctx c = if Int.equal m 0 then (ctx,c) else
+    match EConstr.kind sigma (whd_allnolet env sigma c) with
+      | Prod (n,a,c0) ->
+          let d = LocalAssum (n,a) in
+          decrec (push_rel d env) (m-1) (Context.Rel.add d ctx) c0
+      | LetIn (x,b,t,c) ->
+          let d = LocalDef (x,b,t) in
+          decrec (push_rel d env) m (Context.Rel.add d ctx) c
+      | _ ->
+        (* deal with situations of the form "(let x:=t in fun y => u) v", or even
+           "(let x:=fun y => u in x) v", ...
+           ideally, shouldn't we move instead the let-ins outside the redexes? *)
+        let c' = whd_all env sigma c in
+        if EConstr.eq_constr sigma c c' then invalid_arg "whd_decompose_prod_n_assum"
+        else decrec env m ctx c'
+  in
+  decrec env n Context.Rel.empty
+
+let whd_decompose_prod_n_decls env sigma n =
+  let rec decrec env m ctx c = if Int.equal m 0 then (ctx,c) else
+    match EConstr.kind sigma (whd_all env sigma c) with
+      | Prod (n,a,c0) ->
+          let d = LocalAssum (n,a) in
+          decrec (push_rel d env) (m-1) (Context.Rel.add d ctx) c0
+      | LetIn (x,b,t,c) ->
+          let d = LocalDef (x,b,t) in
+          decrec (push_rel d env) (m-1) (Context.Rel.add d ctx) c
+      | _ ->
+        (* deal with situations of the form "(let x:=t in fun y => u) v", or even
+           "(let x:=fun y => u in x) v", ...
+           ideally, shouldn't we move instead the let-ins outside the redexes? *)
+        let c' = whd_all env sigma c in
+        if EConstr.eq_constr sigma c c' then invalid_arg "whd_decompose_prod_n_decls"
+        else decrec env m ctx c'
+  in
+  decrec env n Context.Rel.empty
+
+let whd_decompose_lambda_n_assum env sigma n =
+  let rec decrec env m ctx c = if Int.equal m 0 then (ctx,c) else
+    match EConstr.kind sigma (whd_allnolet env sigma c) with
+      | Lambda (n,a,c0) ->
+          let d = LocalAssum (n,a) in
+          decrec (push_rel d env) (m-1) (Context.Rel.add d ctx) c0
+      | LetIn (x,b,t,c) ->
+          let d = LocalDef (x,b,t) in
+          decrec (push_rel d env) m (Context.Rel.add d ctx) c
+      | _ ->
+        (* deal with situations of the form "(let x:=t in fun y => u) v", or even
+           "(let x:=fun y => u in x) v", ...
+           ideally, shouldn't we move instead the let-ins outside the redexes? *)
+        let c' = whd_all env sigma c in
+        if EConstr.eq_constr sigma c c' then invalid_arg "whd_decompose_lambda_n_assum"
+        else decrec env m ctx c'
   in
   decrec env n Context.Rel.empty
 
@@ -1334,8 +1609,8 @@ let is_sort env sigma t =
 (* reduction to head-normal-form allowing delta/zeta only in argument
    of case/fix (heuristic used by evar_conv) *)
 
-let whd_betaiota_deltazeta_for_iota_state ts env sigma s =
-  let all' = CClosure.RedFlags.red_add_transparent CClosure.all ts in
+let whd_betaiota_deltazeta_for_iota_state ts ?metas env sigma s =
+  let all' = RedFlags.red_add_transparent RedFlags.all ts in
   (* Unset the sharing flag to get a call-by-name reduction. This matters for
      the shape of the generated term. *)
   let env' = Environ.set_typing_flags { (Environ.typing_flags env) with Declarations.share_reduction = false } env in
@@ -1349,11 +1624,24 @@ let whd_betaiota_deltazeta_for_iota_state ts env sigma s =
     | (FConstruct _ | FCoFix _) ->
       (* Non-neutral normal, can trigger reduction below *)
       let c = EConstr.of_constr (term_of_process c stk) in
-      Some (decompose_app_vect sigma c)
+      Some (decompose_app sigma c)
     | _ -> None
   in
   let rec whrec s =
-    let (t, stack as s) = whd_state_gen CClosure.betaiota env sigma s in
+    let (t, stack as s) = whd_state_gen RedFlags.betaiota ?metas env sigma s in
+    let rewrite_step =
+      match kind sigma t with
+      | Const (cst, u) when Environ.is_symbol env cst ->
+        let r = Environ.lookup_rewrite_rules cst env in
+        begin match apply_rules whrec env sigma u r stack with
+        | r -> Some r
+        | exception PatternFailure -> None
+        end
+      | _ -> None
+    in
+    match rewrite_step with
+    | Some r -> whrec r
+    | None ->
     match Stack.strip_app stack with
       |args, (Stack.Case _ :: _ as stack') ->
         begin match whd_opt (t, args) with
@@ -1365,7 +1653,7 @@ let whd_betaiota_deltazeta_for_iota_state ts env sigma s =
         | Some (t_o, args) when isConstruct sigma t_o -> whrec (t_o, Stack.append_app args stack')
         | (Some _ | None) -> s
         end
-      |args, (Stack.Proj p :: stack'') ->
+      |args, (Stack.Proj (p,_) :: stack'') ->
         begin match whd_opt (t, args) with
         | Some (t_o, args) when isConstruct sigma t_o ->
           whrec (args.(Projection.npars p + Projection.arg p), stack'')
@@ -1390,44 +1678,65 @@ let is_arity env sigma c =
     | Sort _ -> true
     | _ -> false
 
-(*************************************)
-(* Metas *)
+module Infer = struct
 
-type meta_instance_subst = {
-  sigma : Evd.evar_map;
-  mutable cache : EConstr.t Metamap.t;
-}
+open Conversion
 
-let create_meta_instance_subst sigma = {
-  sigma;
-  cache = Metamap.empty;
-}
+let infer_eq (univs, cstrs as cuniv) u u' =
+  if UGraph.check_eq_sort univs u u' then Result.Ok cuniv
+  else try
+    let cstrs' = UnivSubst.enforce_eq_sort u u' Constraints.empty in
+    Result.Ok (UGraph.merge_constraints cstrs' univs, Constraints.union cstrs cstrs')
+  with UGraph.UniverseInconsistency err -> Result.Error (Some err)
 
-let eval_subst env subst =
-  let rec ans mv =
-    try Metamap.find mv subst.cache
-    with Not_found ->
-      match meta_opt_fvalue subst.sigma mv with
-      | None -> mkMeta mv
-      | Some (b, _) ->
-        let metas =
-          if Metaset.is_empty b.freemetas then None
-          else Some { sfun = ans }
-        in
-        let res = instance env subst.sigma metas b.rebus in
-        let () = subst.cache <- Metamap.add mv res subst.cache in
-        res
-  in
-  { sfun = ans }
+let infer_leq (univs, cstrs as cuniv) u u' =
+  if UGraph.check_leq_sort univs u u' then Result.Ok cuniv
+  else match UnivSubst.enforce_leq_alg_sort u u' univs with
+  | cstrs', univs ->
+    Result.Ok (univs, Univ.Constraints.union cstrs cstrs')
+  | exception UGraph.UniverseInconsistency err -> Result.Error (Some err)
 
-let meta_instance env subst b =
-  let fm = b.freemetas in
-  if Metaset.is_empty fm then b.rebus
+let infer_cmp_universes _env pb s0 s1 univs =
+  match pb with
+  | CUMUL -> infer_leq univs s0 s1
+  | CONV -> infer_eq univs s0 s1
+
+let infer_convert_instances ~flex u u' (univs,cstrs as cuniv) =
+  if flex then
+    if UGraph.check_eq_instances univs u u' then Result.Ok cuniv
+    else Result.Error None
   else
-    let sfun = eval_subst env subst in
-    instance env subst.sigma (Some sfun) b.rebus
+    let qcstrs, cstrs' = UVars.enforce_eq_instances u u' Sorts.QUConstraints.empty in
+    if Sorts.QConstraints.trivial qcstrs then
+      Result.Ok (univs, Constraints.union cstrs cstrs')
+    else
+      Result.Error None
 
-let nf_meta env sigma c =
-  let sigma = create_meta_instance_subst sigma in
-  let cl = mk_freelisted c in
-  meta_instance env sigma { cl with rebus = cl.rebus }
+let infer_inductive_instances cv_pb variance u1 u2 (univs,csts) =
+  let qcsts, csts' = get_cumulativity_constraints cv_pb variance u1 u2 in
+  if Sorts.QConstraints.trivial qcsts then
+    match UGraph.merge_constraints csts' univs with
+    | univs -> Result.Ok (univs, Univ.Constraints.union csts csts')
+    | exception (UGraph.UniverseInconsistency err) -> Result.Error (Some err)
+  else Result.Error None
+
+let inferred_universes =
+  { compare_sorts = infer_cmp_universes;
+    compare_instances = infer_convert_instances;
+    compare_cumul_instances = infer_inductive_instances; }
+
+end
+
+let inferred_universes = Infer.inferred_universes
+
+(* Deprecated *)
+
+let splay_prod = whd_decompose_prod
+let splay_lam = whd_decompose_lambda
+let splay_prod_assum = whd_decompose_prod_decls
+let splay_prod_n = hnf_decompose_prod_n_decls
+let splay_lam_n = hnf_decompose_lambda_n_assum
+
+let hnf_decompose_prod = whd_decompose_prod
+let hnf_decompose_lambda = whd_decompose_lambda
+let hnf_decompose_prod_decls = whd_decompose_prod_decls

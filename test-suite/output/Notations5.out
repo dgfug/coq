@@ -150,6 +150,8 @@ v 0
      : forall b : bool, 0 = 0 /\ b = b
      = ?n@{x:=v 0 (B:=bool)}
      : nat
+where
+?n : [x : forall b : bool, 0 = 0 /\ b = b |- nat]
 v
      : forall (a2 : nat) (B : Type) (b : B), 0 = a2 /\ b = b
 v 0
@@ -172,6 +174,8 @@ v 0
      : forall b : bool, 0 = 0 /\ b = b
      = ?n@{x:=v 0 (B:=bool)}
      : nat
+where
+?n : [x : forall b : bool, 0 = 0 /\ b = b |- nat]
 ##
      : forall (a1 a2 : ?A) (B : Type) (b : B), a1 = a2 /\ b = b
 where
@@ -202,6 +206,8 @@ where
      : forall b : bool, 0 = 0 /\ b = b
      = ?n@{x:=## 0 0 (B:=bool)}
      : nat
+where
+?n : [x : forall b : bool, 0 = 0 /\ b = b |- nat]
 ## ?A
      : forall (a1 a2 : ?A) (B : Type) (b : B), a1 = a2 /\ b = b
 where
@@ -242,6 +248,8 @@ where
      : forall b : bool, 0 = 0 /\ b = b
      = ?n@{x:=## 0 0 (B:=bool)}
      : nat
+where
+?n : [x : forall b : bool, 0 = 0 /\ b = b |- nat]
 ## 0 0 true
      : 0 = 0 /\ true = true
 ## 0 0 true
@@ -260,6 +268,8 @@ where
      : forall b : bool, 0 = 0 /\ b = b
      = ?n@{x:=## 0 0 (B:=bool)}
      : nat
+where
+?n : [x : forall b : bool, 0 = 0 /\ b = b |- nat]
 ## 0 0 true
      : 0 = 0 /\ true = true
 ## 0 0 true
@@ -320,3 +330,16 @@ fun a : T => match a with
              | _ => 2
              end
      : T -> nat
+Nat.add 0 0
+     : nat
+File "./output/Notations5.v", line 414, characters 11-12:
+The command has indeed failed with message:
+The term "0" has type "nat" while it is expected to have type "Type".
+File "./output/Notations5.v", line 417, characters 11-16:
+The command has indeed failed with message:
+Unknown interpretation for notation "_ + _".
+Some 0
+     : option nat
+File "./output/Notations5.v", line 424, characters 11-12:
+The command has indeed failed with message:
+The reference f was not found in the current environment.

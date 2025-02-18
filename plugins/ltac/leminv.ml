@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -23,9 +23,8 @@ open Evd
 open Printer
 open Reductionops
 open Inductiveops
-open Tacmach.New
-open Clenv
-open Tacticals.New
+open Tacmach
+open Tacticals
 open Tactics
 open Context.Named.Declaration
 
@@ -155,24 +154,24 @@ let compute_first_inversion_scheme env sigma ind sort dep_option =
       pty,goal
     else
       let i = mkAppliedInd ind in
-      let ivars = global_vars env sigma i in
+      let ivars = Termops.global_vars_set env sigma i in
       let revargs,ownsign =
         fold_named_context
           (fun env d (revargs,hyps) ->
-            let d = map_named_decl EConstr.of_constr d in
+            let d = EConstr.of_named_decl d in
              let id = NamedDecl.get_id d in
-             if Id.List.mem id ivars then
+             if Id.Set.mem id ivars then
                ((mkVar id)::revargs, Context.Named.add d hyps)
              else
                (revargs,hyps))
           env ~init:([],[])
       in
-      let pty = it_mkNamedProd_or_LetIn (mkSort sort) ownsign in
-      let goal = mkArrow i Sorts.Relevant (applist(mkVar p, List.rev revargs)) in
+      let pty = it_mkNamedProd_or_LetIn sigma (mkSort sort) ownsign in
+      let goal = mkArrow i ERelevance.relevant (applist(mkVar p, List.rev revargs)) in
       (pty,goal)
   in
   let npty = nf_all env sigma pty in
-  let extenv = push_named (LocalAssum (make_annot p Sorts.Relevant,npty)) env in
+  let extenv = push_named (LocalAssum (make_annot p ERelevance.relevant,npty)) env in
   extenv, goal
 
 (* [inversion_scheme sign I]
@@ -187,27 +186,27 @@ let inversion_scheme ~name ~poly env sigma t sort dep_option inv_op =
   let ind =
     try find_rectype env sigma i
     with Not_found ->
-      user_err ~hdr:"inversion_scheme" (no_inductive_inconstr env sigma i)
+      user_err (no_inductive_inconstr env sigma i)
   in
   let (invEnv,invGoal) =
     compute_first_inversion_scheme env sigma ind sort dep_option
   in
   assert
-    (List.subset
-       (global_vars env sigma invGoal)
-       (ids_of_named_context (named_context invEnv)));
+    (Id.Set.subset
+       (Termops.global_vars_set env sigma invGoal)
+       (ids_of_named_context_val (named_context_val invEnv)));
   (*
-    user_err ~hdr:"lemma_inversion"
+    user_err
     (str"Computed inversion goal was not closed in initial signature.");
   *)
-  let pf = Proof.start ~name ~poly (Evd.from_ctx (evar_universe_context sigma)) [invEnv,invGoal] in
+  let pf = Proof.start ~name ~poly (Evd.from_ctx (ustate sigma)) [invEnv,invGoal] in
   let pf, _, () = Proof.run_tactic env (tclTHEN intro (onLastHypId inv_op)) pf in
   let pfterm = List.hd (Proof.partial_proof pf) in
   let global_named_context = Global.named_context_val () in
   let ownSign = ref begin
     fold_named_context
       (fun env d sign ->
-        let d = map_named_decl EConstr.of_constr d in
+        let d = EConstr.of_named_decl d in
          if mem_named_context_val (NamedDecl.get_id d) global_named_context then sign
          else Context.Named.add d sign)
       invEnv ~init:Context.Named.empty
@@ -221,13 +220,13 @@ let inversion_scheme ~name ~poly env sigma t sort dep_option inv_op =
         let h = next_ident_away (Id.of_string "H") !avoid in
         let ty,inst = Evarutil.generalize_evar_over_rels sigma (e,args) in
         avoid := Id.Set.add h !avoid;
-        ownSign := Context.Named.add (LocalAssum (make_annot h Sorts.Relevant,ty)) !ownSign;
+        ownSign := Context.Named.add (LocalAssum (make_annot h ERelevance.relevant,ty)) !ownSign;
         applist (mkVar h, inst)
     | _ -> EConstr.map sigma fill_holes c
   in
   let c = fill_holes pfterm in
   (* warning: side-effect on ownSign *)
-  let invProof = it_mkNamedLambda_or_LetIn c !ownSign in
+  let invProof = it_mkNamedLambda_or_LetIn sigma c !ownSign in
   invProof, sigma
 
 let add_inversion_lemma ~poly name env sigma t sort dep inv_op =
@@ -256,18 +255,23 @@ let add_inversion_lemma_exn ~poly na com comsort bool tac =
 
 let lemInv id c =
   Proofview.Goal.enter begin fun gls ->
+  let env = Proofview.Goal.env gls in
+  let clause = Clenv.mk_clenv_from env (project gls) (c, pf_get_type_of gls c) in
+  let mv = let mvs = Clenv.clenv_arguments clause in
+    if List.is_empty mvs then
+      CErrors.user_err
+        Pp.(hov 0 (pr_econstr_env (pf_env gls) (project gls) c ++ spc ()
+                   ++ str "does not refer to an inversion lemma."))
+    else List.last mvs
+  in
   try
-    let clause = mk_clenv_from (pf_env gls) (project gls) (c, pf_get_type_of gls c) in
-    let clause = clenv_constrain_last_binding (EConstr.mkVar id) clause in
+    let clause = Clenv.clenv_instantiate mv clause (EConstr.mkVar id, Typing.type_of_variable env id) in
     Clenv.res_pf clause ~flags:(Unification.elim_flags ()) ~with_evars:false
   with
-    | NoSuchBinding ->
-        user_err
-          (hov 0 (pr_econstr_env (pf_env gls) (project gls) c ++ spc () ++ str "does not refer to an inversion lemma."))
-    | UserError (a,b) ->
-         user_err ~hdr:"LemInv"
+    | Failure _ | UserError _ ->
+         user_err
            (str "Cannot refine current goal with the lemma " ++
-              pr_leconstr_env (pf_env gls) (project gls) c)
+              pr_leconstr_env (pf_env gls) (project gls) c ++ str ".")
   end
 
 let lemInv_gen id c = try_intros_until (fun id -> lemInv id c) id
@@ -284,7 +288,7 @@ let lemInvIn id c ids =
       else
         (tclTHEN (tclDO nb_of_new_hyp intro) (intros_replacing ids))
     in
-    ((tclTHEN (tclTHEN (bring_hyps hyps) (lemInv id c))
+    ((tclTHEN (tclTHEN (Generalize.bring_hyps hyps) (lemInv id c))
         (intros_replace_ids)))
   end
 

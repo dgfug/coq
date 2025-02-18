@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -16,7 +16,7 @@ open Genarg
 open Redexpr
 open Tactypes
 
-val ltac_trace_info : ltac_trace Exninfo.t
+val ltac_trace_info : ltac_stack Exninfo.t
 
 module Value :
 sig
@@ -77,10 +77,9 @@ val val_interp : interp_sign -> glob_tactic_expr -> (value -> unit Proofview.tac
 val interp_ltac_constr : interp_sign -> glob_tactic_expr -> (constr -> unit Proofview.tactic) -> unit Proofview.tactic
 
 (** Interprets redexp arguments *)
-val interp_red_expr : interp_sign -> Environ.env -> Evd.evar_map -> glob_red_expr -> Evd.evar_map * red_expr
+val interp_red_expr : interp_sign -> Environ.env -> Evd.evar_map -> Genredexpr.glob_red_expr -> Evd.evar_map * red_expr
 
-(** Interprets redexp arguments from a raw one *)
-val interp_redexp : Environ.env -> Evd.evar_map -> raw_red_expr -> Evd.evar_map * red_expr
+val interp_strategy : interp_sign -> Environ.env -> Evd.evar_map -> glob_strategy -> Rewrite.strategy
 
 (** Interprets tactic expressions *)
 
@@ -144,6 +143,11 @@ val interp_ltac_var : (value -> 'a) -> interp_sign ->
 val interp_int : interp_sign -> lident -> int
 
 val interp_int_or_var : interp_sign -> int Locus.or_var -> int
+
+val interp_ident : interp_sign -> Environ.env -> Evd.evar_map -> Id.t -> Id.t
+
+val interp_intro_pattern : interp_sign -> Environ.env -> Evd.evar_map ->
+  glob_constr_and_expr intro_pattern_expr CAst.t -> intro_pattern
 
 val default_ist : unit -> Geninterp.interp_sign
 (** Empty ist with debug set on the current value. *)

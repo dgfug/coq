@@ -1,3 +1,4 @@
+src/META.coq-test-suite
 -Q theories Marshal
 -I src
 

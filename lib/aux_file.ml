@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -30,12 +30,14 @@ let mk_absolute vfile =
 
 let start_aux_file ~aux_file:output_file ~v_file =
   let vfile = mk_absolute v_file in
-  oc := Some (open_out output_file);
-  Printf.fprintf (Option.get !oc) "COQAUX%d %s %s\n"
-    version (Digest.to_hex (Digest.file vfile)) vfile
+  try
+    oc := Some (open_out output_file);
+    Printf.fprintf (Option.get !oc) "COQAUX%d %s %s\n"
+      version (Digest.to_hex (Digest.file vfile)) vfile
+  with Sys_error _ -> ()
 
 let stop_aux_file () =
-  close_out (Option.get !oc);
+  Option.iter close_out !oc;
   oc := None
 
 let recording () = not (Option.is_empty !oc)
@@ -77,18 +79,23 @@ let load_aux_file_for vfile =
   let add loc k v = h := set !h loc k v in
   let aux_fname = aux_file_name_for vfile in
   try
-    let ib = Scanf.Scanning.from_channel (open_in aux_fname) in
-    let ver, hash, fname =
-      Scanf.bscanf ib "COQAUX%d %s %s\n" ret3 in
-    if ver <> version then raise (Failure "aux file version mismatch");
-    if fname <> vfile then
-      raise (Failure "aux file name mismatch");
-    let only_dummyloc = Digest.to_hex (Digest.file vfile) <> hash in
-    while true do
-      let i, j, k, v = Scanf.bscanf ib "%d %d %s %S\n" ret4 in
-      if not only_dummyloc || (i = 0 && j = 0) then add (i,j) k v;
-    done;
-    raise End_of_file
+    let ch = open_in aux_fname in
+    Util.try_finally (fun () ->
+        let ib = Scanf.Scanning.from_channel ch in
+        let ver, hash, fname =
+          Scanf.bscanf ib "COQAUX%d %s %s\n" ret3 in
+        if ver <> version then raise (Failure "aux file version mismatch");
+        if fname <> vfile then
+          raise (Failure "aux file name mismatch");
+        let only_dummyloc = Digest.to_hex (Digest.file vfile) <> hash in
+        while true do
+          let i, j, k, v = Scanf.bscanf ib "%d %d %s %S\n" ret4 in
+          if not only_dummyloc || (i = 0 && j = 0) then add (i,j) k v;
+        done;
+        raise End_of_file)
+      ()
+      (fun () -> close_in ch)
+      ()
   with
   | End_of_file -> !h
   | Sys_error s | Scanf.Scan_failure s

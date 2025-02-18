@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -33,10 +33,22 @@ let vernac_echo ?loc in_chan = let open Loc in
       Feedback.msg_notice @@ str @@ really_input_string in_chan len
     ) loc
 
-(* Re-enable when we get back to feedback printing *)
-(* let is_end_of_input any = match any with *)
-(*     Stm.End_of_input -> true *)
-(*   | _ -> false *)
+
+type time_output =
+  | ToFeedback
+  | ToChannel of Format.formatter
+
+let make_time_output = function
+  | Coqargs.ToFeedback -> ToFeedback
+  | ToFile f ->
+    let ch = open_out f in
+    let fch = Format.formatter_of_out_channel ch in
+    let close () =
+      Format.pp_print_flush fch ();
+      close_out ch
+    in
+    at_exit close;
+    ToChannel fch
 
 module State = struct
 
@@ -44,64 +56,67 @@ module State = struct
     doc : Stm.doc;
     sid : Stateid.t;
     proof : Proof.t option;
-    time : bool;
+    time : time_output option;
   }
 
 end
 
-let interp_vernac ~check ~interactive ~state ({CAst.loc;_} as com) =
+let emit_time state com tstart tend =
+  match state.State.time with
+  | None -> ()
+  | Some time ->
+    let pp = Topfmt.pr_cmd_header com ++ System.fmt_time_difference tstart tend in
+    match time with
+    | ToFeedback -> Feedback.msg_notice pp
+    | ToChannel ch -> Pp.pp_with ch (pp ++ fnl())
+
+let interp_vernac ~check ~state ({CAst.loc;_} as com) =
   let open State in
     try
-      (* The -time option is only supported from console-based clients
-         due to the way it prints. *)
-      let com = if state.time
-        then begin
-          CAst.map (fun cmd -> { cmd with control = ControlTime state.time :: cmd.control }) com
-        end else com in
       let doc, nsid, ntip = Stm.add ~doc:state.doc ~ontop:state.sid (not !Flags.quiet) com in
 
       (* Main STM interaction *)
-      if ntip <> `NewTip then
+      if ntip <> Stm.NewAddTip then
         anomaly (str "vernac.ml: We got an unfocus operation on the toplevel!");
 
       (* Force the command  *)
-      let ndoc = if check then Stm.observe ~doc nsid else doc in
+      let () = if check then Stm.observe ~doc nsid in
       let new_proof = Vernacstate.Declare.give_me_the_proof_opt () [@ocaml.warning "-3"] in
-      { state with doc = ndoc; sid = nsid; proof = new_proof; }
+      { state with doc; sid = nsid; proof = new_proof; }
     with reraise ->
       let (reraise, info) = Exninfo.capture reraise in
-      (* XXX: In non-interactive mode edit_at seems to do very weird
-         things, so we better avoid it while we investigate *)
-      if interactive then ignore(Stm.edit_at ~doc:state.doc state.sid);
-      let info = begin
-        match Loc.get_loc info with
-        | None   -> Option.cata (Loc.add_loc info) info loc
-        | Some _ -> info
-      end in
+      let info =
+        (* Set the loc to the whole command if no loc *)
+        match Loc.get_loc info, loc with
+        | None, Some loc -> Loc.add_loc info loc
+        | Some _, _ | _, None  -> info
+      in
       Exninfo.iraise (reraise, info)
 
 (* Load a vernac file. CErrors are annotated with file and location *)
-let load_vernac_core ~echo ~check ~interactive ~state ?ldir file =
+let load_vernac_core ~echo ~check ~state ?source file =
   (* Keep in sync *)
   let in_chan = open_utf8_file_in file in
   let in_echo = if echo then Some (open_utf8_file_in file) else None in
   let input_cleanup () = close_in in_chan; Option.iter close_in in_echo in
 
-  let dirpath = Option.cata (fun ldir -> Some Names.DirPath.(to_string ldir))
-      None ldir in
-  let in_pa = Pcoq.Parsable.make ~loc:Loc.(initial (InFile {dirpath; file}))
-      (Stream.of_channel in_chan) in
+  let source = Option.default (Loc.InFile {dirpath=None; file}) source in
+  let in_pa = Procq.Parsable.make ~loc:Loc.(initial source)
+      (Gramlib.Stream.of_channel in_chan) in
   let open State in
 
   (* ids = For beautify, list of parsed sids *)
   let rec loop state ids =
+    let tstart = System.get_time () in
     match
-      Stm.parse_sentence
-        ~doc:state.doc ~entry:Pvernac.main_entry state.sid in_pa
+      NewProfile.profile "parse_command" (fun () ->
+          Stm.parse_sentence
+            ~doc:state.doc ~entry:Pvernac.main_entry state.sid in_pa)
+        ()
     with
     | None ->
       input_cleanup ();
-      state, ids, Pcoq.Parsable.comments in_pa
+      state, ids, Procq.Parsable.comments in_pa
     | Some ast ->
       (* Printing of AST for -compile-verbose *)
       Option.iter (vernac_echo ?loc:ast.CAst.loc) in_echo;
@@ -109,7 +124,26 @@ let load_vernac_core ~echo ~check ~interactive ~state ?ldir file =
       checknav ast;
 
       let state =
-        Flags.silently (interp_vernac ~check ~interactive ~state) ast in
+        try_finally
+          (fun () ->
+             NewProfile.profile "command"
+               ~args:(fun () ->
+                   let lnum = match ast.loc with
+                     | None -> "unknown"
+                     | Some loc -> string_of_int loc.line_nb
+                   in
+                   [("cmd", `String (Pp.string_of_ppcmds (Topfmt.pr_cmd_header ast)));
+                    ("line", `String lnum)])
+               (fun () ->
+             Flags.silently (interp_vernac ~check ~state) ast) ())
+          ()
+          (fun () ->
+             let tend = System.get_time () in
+             (* The -time option is only supported from console-based clients
+                due to the way it prints. *)
+             emit_time state ast tstart tend)
+          ()
+      in
 
       (loop [@ocaml.tailcall]) state (state.sid :: ids)
   in
@@ -120,7 +154,27 @@ let load_vernac_core ~echo ~check ~interactive ~state ?ldir file =
     Exninfo.iraise (e, info)
 
 let process_expr ~state loc_ast =
-  interp_vernac ~interactive:true ~check:true ~state loc_ast
+  try interp_vernac ~check:true ~state loc_ast
+  with reraise ->
+    let reraise, info = Exninfo.capture reraise in
+
+    (* Exceptions don't carry enough state to print themselves (typically missing the nametab)
+       so we need to print before resetting to an older state. See eg #16745 *)
+    let reraise = UserError (CErrors.iprint (reraise, info)) in
+    (* Keep just the loc in the info as it's printed separately *)
+    let info = Option.cata (Loc.add_loc Exninfo.null) Exninfo.null (Loc.get_loc info) in
+
+    ignore(Stm.edit_at ~doc:state.doc state.sid);
+    Exninfo.iraise (reraise, info)
+
+let process_expr ~state loc_ast =
+  let tstart = System.get_time () in
+  try_finally (fun () -> process_expr ~state loc_ast)
+    ()
+    (fun () ->
+       let tend = System.get_time () in
+       emit_time state loc_ast tstart tend)
+    ()
 
 (******************************************************************************)
 (* Beautify-specific code                                                     *)
@@ -137,9 +191,10 @@ let set_formatter_translator ch =
   ft
 
 let pr_new_syntax ?loc ft_beautify ocom =
+  let loc = Option.append loc (Option.bind ocom (fun x -> x.CAst.loc)) in
   let loc = Option.cata Loc.unloc (0,0) loc in
   let before = comment (Pputils.extract_comments (fst loc)) in
-  let com = Option.cata Ppvernac.pr_vernac (mt ()) ocom in
+  let com = Option.cata (fun com -> Ppvernac.pr_vernac com ++ fnl()) (mt ()) ocom in
   let after = comment (Pputils.extract_comments (snd loc)) in
   if !Flags.beautify_file then
     (Pp.pp_with ft_beautify (hov 0 (before ++ com ++ after));
@@ -168,8 +223,8 @@ let beautify_pass ~doc ~comments ~ids ~filename =
 
 (* Main driver for file loading. For now, we only do one beautify
    pass. *)
-let load_vernac ~echo ~check ~interactive ~state ?ldir filename =
-  let ostate, ids, comments = load_vernac_core ~echo ~check ~interactive ~state ?ldir filename in
+let load_vernac ~echo ~check ~state ?source filename =
+  let ostate, ids, comments = load_vernac_core ~echo ~check ~state ?source filename in
   (* Pass for beautify *)
   if !Flags.beautify then beautify_pass ~doc:ostate.State.doc ~comments ~ids:(List.rev ids) ~filename;
   (* End pass *)

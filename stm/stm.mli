@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -19,9 +19,11 @@ module AsyncOpts : sig
   type async_proofs = APoff
                     | APonLazy (* Delays proof checking, but does it in master *)
                     | APon
-  type tac_error_filter = [ `None | `Only of string list | `All ]
+  type tac_error_filter = FNone | FOnly of string list | FAll
 
   type stm_opt = {
+    spawn_args : string list;
+
     async_proofs_n_workers : int;
     async_proofs_n_tacworkers : int;
 
@@ -38,7 +40,7 @@ module AsyncOpts : sig
     async_proofs_worker_priority : CoqworkmgrApi.priority;
   }
 
-  val default_opts : stm_opt
+  val default_opts : spawn_args:string list -> stm_opt
 
 end
 
@@ -47,7 +49,7 @@ end
    to aux files. *)
 type stm_doc_type =
   | VoDoc       of string       (* file path *)
-  | VioDoc      of string       (* file path *)
+  | VosDoc      of string       (* file path *)
   | Interactive of Coqargs.top    (* module path *)
 
 (** STM initialization options: *)
@@ -61,8 +63,6 @@ type stm_init_options =
   (** Injects Require and Set/Unset commands before the initial
      state is ready *)
 
-  ; stm_options  : AsyncOpts.stm_opt
-  (** Low-level STM options *)
   }
 
 (** The type of a STM document *)
@@ -71,7 +71,7 @@ type doc
 (** [init_process] performs some low-level initialization, call early *)
 val init_process : AsyncOpts.stm_opt -> unit
 
-(** [init_core] snapshorts the initial system state *)
+(** [init_core] snapshots the initial system state *)
 val init_core : unit -> unit
 
 (** [new_doc opt] Creates a new document with options [opt] *)
@@ -83,10 +83,12 @@ val new_doc  : stm_init_options -> doc * Stateid.t
     be the case if an error was raised at parsing time). *)
 val parse_sentence :
   doc:doc -> Stateid.t ->
-  entry:(Pvernac.proof_mode option -> 'a Pcoq.Entry.t) -> Pcoq.Parsable.t -> 'a
+  entry:(Pvernac.proof_mode option -> 'a Procq.Entry.t) -> Procq.Parsable.t -> 'a
 
 (* Reminder: A parsable [pa] is constructed using
-   [Pcoq.Parsable.t stream], where [stream : char Stream.t]. *)
+   [Procq.Parsable.t stream], where [stream : char Stream.t]. *)
+
+type add_focus = NewAddTip | Unfocus of Stateid.t
 
 (* [add ~ontop ?newtip verbose cmd] adds a new command [cmd] ontop of
    the state [ontop].
@@ -96,7 +98,7 @@ val parse_sentence :
    to be [newtip] *)
 val add : doc:doc -> ontop:Stateid.t -> ?newtip:Stateid.t ->
   bool -> Vernacexpr.vernac_control ->
-  doc * Stateid.t * [ `NewTip | `Unfocus of Stateid.t ]
+  doc * Stateid.t * add_focus
 
 (* Returns the proof state before the last tactic that was applied at or before
 the specified state AND that has differences in the underlying proof (i.e.,
@@ -109,11 +111,11 @@ val get_proof : doc:doc -> Stateid.t -> Proof.t option
    throwing away side effects except messages. Feedback will
    be sent with [report_with], which defaults to the dummy state id *)
 val query : doc:doc ->
-  at:Stateid.t -> route:Feedback.route_id -> Pcoq.Parsable.t -> unit
+  at:Stateid.t -> route:Feedback.route_id -> Procq.Parsable.t -> unit
 
-(* [edit_at id] is issued to change the editing zone.  [`NewTip] is returned if
+(* [edit_at id] is issued to change the editing zone.  [NewTip] is returned if
    the requested id is the new document tip hence the document portion following
-   [id] is dropped by Coq.  [`Focus fo] is returned to say that [fo.tip] is the
+   [id] is dropped by Rocq.  [`Focus fo] is returned to say that [fo.tip] is the
    new document tip, the document between [id] and [fo.stop] has been dropped.
    The portion between [fo.stop] and [fo.tip] has been kept.  [fo.start] is
    just to tell the gui where the editing zone starts, in case it wants to
@@ -121,42 +123,31 @@ val query : doc:doc ->
    If Flags.async_proofs_full is set, then [id] is not [observe]d, else it is.
 *)
 type focus = { start : Stateid.t; stop : Stateid.t; tip : Stateid.t }
-val edit_at : doc:doc -> Stateid.t -> doc * [ `NewTip | `Focus of focus ]
+type edit_focus = NewTip | Focus of focus
+val edit_at : doc:doc -> Stateid.t -> doc * edit_focus
 
 (* [observe doc sid]] Check / execute span [sid] *)
-val observe : doc:doc -> Stateid.t -> doc
+val observe : doc:doc -> Stateid.t -> unit
 
 (* [finish doc] Fully checks a document up to the "current" tip. *)
-val finish : doc:doc -> doc
+val finish : doc:doc -> Vernacstate.t
 
 (* Internal use (fake_ide) only, do not use *)
-val wait : doc:doc -> doc
+val wait : doc:doc -> unit
 
 val stop_worker : string -> unit
 
 (* Joins the entire document.  Implies finish, but also checks proofs *)
-val join : doc:doc -> doc
+val join : doc:doc -> unit
 
-(* Saves on the disk a .vio corresponding to the current status:
-   - if the worker pool is empty, all tasks are saved
-   - if the worker proof is not empty, then it waits until all workers
-     are done with their current jobs and then dumps (or fails if one
-     of the completed tasks is a failure).
-   Note: the create_vos argument is used in the "-vos" mode, where the
-   proof tasks are not dumped into the output file. *)
-val snapshot_vio : create_vos:bool -> doc:doc -> output_native_objects:bool -> DirPath.t -> string -> doc
+(* Saves on the disk a .vos file. *)
+val snapshot_vos : doc:doc -> output_native_objects:bool -> DirPath.t -> string -> unit
 
 (* Empties the task queue, can be used only if the worker pool is empty (E.g.
- * after having built a .vio in batch mode *)
+ * after having built a .vos in batch mode *)
 val reset_task_queue : unit -> unit
 
-(* A .vio contains tasks to be completed *)
-type tasks
-val check_task : string -> tasks -> int -> bool
-val info_tasks : tasks -> (string * float * int) list
-val finish_tasks : string ->
-  Library.seg_univ -> Library.seg_proofs ->
-    tasks -> Library.seg_univ * Library.seg_proofs
+type document
 
 (* Id of the tip of the current branch *)
 val get_current_state : doc:doc -> Stateid.t
@@ -167,9 +158,6 @@ val get_ast : doc:doc -> Stateid.t -> Vernacexpr.vernac_control option
 
 (* Filename *)
 val set_compilation_hints : string -> unit
-
-(* Reorders the task queue putting forward what is in the perspective *)
-val set_perspective : doc:doc -> Stateid.t list -> unit
 
 (** workers **************************************************************** **)
 
@@ -239,12 +227,14 @@ type static_block_detection =
 
 type recovery_action = {
   base_state : Stateid.t;
-  goals_to_admit : Goal.goal list;
+  goals_to_admit : Evar.t list;
   recovery_command : Vernacexpr.vernac_control option;
 }
 
+type block_classification = ValidBlock of recovery_action | Leaks
+
 type dynamic_block_error_recovery =
-  doc -> static_block_declaration -> [ `ValidBlock of recovery_action | `Leaks ]
+  doc -> static_block_declaration -> block_classification
 
 val register_proof_block_delimiter :
   Vernacextend.proof_block_name ->
@@ -259,33 +249,34 @@ val register_proof_block_delimiter :
  * the alternative toploop for the worker can be selected by changing
  * the name of the Task(s) above) *)
 
-val state_computed_hook : (doc:doc -> Stateid.t -> in_cache:bool -> unit) Hook.t
-val unreachable_state_hook :
-  (doc:doc -> Stateid.t -> Exninfo.iexn -> unit) Hook.t
+val state_computed_hook : (doc:doc -> Stateid.t -> in_cache:bool -> unit) -> unit
+val unreachable_state_hook : (doc:doc -> Stateid.t -> Exninfo.iexn -> unit) -> unit
 
 (* ready means that master has it at hand *)
-val state_ready_hook : (doc:doc -> Stateid.t -> unit) Hook.t
+val state_ready_hook : (doc:doc -> Stateid.t -> unit) -> unit
 
 (* Messages from the workers to the master *)
-val forward_feedback_hook : (Feedback.feedback -> unit) Hook.t
+val forward_feedback_hook : (Feedback.feedback -> unit) -> unit
 
 (*
  * Hooks into the UI for plugins (not for general use)
  *)
 
 (** User adds a sentence to the document (after parsing) *)
-val document_add_hook : (Vernacexpr.vernac_control -> Stateid.t -> unit) Hook.t
+val document_add_hook : (Vernacexpr.vernac_control -> Stateid.t -> unit) -> unit
 
 (** User edits a sentence in the document *)
-val document_edit_hook : (Stateid.t -> unit) Hook.t
+val document_edit_hook : (Stateid.t -> unit) -> unit
 
 (** User requests evaluation of a sentence *)
-val sentence_exec_hook : (Stateid.t -> unit) Hook.t
+val sentence_exec_hook : (Stateid.t -> unit) -> unit
 
 val get_doc : Feedback.doc_id -> doc
 
+type state = Valid of Vernacstate.t option | Expired | Error of exn
+
 val state_of_id : doc:doc ->
-  Stateid.t -> [ `Valid of Vernacstate.t option | `Expired | `Error of exn ]
+  Stateid.t -> state
 
 (* Queries for backward compatibility *)
 val current_proof_depth : doc:doc -> int
@@ -294,6 +285,5 @@ val get_all_proof_names : doc:doc -> Id.t list
 (** Enable STM debugging *)
 val stm_debug : bool ref
 
-type document
 val backup : unit -> document
 val restore : document -> unit

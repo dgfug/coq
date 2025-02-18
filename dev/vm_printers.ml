@@ -2,6 +2,7 @@ open Format
 open Term
 open Names
 open Vmemitcodes
+open Values
 open Vmvalues
 
 let ppripos (ri,pos) =
@@ -12,24 +13,17 @@ let ppripos (ri,pos) =
       print_string "structured constant\n"
   | Reloc_getglobal kn ->
     print_string ("getglob "^(Constant.to_string kn)^"\n")
-  | Reloc_proj_name p ->
-    print_string ("proj "^(Projection.Repr.to_string p)^"\n")
   | Reloc_caml_prim op ->
-    print_string ("caml primitive "^CPrimitives.to_string op)
+    print_string ("caml primitive "^ CPrimitives.to_string @@ Vmbytecodes.caml_prim_to_prim op)
   );
    print_flush ()
-
-let print_vfix () = print_string "vfix"
-let print_vfix_app () = print_string "vfix_app"
-let print_vswith () = print_string "switch"
 
 let ppsort = function
   | SProp -> print_string "SProp"
   | Set -> print_string "Set"
   | Prop -> print_string "Prop"
-  | Type u -> print_string "Type"
-
-
+  | Type _ -> print_string "Type"
+  | QSort _ -> print_string "QSort"
 
 let print_idkey idk =
   match idk with
@@ -78,17 +72,17 @@ and ppwhd whd =
   match whd with
   | Vprod _ -> print_string "product"
   | Vfun _ -> print_string "function"
-  | Vfix _ -> print_vfix()
+  | Vfix _ -> print_string "vfix"
   | Vcofix _ -> print_string "cofix"
-  | Vconstr_const i -> print_string "C(";print_int i;print_string")"
-  | Vconstr_block b -> ppvblock b
+  | Vconst i -> print_string "C(";print_int i;print_string")"
+  | Vblock b -> ppvblock b
   | Vint64 i -> printf "int64(%LiL)" i
   | Vfloat64 f -> printf "float64(%.17g)" f
+  | Vstring s -> printf "string(%S)" (Pstring.to_string s)
   | Varray t -> ppvarray t
-  | Vatom_stk(a,s) ->
+  | Vaccu (a, s) ->
       open_hbox();ppatom a;close_box();
       print_string"@";ppstack s
-  | Vuniv_level lvl -> Feedback.msg_notice (Univ.Level.pr lvl)
 
 and ppvblock b =
   open_hbox();

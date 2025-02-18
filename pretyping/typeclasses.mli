@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -18,17 +18,16 @@ type 'a hint_info_gen =
     { hint_priority : int option;
       hint_pattern : 'a option }
 
-type hint_info = (Pattern.patvar list * Pattern.constr_pattern) hint_info_gen
+type hint_info = (Id.Set.t * Pattern.constr_pattern) hint_info_gen
 
 type class_method = {
   meth_name : Name.t;
-  meth_info : hint_info option;
   meth_const : Constant.t option;
 }
 
 (** This module defines type-classes *)
 type typeclass = {
-  cl_univs : Univ.AbstractContext.t;
+  cl_univs : UVars.AbstractContext.t;
   (** The toplevel universe quantification in which the typeclass lives. In
       particular, [cl_props] and [cl_context] are quantified over it. *)
 
@@ -37,17 +36,20 @@ type typeclass = {
      the class is a singleton. This acts as the class' global identifier. *)
 
   cl_context : Constr.rel_context;
-  (** Context in which the definitions are typed.
-      Includes both typeclass parameters and superclasses. *)
+  (** Context in which the definitions are typed. *)
+
+  cl_trivial : bool;
+  (** Class declared with "Class Foo params := {}", produces 0 goals in interactive mode. *)
 
   cl_props : Constr.rel_context;
-  (** Context of definitions and properties on defs, will not be shared *)
+  (** Context of definitions and properties on defs, used for "Instance := {}".
+      If [cl_impl] is a record this is the arguments of its constructor (without parameters).
+      Otherwise it is a single [LocalAssum] of type convertible to [cl_impl]. *)
 
   cl_projs : class_method list;
   (** The methods implementations of the typeclass as projections.
       Some may be undefinable due to sorting restrictions or simply undefined if
-      no name is provided. The [int option option] indicates subclasses whose hint has
-      the given priority. *)
+      no name is provided. Used for dumpglob in "Instance := {}" and in elpi. *)
 
   cl_strict : bool;
   (** Whether we use matching or full unification during resolution *)
@@ -63,7 +65,12 @@ type instance = {
   is_impl: GlobRef.t;
 }
 
-val instances : env -> evar_map -> GlobRef.t -> instance list
+val instances : GlobRef.t -> instance list option
+(** [None] if not a class *)
+
+val instances_exn : env -> evar_map -> GlobRef.t -> instance list
+(** raise [TypeClassError] if not a class *)
+
 val typeclasses : unit -> typeclass list
 val all_instances : unit -> instance list
 
@@ -72,16 +79,16 @@ val load_class : typeclass -> unit
 val load_instance : instance -> unit
 val remove_instance : instance -> unit
 
-val class_info : env -> evar_map -> GlobRef.t -> typeclass (** raises a UserError if not a class *)
+val class_info : GlobRef.t -> typeclass option
+(** [None] if not a class *)
 
+val class_info_exn : env -> evar_map -> GlobRef.t -> typeclass
+(** raise [TypeClassError] if not a class *)
 
 (** These raise a UserError if not a class.
     Caution: the typeclass structures is not instantiated w.r.t. the universe instance.
     This is done separately by typeclass_univ_instance. *)
 val dest_class_app : env -> evar_map -> EConstr.constr -> (typeclass * EConstr.EInstance.t) * constr list
-
-(** Get the instantiated typeclass structure for a given universe instance. *)
-val typeclass_univ_instance : typeclass Univ.puniverses -> typeclass
 
 (** Just return None if not a class *)
 val class_of_constr : env -> evar_map -> EConstr.constr ->
@@ -92,12 +99,6 @@ val instance_impl : instance -> GlobRef.t
 val hint_priority : instance -> int option
 
 val is_class : GlobRef.t -> bool
-
-(** Returns the term and type for the given instance of the parameters and fields
-   of the type class. *)
-
-val instance_constructor : typeclass EConstr.puniverses -> EConstr.t list ->
-  EConstr.t option * EConstr.t
 
 (** Filter which evars to consider for resolution. *)
 type evar_filter = Evar.t -> Evar_kinds.t Lazy.t -> bool
@@ -116,15 +117,26 @@ val no_goals_or_obligations : evar_filter
 
 val make_unresolvables : (Evar.t -> bool) -> evar_map -> evar_map
 
-val is_class_evar : evar_map -> evar_info -> bool
+val is_class_evar : evar_map -> undefined evar_info -> bool
 val is_class_type : evar_map -> EConstr.types -> bool
 
 val resolve_typeclasses : ?filter:evar_filter -> ?unique:bool ->
-  ?split:bool -> ?fail:bool -> env -> evar_map -> evar_map
+  ?fail:bool -> env -> evar_map -> evar_map
+
+val get_filtered_typeclass_evars : evar_filter -> evar_map -> Evar.Set.t
+
+val error_unresolvable : env -> evar_map -> Evar.Set.t -> 'a
+
+(** A plugin can override the TC resolution engine by calling these two APIs.
+    Beware this action is not registed in the summary (the Undo system) so
+    it is up to the plugin to do so. *)
+val set_solve_all_instances : (env -> evar_map -> evar_filter -> bool -> bool -> evar_map) -> unit
+
+val get_typeclasses_unique_solutions : unit -> bool
+
+(* Deprecated *)
 val resolve_one_typeclass : ?unique:bool -> env -> evar_map -> EConstr.types -> evar_map * EConstr.constr
+[@@deprecated "(9.0) Use Class_tactics.resolve_one_typeclass (\"unique\" argument was ignored)"]
 
-val classes_transparent_state_hook : (unit -> TransparentState.t) Hook.t
-val classes_transparent_state : unit -> TransparentState.t
-
-val solve_all_instances_hook : (env -> evar_map -> evar_filter -> bool -> bool -> bool -> evar_map) Hook.t
-val solve_one_instance_hook : (env -> evar_map -> EConstr.types -> bool -> evar_map * EConstr.constr) Hook.t
+val set_solve_one_instance : (env -> evar_map -> EConstr.types -> evar_map * EConstr.constr) -> unit
+[@@deprecated "(9.0) For internal use only"]

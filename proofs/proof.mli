@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -68,9 +68,6 @@ val dependent_start
     to be considered (this does not require that all evars have been solved). *)
 val is_done : t -> bool
 
-(* Like is_done, but this time it really means done (i.e. nothing left to do) *)
-val is_complete : t -> bool
-
 (* Returns the list of partial proofs to initial goals. *)
 val partial_proof : t -> EConstr.constr list
 
@@ -78,18 +75,6 @@ val compact : t -> t
 
 (** [update_sigma_univs] lifts [UState.update_sigma_univs] to the proof *)
 val update_sigma_univs : UGraph.t -> t -> t
-
-(* Returns the proofs (with their type) of the initial goals.
-    Raises [UnfinishedProof] is some goals remain to be considered.
-    Raises [HasShelvedGoals] if some goals are left on the shelf.
-    Raises [HasGivenUpGoals] if some goals have been given up. *)
-type open_error_reason =
-  | UnfinishedProof
-  | HasGivenUpGoals
-
-exception OpenProof of Names.Id.t option * open_error_reason
-
-val return : ?pid:Names.Id.t -> t -> Evd.evar_map
 
 (*** Focusing actions ***)
 
@@ -102,7 +87,7 @@ val return : ?pid:Names.Id.t -> t -> Evd.evar_map
     of the declarative mode where sub-tactics must be aware of the current
     induction argument. *)
 type 'a focus_kind
-val new_focus_kind : unit -> 'a focus_kind
+val new_focus_kind : string -> 'a focus_kind
 
 (* To be authorized to unfocus one must meet the condition prescribed by
     the action which focused.
@@ -132,7 +117,7 @@ val done_cond : ?loose_end:bool -> 'a focus_kind -> 'a focus_condition
 val focus : 'a focus_condition -> 'a -> int -> t -> t
 
 (* focus on goal named id *)
-val focus_id : 'aa focus_condition -> 'a -> Names.Id.t -> t -> t
+val focus_id : 'a focus_condition -> 'a -> Names.Id.t -> t -> t
 
 exception FullyUnfocused
 exception CannotUnfocusThisWay
@@ -154,6 +139,9 @@ val unfocus : 'a focus_kind -> t -> unit -> t
 
 (* [unfocused p] returns [true] when [p] is fully unfocused. *)
 val unfocused : t -> bool
+
+(** Unfocus everything (fail if no allowed). *)
+val unfocus_all : t -> t
 
 (* [get_at_focus k] gets the information stored at the closest focus point
     of kind [k].
@@ -183,33 +171,17 @@ val maximal_unfocus : 'a focus_kind -> t -> t
    focused goals. *)
 val unshelve : t -> t
 
+(* Gives a unique identifier to each goal. The identifier is
+   guaranteed to contain no space. *)
+val goal_uid : Evar.t -> string
+
 val pr_proof : t -> Pp.t
 
-(*** Compatibility layer with <=v8.2 ***)
-module V82 : sig
-
-  (* All the subgoals of the proof, including those which are not focused. *)
-  val background_subgoals : t -> Goal.goal list Evd.sigma
-
-  val top_goal : t -> Goal.goal Evd.sigma
-
-  (* returns the existential variable used to start the proof *)
-  val top_evars : t -> Evar.t list
-
-  (* Turns the unresolved evars into goals.
-     Raises [UnfinishedProof] if there are still unsolved goals. *)
-  val grab_evars : t -> t
-
-  (* Implements the Existential command *)
-  val instantiate_evar
-    :  Environ.env
-    -> int
-    -> (Environ.env -> Evd.evar_map -> Glob_term.glob_constr)
-    -> t -> t
-end
+(* All the subgoals of the proof, including those which are not focused. *)
+val background_subgoals : t -> Evar.t list
 
 (* returns the set of all goals in the proof *)
-val all_goals : t -> Goal.Set.t
+val all_goals : t -> Evar.Set.t
 
 (** [solve (SelectNth n) tac] applies tactic [tac] to the [n]th
     subgoal of the current focused proof. [solve SelectAll
@@ -233,7 +205,7 @@ val refine_by_tactic
   -> Evd.evar_map
   -> EConstr.types
   -> unit Proofview.tactic
-  -> Constr.constr * Evd.evar_map
+  -> EConstr.constr * Evd.evar_map
 (** A variant of the above function that handles open terms as well.
     Caveat: all effects are purged in the returned term at the end, but other
     evars solved by side-effects are NOT purged, so that unexpected failures may

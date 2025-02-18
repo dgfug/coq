@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -19,7 +19,5 @@ val arguments_names : GlobRef.t -> Name.t list
 
 val rename_type : types -> GlobRef.t -> types
 
-val rename_type_of_constant : env -> pconstant -> types
-val rename_type_of_inductive : env -> pinductive -> types
-val rename_type_of_constructor : env -> pconstructor -> types
 val rename_typing : env -> constr -> unsafe_judgment
+(** Typechecks using the kernel [Typeops.infer] *)

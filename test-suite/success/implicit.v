@@ -79,8 +79,6 @@ Inductive P n : nat -> Prop := c : P n n.
 
 (* Avoid evars in the computation of implicit arguments (cf r9827) *)
 
-Require Import List.
-
 Fixpoint plus n m {struct n} :=
   match n with
   | 0 => m
@@ -165,7 +163,7 @@ Set Warnings "syntax".
 
 
 Axiom eq0le0 : forall (n : nat) (x : n = 0), n <= 0.
-Variable eq0le0' : forall (n : nat) {x : n = 0}, n <= 0.
+Parameter eq0le0' : forall (n : nat) {x : n = 0}, n <= 0.
 Axiom eq0le0'' : forall (n : nat) {x : n = 0}, n <= 0.
 Definition eq0le0''' : forall (n : nat) {x : n = 0}, n <= 0. Admitted.
 Fail Axiom eq0le0'''' : forall [n : nat] {x : n = 0}, n <= 0.
@@ -176,9 +174,23 @@ Axiom foo : forall A, A -> A.
 
 Arguments foo {A} {_}.
 Check foo (arg_2:=true) : bool.
+Check foo (1:=true) : bool.
 Check foo : bool.
 
 Arguments foo {A} {x}.
 Check foo (x:=true) : bool.
 
+Axiom bar : forall A, A -> nat -> forall B, B -> A * B.
+Arguments bar {A} {x} _ {B} {y}.
+Check bar (1:=true) 0 (3:=false).
+
 End TestUnnamedImplicit.
+
+Module NotationAppliedConstantMultipleImplicit.
+
+Axiom f : nat -> nat -> nat -> nat.
+Arguments f {_} _ _, {_ _} _.
+Notation "#" := (@f 0).
+Check # 0 : nat.
+
+End NotationAppliedConstantMultipleImplicit.

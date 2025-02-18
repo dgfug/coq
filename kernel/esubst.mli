@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -38,16 +38,16 @@ val subs_cons: 'a -> 'a subs -> 'a subs
 (** Assuming Γ ⊢ σ : Δ and |Ξ| = n, then Γ, Ξ ⊢ subs_shft (n, σ) : Δ *)
 val subs_shft: int * 'a subs -> 'a subs
 
-(** Unary variant of {!subst_liftn}. *)
-val subs_lift: 'a subs -> 'a subs
-
 (** Assuming Γ ⊢ σ : Δ and |Ξ| = n, then Γ, Ξ ⊢ subs_liftn n σ : Δ, Ξ *)
 val subs_liftn: int -> 'a subs -> 'a subs
 
+(** Unary variant of {!subst_liftn}. *)
+val subs_lift: 'a subs -> 'a subs
+
 (** [expand_rel k subs] expands de Bruijn [k] in the explicit substitution
     [subs]. The result is either (Inl(lams,v)) when the variable is
-    substituted by value [v] under lams binders (i.e. v *has* to be
-    shifted by lams), or (Inr (k',p)) when the variable k is just relocated
+    substituted by value [v] under [lams] binders (i.e. v *has* to be
+    shifted by [lams]), or (Inr (k',p)) when the variable k is just relocated
     as k'; p is None if the variable points inside subs and Some(k) if the
     variable points k bindings beyond subs (cf argument of ESID).
 *)
@@ -55,12 +55,6 @@ val expand_rel: int -> 'a subs -> (int * 'a, int * int option) Util.union
 
 (** Tests whether a substitution behaves like the identity *)
 val is_subs_id: 'a subs -> bool
-
-(** Composition of substitutions: [comp mk_clos s1 s2] computes a
-    substitution equivalent to applying s2 then s1. Argument
-    mk_clos is used when a closure has to be created, i.e. when
-    s1 is applied on an element of s2.
-*)
 
 (** {6 Compact representation } *)
 (** Compact representation of explicit relocations
@@ -79,11 +73,22 @@ type lift = private
   | ELSHFT of lift * int
   | ELLFT of int * lift
 
+(** For arbitrary Γ: Γ ⊢ el_id : Γ *)
 val el_id : lift
+
+(** Assuming Γ ⊢ σ : Δ₁, Δ₂ and |Δ₂| = n, then Γ ⊢ el_shft n σ : Δ₁ *)
 val el_shft : int -> lift -> lift
+
+(** Assuming Γ ⊢ σ : Δ and |Ξ| = n, then Γ, Ξ ⊢ el_liftn n σ : Δ, Ξ *)
 val el_liftn : int -> lift -> lift
+
+(** Unary variant of {!el_liftn}. *)
 val el_lift : lift -> lift
+
+(** Assuming Γ₁, A, Γ₂ ⊢ σ : Δ₁, A, Δ₂ and Δ₁, A, Δ₂ ⊢ n : A,
+    then Γ₁, A, Γ₂ ⊢ reloc_rel n σ : A *)
 val reloc_rel : int -> lift -> int
+
 val is_lift_id : lift -> bool
 
 (** Lift applied to substitution: [lift_subst mk_clos el s] computes a
@@ -94,6 +99,9 @@ val is_lift_id : lift -> bool
     That is, if Γ ⊢ e : Δ and Δ ⊢ σ : Ξ, then Γ ⊢ lift_subst mk e σ : Ξ.
 *)
 val lift_subst : (lift -> 'a -> 'b) -> lift -> 'a subs -> 'b subs
+
+val eq_lift : lift -> lift -> bool
+(** Equality for lifts *)
 
 (** Debugging utilities *)
 module Internal :

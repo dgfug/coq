@@ -1,4 +1,4 @@
-f = 
+f =
 fix f (n : nat) : nat :=
   match n with
   | 0 => 0
@@ -13,4 +13,4 @@ for
 f
      : nat -> nat
 
-Arguments f n%nat_scope
+Arguments f n%_nat_scope

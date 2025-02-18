@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -35,7 +35,7 @@ let create_full ~name () =
         anomaly Pp.(str "The debug name \"" ++ str name ++ str "\" is already used.")
   in
   let pp x =
-    Feedback.msg_debug Pp.(str "[" ++ str name ++ str "] " ++ x)
+    Feedback.msg_debug Pp.(hv 2 (str "[" ++ str name ++ str "]" ++ spc() ++ x))
   in
   let flag = ref !all_flag in
   debug := CString.Map.add name flag !debug;
@@ -50,7 +50,9 @@ let create ~name () =
 
 let get_flag flag = !flag
 
-let warn_unknown_debug = CWarnings.create ~name:"unknown-debug-flag" ~category:"option"
+let set_flag flag v = flag := v
+
+let warn_unknown_debug = CWarnings.create ~name:"unknown-debug-flag"
     Pp.(fun name -> str "There is no debug flag \"" ++ str name ++ str "\".")
 
 let get_flags () =

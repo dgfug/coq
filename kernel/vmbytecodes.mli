@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -22,14 +22,28 @@ module Label :
     val reset_label_counter : unit -> unit
   end
 
+type caml_prim =
+| CAML_Arraymake
+| CAML_Arrayget
+| CAML_Arraydefault
+| CAML_Arrayset
+| CAML_Arraycopy
+| CAML_Arraylength
+| CAML_Stringmake
+| CAML_Stringlength
+| CAML_Stringget
+| CAML_Stringsub
+| CAML_Stringcat
+| CAML_Stringcompare
+
 type instruction =
   | Klabel of Label.t
   | Kacc of int                         (** accu = sp[n] *)
-  | Kenvacc of int                      (** accu = coq_env[n] *)
-  | Koffsetclosure of int               (** accu = &coq_env[n] *)
+  | Kenvacc of int                      (** accu = rocq_env[n] *)
+  | Koffsetclosure of int               (** accu = &rocq_env[n] *)
   | Kpush                               (** sp = accu :: sp *)
   | Kpop of int                         (** sp = skipn n sp *)
-  | Kpush_retaddr of Label.t            (** sp = pc :: coq_env :: coq_extra_args :: sp ; coq_extra_args = 0 *)
+  | Kpush_retaddr of Label.t            (** sp = pc :: rocq_env :: rocq_extra_args :: sp ; rocq_extra_args = 0 *)
   | Kshort_apply of int                 (** number of arguments (arguments on top of stack) *)
   | Kapply of int                       (** number of arguments (arguments on top of stack) *)
   | Kappterm of int * int               (** number of arguments, slot size *)
@@ -44,6 +58,7 @@ type instruction =
   | Kclosurecofix of int * int * Label.t array * Label.t array
                    (** nb fv, init, lbl types, lbl bodies *)
   | Kgetglobal of Constant.t
+  | Ksubstinstance of UVars.Instance.t
   | Kconst of structured_constant
   | Kmakeblock of (* size: *) int * tag (** allocate an ocaml block. Index 0
                                          ** is accu, all others are popped from
@@ -55,12 +70,12 @@ type instruction =
   | Ksetfield of int                    (** accu[n] = sp[0] ; sp = pop sp *)
   | Kstop
   | Ksequence of bytecodes
-  | Kproj of Projection.Repr.t
+  | Kproj of int
   | Kensurestackcapacity of int
 
   | Kbranch of Label.t                  (** jump to label, is it needed ? *)
   | Kprim of CPrimitives.t * pconstant
-  | Kcamlprim of CPrimitives.t * Label.t
+  | Kcamlprim of caml_prim * Label.t
 
 and bytecodes = instruction list
 
@@ -69,9 +84,9 @@ val pp_bytecodes : bytecodes -> Pp.t
 type fv_elem =
   FVnamed of Id.t
 | FVrel of int
-| FVuniv_var of int
-| FVevar of Evar.t
 
 type fv = fv_elem array
 
 val pp_fv_elem : fv_elem -> Pp.t
+
+val caml_prim_to_prim : caml_prim -> CPrimitives.t

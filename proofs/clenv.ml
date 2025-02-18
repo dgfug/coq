@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,7 +8,6 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
-open Pp
 open CErrors
 open Util
 open Names
@@ -16,12 +15,10 @@ open Nameops
 open Termops
 open Constr
 open Context
-open Namegen
 open Environ
 open Evd
 open EConstr
 open Vars
-open Reduction
 open Reductionops
 open Tacred
 open Pretype_errors
@@ -33,53 +30,183 @@ open Logic
 (******************************************************************)
 (* Clausal environments *)
 
+type meta_arg = {
+  marg_meta : metavariable;
+  marg_chain : metavariable list option;
+  marg_dep : bool;
+  marg_templ : (rel_context * Univ.Level.t) option;
+}
+(* List of clenv meta arguments with the submetas of the clenv it has been
+   possibly chained with. We never need to chain more than two clenvs, so there
+   is no need to make the type recursive. *)
+
 type clausenv = {
   env      : env;
   evd      : evar_map;
-  templval : constr freelisted;
-  templtyp : constr freelisted;
-  cache : Reductionops.meta_instance_subst;
+  metam    : Unification.Meta.t;
+  metas    : meta_arg list;
+  templval : constr;
+  metaset : Metaset.t;
+  templtyp : (constr * Metaset.t);
 }
 
-let mk_clausenv env evd templval templtyp = {
-  env; evd; templval; templtyp; cache = create_meta_instance_subst evd;
+let mk_clausenv env evd metam metas templval metaset templtyp = {
+  env; evd; metam; metas; templval; metaset; templtyp;
 }
 
-let update_clenv_evd clenv evd =
-  mk_clausenv clenv.env evd clenv.templval clenv.templtyp
+let merge_fsorts evd clenv =
+  let usubst = Evd.universe_subst evd in
+  (* Hackish check: the level is considered to be already fresh when it is not
+     part of the evarmap substitution. Other heuristics are more broken because
+     some parts of the UState API are not very clear about their invariants and
+     this is relied upon by e.g. Program. *)
+  let filter l = not (UnivFlex.mem l usubst) in
+  let fold accu marg = match marg.marg_templ with
+  | None -> accu
+  | Some (ctx, l) -> Univ.Level.Set.add l accu
+  in
+  let fsorts = List.fold_left fold Univ.Level.Set.empty clenv.metas in
+  let fsorts = Univ.Level.Set.filter filter fsorts in
+  let uctx = (fsorts, Univ.Constraints.empty) in
+  Evd.merge_context_set Evd.univ_flexible evd uctx
 
-let cl_env ce = ce.env
-let cl_sigma ce =  ce.evd
+let update_clenv_evd clenv evd metam =
+  let evd = merge_fsorts evd clenv in
+  mk_clausenv clenv.env evd metam clenv.metas clenv.templval clenv.metaset clenv.templtyp
 
-let clenv_term clenv c = meta_instance clenv.env clenv.cache c
-let clenv_meta_type clenv mv =
+let strip_params env sigma c =
+  match EConstr.kind sigma c with
+  | App (f, args) ->
+    (match EConstr.kind sigma f with
+    | Const cst ->
+      (match Structures.PrimitiveProjections.find_opt_with_relevance cst with
+       | Some (p,r) ->
+         let p = Projection.make p false in
+         let npars = Projection.npars p in
+         if Array.length args > npars then
+           mkApp (mkProj (p, r, args.(npars)),
+                  Array.sub args (npars+1) (Array.length args - (npars + 1)))
+         else c
+       | None -> c)
+    | _ -> c)
+  | _ -> c
+
+let meta_handler sigma =
+  let meta_value mv = match Unification.Meta.meta_opt_fvalue sigma mv with
+  | None -> None
+  | Some b -> Some b.rebus
+  in
+  { Reductionops.meta_value }
+
+let clenv_strip_proj_params clenv =
+  let templval = strip_params clenv.env clenv.evd clenv.templval in
+  mk_clausenv clenv.env clenv.evd clenv.metam clenv.metas templval clenv.metaset clenv.templtyp
+
+let get_template env sigma c =
+  let (hd, args) = EConstr.decompose_app sigma c in
+  match EConstr.destRef sigma hd with
+  | ConstructRef (ind, i), u when Environ.template_polymorphic_ind ind env ->
+    let (mib, mip) = Inductive.lookup_mind_specif env ind in
+    let templ = match mib.Declarations.mind_template with
+    | None -> assert false
+    | Some t -> t.template_param_arguments
+    in
+    Some (ind, List.skipn_at_best (Array.length args) templ)
+  | _ -> None
+  | exception DestKO -> None
+
+let get_type_of_with_metas ~metas env sigma c =
+  let metas n =
+    try Some (Unification.Meta.meta_ftype metas n).Unification.rebus
+    with Not_found -> None
+  in
+  Retyping.get_type_of ~metas env sigma c
+
+let refresh_template_constraints ~metas env sigma ind c =
+  let (mib, _) as spec = Inductive.lookup_mind_specif env ind in
+  let ctx = (Option.get mib.mind_template).template_context in
+  let cstrs0 = UVars.UContext.constraints @@ UVars.AbstractContext.repr ctx in
+  if Univ.Constraints.is_empty cstrs0 then sigma
+  else
+    let _, allargs = decompose_app sigma c in
+    let map c = { uj_val = c; uj_type = get_type_of_with_metas ~metas env sigma c } in
+    let allargs = Array.map map allargs in
+    let sigma, univs = Typing.get_template_parameters env sigma ind allargs in
+    let cstrs, _, _ = Inductive.instantiate_template_universes spec univs in
+    Evd.add_constraints sigma cstrs
+
+let clenv_refresh env sigma ctx clenv =
+  match ctx with
+  | Some ctx ->
+    let (subst, ctx) = UnivGen.fresh_sort_context_instance ctx in
+    let emap c = Vars.subst_univs_level_constr subst c in
+    let sigma = Evd.merge_sort_context_set Evd.univ_flexible sigma ctx in
+    (* Only metas are mentioning the old universes. *)
+    mk_clausenv env sigma (Unification.Meta.map_metas emap clenv.metam) clenv.metas
+      (emap clenv.templval)
+      clenv.metaset
+      (emap (fst clenv.templtyp), snd clenv.templtyp)
+  | None ->
+    (* We also refresh template arguments. This assumes that callers of
+       {!clenv_refresh} use a freshly minted clenv, but this is the case as this
+       function is only used by auto-like tactics for hint refresh. *)
+    let fold (metas, sigma) marg = match marg.marg_templ with
+    | None -> (metas, sigma), marg
+    | Some (decls, _) ->
+      let sigma, s = Evd.new_univ_level_variable Evd.univ_flexible_alg sigma in
+      let t = it_mkProd_or_LetIn (mkType (Univ.Universe.make s)) decls in
+      let name = Meta.meta_name clenv.metam marg.marg_meta in
+      let metas = Meta.meta_declare marg.marg_meta t ~name metas in
+      (metas, sigma), { marg with marg_templ = Some (decls, s) }
+    in
+    let (metam, evd), metas = List.fold_left_map fold (clenv.metam, sigma) clenv.metas in
+    let evd = match get_template env sigma clenv.templval with
+    | None -> evd
+    | Some (ind, _) -> refresh_template_constraints ~metas:metam env evd ind clenv.templval
+    in
+    mk_clausenv env evd metam metas clenv.templval clenv.metaset clenv.templtyp
+
+let clenv_evd ce =  ce.evd
+let clenv_arguments c = List.map (fun arg -> arg.marg_meta) c.metas
+let clenv_meta_list c = c.metam
+
+let clenv_meta_type ~metas env sigma mv =
   let ty =
-    try Evd.meta_ftype clenv.evd mv
-    with Not_found -> anomaly (str "unknown meta ?" ++ str (Nameops.string_of_meta mv) ++ str ".") in
-  meta_instance clenv.env clenv.cache ty
-let clenv_value clenv = meta_instance clenv.env clenv.cache clenv.templval
-let clenv_type clenv = meta_instance clenv.env clenv.cache clenv.templtyp
-
-let clenv_hnf_constr ce t = hnf_constr (cl_env ce) (cl_sigma ce) t
-
-let clenv_get_type_of ce c = Retyping.get_type_of (cl_env ce) (cl_sigma ce) c
+    try Unification.Meta.meta_ftype metas mv
+    with Not_found -> anomaly Pp.(str "unknown meta ?" ++ str (Nameops.string_of_meta mv) ++ str ".") in
+  if Metaset.is_empty ty.freemetas then ty.rebus else Meta.meta_instance metas env sigma ty.rebus
+let clenv_value clenv =
+  if Metaset.is_empty clenv.metaset then clenv.templval
+  else Meta.meta_instance clenv.metam clenv.env clenv.evd clenv.templval
+let clenv_type clenv =
+  if Metaset.is_empty (snd clenv.templtyp) then fst clenv.templtyp
+  else Meta.meta_instance clenv.metam clenv.env clenv.evd (fst clenv.templtyp)
 
 let clenv_push_prod cl =
-  let typ = whd_all (cl_env cl) (cl_sigma cl) (clenv_type cl) in
+  let metas = meta_handler cl.metam in
+  let typ = whd_all ~metas cl.env (clenv_evd cl) (clenv_type cl) in
   let rec clrec typ = match EConstr.kind cl.evd typ with
     | Cast (t,_,_) -> clrec t
     | Prod (na,t,u) ->
         let mv = new_meta () in
-        let dep = not (noccurn (cl_sigma cl) 1 u) in
+        let dep = not (noccurn (clenv_evd cl) 1 u) in
         let na' = if dep then na.binder_name else Anonymous in
-        let e' = meta_declare mv t ~name:na' cl.evd in
+        let e' = Meta.meta_declare mv t ~name:na' cl.metam in
         let concl = if dep then subst1 (mkMeta mv) u else u in
-        let def = applist (cl.templval.rebus,[mkMeta mv]) in
-        Some (mv, dep, { templval = mk_freelisted def;
-          templtyp = mk_freelisted concl;
-          evd = e';
+        let templval = applist (cl.templval, [mkMeta mv]) in
+        let metaset = Metaset.add mv cl.metaset in
+        let marg = {
+          marg_meta = mv;
+          marg_chain = None;
+          marg_dep = dep;
+          marg_templ = None; (* We could refresh here but probably not worth it *)
+        } in
+        Some (mv, dep, { templval; metaset;
+          templtyp = (concl, metavars_of concl);
+          evd = cl.evd;
+          metam = e';
           env = cl.env;
-          cache = create_meta_instance_subst e' })
+          metas = cl.metas @ [marg]; })
     | _ -> None
   in clrec typ
 
@@ -96,33 +223,54 @@ let clenv_push_prod cl =
    [ccl] is [Meta n1=Meta n2]; if [n] is [Some 1], [lmetas] is [Meta n1]
    and [ccl] is [forall y, Meta n1=y -> y=Meta n1] *)
 
-let clenv_environments evd bound t =
+let clenv_environments env sigma template bound t =
   let open EConstr in
   let open Vars in
-  let rec clrec (e,metas) n t =
-    match n, EConstr.kind evd t with
-      | (Some 0, _) -> (e, List.rev metas, t)
-      | (n, Cast (t,_,_)) -> clrec (e,metas) n t
+  let rec clrec templ sigma metam metas n t =
+    match n, EConstr.kind sigma t with
+      | (Some 0, _) -> (metam, sigma, List.rev metas, t)
+      | (n, Cast (t,_,_)) -> clrec templ sigma metam metas n t
       | (n, Prod (na,t1,t2)) ->
           let mv = new_meta () in
-          let dep = not (noccurn evd 1 t2) in
+          let dep = not (noccurn sigma 1 t2) in
           let na' = if dep then na.binder_name else Anonymous in
-          let e' = meta_declare mv t1 ~name:na' e in
-          clrec (e', (mkMeta mv)::metas) (Option.map ((+) (-1)) n)
-            (if dep then (subst1 (mkMeta mv) t2) else t2)
-      | (n, LetIn (na,b,_,t)) -> clrec (e,metas) n (subst1 b t)
-      | (n, _) -> (e, List.rev metas, t)
+          let sigma, t1, templ, tmpl = match templ with
+          | [] -> sigma, t1, templ, None
+          | None :: templ -> sigma, t1, templ, None
+          | Some _ :: templ ->
+            let decls, _ = Reductionops.dest_arity env sigma t1 in
+            let sigma, s = Evd.new_univ_level_variable Evd.univ_flexible_alg sigma in
+            let t1 = EConstr.it_mkProd_or_LetIn (EConstr.mkType (Univ.Universe.make s)) decls in
+            sigma, t1, templ, Some (decls, s)
+          in
+          let metam = Meta.meta_declare mv t1 ~name:na' metam in
+          let t2 = if dep then (subst1 (mkMeta mv) t2) else t2 in
+          clrec templ sigma metam ((mv, dep, tmpl) :: metas) (Option.map ((+) (-1)) n) t2
+      | (n, LetIn (na,b,_,t)) -> clrec templ sigma metam metas n (subst1 b t)
+      | (n, _) -> (metam, sigma, List.rev metas, t)
   in
-  clrec (evd,[]) bound t
+  clrec template sigma Meta.empty [] bound t
 
 let mk_clenv_from_env env sigma n (c,cty) =
-  let evd = clear_metas sigma in
-  let (evd,args,concl) = clenv_environments evd n cty in
-  { templval = mk_freelisted (applist (c,args));
-    templtyp = mk_freelisted concl;
+  let evd = sigma in
+  let template = get_template env sigma c in
+  let template_args = match template with Some (_, args) -> args | None -> [] in
+  let (metas, evd, args, concl) = clenv_environments env evd template_args n cty in
+  let map (mv, _, _) = mkMeta mv in
+  let templval = mkApp (c, Array.map_of_list map args) in
+  let evd = match template with
+  | None -> evd
+  | Some (ind, _) -> refresh_template_constraints ~metas env evd ind templval
+  in
+  let metaset = Metaset.of_list (List.map pi1 args) in
+  let map (mv, dep, tmpl) = { marg_meta = mv; marg_chain = None; marg_dep = dep; marg_templ = tmpl } in
+  { templval; metaset;
+    templtyp = (concl, metavars_of concl);
+    metam = metas;
     evd = evd;
     env = env;
-    cache = create_meta_instance_subst evd }
+    metas = List.map map args;
+  }
 
 let mk_clenv_from env sigma c = mk_clenv_from_env env sigma None c
 let mk_clenv_from_n env sigma n c = mk_clenv_from_env env sigma (Some n) c
@@ -133,41 +281,42 @@ let mk_clenv_from_n env sigma n c = mk_clenv_from_env env sigma (Some n) c
  * mv0, or if one of the free vars on mv1's freelist mentions
  * mv0 *)
 
-let mentions clenv mv0 =
+let mentions sigma mv0 =
   let rec menrec mv1 =
     Int.equal mv0 mv1 ||
     let mlist =
-      try match meta_opt_fvalue clenv.evd mv1 with
-      | Some (b,_) -> b.freemetas
+      try match Meta.meta_opt_fvalue sigma mv1 with
+      | Some b -> b.freemetas
       | None -> Metaset.empty
       with Not_found -> Metaset.empty in
     Metaset.exists menrec mlist
   in menrec
 
-let error_incompatible_inst clenv mv  =
-  let na = meta_name clenv.evd mv in
+let error_incompatible_inst sigma mv  =
+  let na = Meta.meta_name sigma mv in
   match na with
-      Name id ->
-        user_err ~hdr:"clenv_assign"
-          (str "An incompatible instantiation has already been found for " ++
-           Id.print id)
-    | _ ->
-        anomaly ~label:"clenv_assign" (Pp.str "non dependent metavar already assigned.")
+  | Name id ->
+    user_err
+      Pp.(str "An incompatible instantiation has already been found for " ++
+          Id.print id)
+  | _ ->
+    anomaly ~label:"clenv_assign" (Pp.str "non dependent metavar already assigned.")
 
 (* TODO: replace by clenv_unify (mkMeta mv) rhs ? *)
-let clenv_assign mv rhs clenv =
-  let rhs_fls = mk_freelisted rhs in
-  if Metaset.exists (mentions clenv mv) rhs_fls.freemetas then
+let clenv_assign ~metas env sigma mv rhs =
+  let rhs_metas = metavars_of rhs in
+  if Metaset.exists (mentions metas mv) rhs_metas then
     user_err Pp.(str "clenv_assign: circularity in unification");
   try
-    if meta_defined clenv.evd mv then
-      if not (EConstr.eq_constr clenv.evd (fst (meta_fvalue clenv.evd mv)).rebus rhs) then
-        error_incompatible_inst clenv mv
+    begin match Meta.meta_opt_fvalue metas mv with
+    | Some body ->
+      if not (EConstr.eq_constr sigma body.rebus rhs) then
+        error_incompatible_inst metas mv
       else
-        clenv
-    else
-      let st = (Conv,TypeNotProcessed) in
-      update_clenv_evd clenv (meta_assign mv (rhs_fls.rebus,st) clenv.evd)
+        sigma, metas
+    | None ->
+      Meta.meta_assign mv (rhs, Meta.TypeNotProcessed) metas sigma
+    end
   with Not_found ->
     user_err Pp.(str "clenv_assign: undefined meta")
 
@@ -211,29 +360,39 @@ let clenv_assign mv rhs clenv =
    In any case, we respect the order given in A.
 *)
 
-let clenv_metas_in_type_of_meta clenv mv =
-  (mk_freelisted (meta_instance clenv.env clenv.cache (meta_ftype clenv.evd mv))).freemetas
+let clenv_metas_in_type_of_meta ~metas env sigma mv =
+  let typ = Meta.meta_ftype metas mv in
+  let typ = if Metaset.is_empty typ.freemetas then typ.rebus else Meta.meta_instance metas env sigma typ.rebus in
+  metavars_of typ
 
-let dependent_in_type_of_metas clenv mvs =
+let dependent_in_type_of_metas ~metas env sigma mvs =
   List.fold_right
-    (fun mv -> Metaset.union (clenv_metas_in_type_of_meta clenv mv))
+    (fun mv -> Metaset.union (clenv_metas_in_type_of_meta ~metas env sigma mv))
     mvs Metaset.empty
 
-let dependent_closure clenv mvs =
+let dependent_closure ~metas env sigma mvs =
   let rec aux mvs acc =
     Metaset.fold
       (fun mv deps ->
-        let metas_of_meta_type = clenv_metas_in_type_of_meta clenv mv in
+        let metas_of_meta_type = clenv_metas_in_type_of_meta ~metas env sigma mv in
         aux metas_of_meta_type (Metaset.union deps metas_of_meta_type))
       mvs acc in
   aux mvs mvs
 
-let clenv_dependent_gen hyps_only ?(iter=true) clenv =
-  let all_undefined = undefined_metas clenv.evd in
-  let deps_in_concl = (mk_freelisted (clenv_type clenv)).freemetas in
-  let deps_in_hyps = dependent_in_type_of_metas clenv all_undefined in
+let undefined_metas metas =
+  let fold n accu = match Unification.Meta.meta_opt_fvalue metas n with
+  | Some _ -> accu
+  | None -> n :: accu
+  in
+  let m = Unification.Meta.fold fold metas [] in
+  List.sort Int.compare m
+
+let clenv_dependent_gen hyps_only ?(iter=true) ~metas env sigma concl =
+  let all_undefined = undefined_metas metas in
+  let deps_in_concl = metavars_of concl in
+  let deps_in_hyps = dependent_in_type_of_metas ~metas env sigma all_undefined in
   let deps_in_concl =
-    if hyps_only && iter then dependent_closure clenv deps_in_concl
+    if hyps_only && iter then dependent_closure ~metas env sigma deps_in_concl
     else deps_in_concl in
   List.filter
     (fun mv ->
@@ -243,85 +402,30 @@ let clenv_dependent_gen hyps_only ?(iter=true) clenv =
         Metaset.mem mv deps_in_hyps || Metaset.mem mv deps_in_concl)
     all_undefined
 
-let clenv_missing ce = clenv_dependent_gen true ce
-let clenv_dependent ce = clenv_dependent_gen false ce
+let clenv_missing ce =
+  let miss = clenv_dependent_gen ~metas:ce.metam true ce.env ce.evd (clenv_type ce) in
+  let miss = List.map (Unification.Meta.meta_name ce.metam) miss in
+  (miss, List.count (fun arg -> not arg.marg_dep) ce.metas)
 
 (******************************************************************)
 
-(* Instantiate metas that create beta/iota redexes *)
-
-let meta_reducible_instance env evd b =
-  let fm = b.freemetas in
-  let fold mv accu =
-    let fvalue = try meta_opt_fvalue evd mv with Not_found -> None in
-    match fvalue with
-    | None -> accu
-    | Some (g, (_, s)) -> Metamap.add mv (g.rebus, s) accu
-  in
-  let metas = Metaset.fold fold fm Metamap.empty in
-  let rec irec u =
-    let u = whd_betaiota env Evd.empty u (* FIXME *) in
-    match EConstr.kind evd u with
-    | Case (ci,u,pms,p,iv,c,bl) when EConstr.isMeta evd (strip_outer_cast evd c) ->
-        let m = destMeta evd (strip_outer_cast evd c) in
-        (match
-          try
-            let g, s = Metamap.find m metas in
-            let is_coerce = match s with CoerceToType -> true | _ -> false in
-            if isConstruct evd g || not is_coerce then Some g else None
-          with Not_found -> None
-          with
-            | Some g -> irec (mkCase (ci,u,pms,p,iv,g,bl))
-            | None ->
-              let on_ctx (na, c) = (na, irec c) in
-              mkCase (ci,u,Array.map irec pms,on_ctx p,iv,c,Array.map on_ctx bl))
-    | App (f,l) when EConstr.isMeta evd (strip_outer_cast evd f) ->
-        let m = destMeta evd (strip_outer_cast evd f) in
-        (match
-          try
-            let g, s = Metamap.find m metas in
-            let is_coerce = match s with CoerceToType -> true | _ -> false in
-            if isLambda evd g || not is_coerce then Some g else None
-          with Not_found -> None
-         with
-           | Some g -> irec (mkApp (g,l))
-           | None -> mkApp (f,Array.map irec l))
-    | Meta m ->
-        (try let g, s = Metamap.find m metas in
-          let is_coerce = match s with CoerceToType -> true | _ -> false in
-          if not is_coerce then irec g else u
-         with Not_found -> u)
-    | Proj (p,c) when isMeta evd c || isCast evd c && isMeta evd (pi1 (destCast evd c)) (* What if two nested casts? *) ->
-      let m = try destMeta evd c with DestKO -> destMeta evd (pi1 (destCast evd c)) (* idem *) in
-          (match
-          try
-            let g, s = Metamap.find m metas in
-            let is_coerce = match s with CoerceToType -> true | _ -> false in
-            if isConstruct evd g || not is_coerce then Some g else None
-          with Not_found -> None
-          with
-            | Some g -> irec (mkProj (p,g))
-            | None -> mkProj (p,c))
-    | _ -> EConstr.map evd irec u
-  in
-  if Metaset.is_empty fm then (* nf_betaiota? *) b.rebus
-  else irec b.rebus
-
 let clenv_unify ?(flags=default_unify_flags ()) cv_pb t1 t2 clenv =
-  update_clenv_evd clenv (w_unify ~flags clenv.env clenv.evd cv_pb t1 t2)
+  let metas = clenv.metam in
+  let metas, sigma = w_unify ~metas ~flags clenv.env clenv.evd cv_pb t1 t2 in
+  update_clenv_evd clenv sigma metas
 
 let clenv_unify_meta_types ?(flags=default_unify_flags ()) clenv =
-  update_clenv_evd clenv (w_unify_meta_types ~flags:flags clenv.env clenv.evd)
+  let metas = clenv.metam in
+  let metas, sigma = w_unify_meta_types ~metas ~flags:flags clenv.env clenv.evd in
+  update_clenv_evd clenv sigma metas
 
 let clenv_unique_resolver ?(flags=default_unify_flags ()) clenv concl =
-  if isMeta clenv.evd (fst (decompose_app_vect clenv.evd (whd_nored clenv.env clenv.evd clenv.templtyp.rebus))) then
-    clenv_unify CUMUL ~flags (clenv_type clenv) concl
-      (clenv_unify_meta_types ~flags clenv)
-  else
-    clenv_unify CUMUL ~flags
-      (meta_reducible_instance clenv.env clenv.evd clenv.templtyp) concl clenv
+  let metas = meta_handler clenv.metam in
+  let (hd, _) = decompose_app clenv.evd (whd_nored ~metas clenv.env clenv.evd (fst clenv.templtyp)) in
+  let clenv = if isMeta clenv.evd hd then clenv_unify_meta_types ~flags clenv else clenv in
+  clenv_unify CUMUL ~flags (clenv_type clenv) concl clenv
 
-let adjust_meta_source evd mv = function
+let adjust_meta_source ~metas evd mv = function
   | loc,Evar_kinds.VarInstance id ->
     let rec match_name c l =
       match EConstr.kind evd c, l with
@@ -330,17 +434,19 @@ let adjust_meta_source evd mv = function
       | _ -> None in
     (* This is very ad hoc code so that an evar inherits the name of the binder
        in situations like "ex_intro (fun x => P) ?ev p" *)
-    let f = function (mv',(Cltyp (_,t) | Clval (_,_,t))) ->
+    let f mv' =
+      let t = Unification.Meta.meta_ftype metas mv' in
       if Metaset.mem mv t.freemetas then
-        let f,l = decompose_app evd t.rebus in
+        let f,l = decompose_app_list evd t.rebus in
         match EConstr.kind evd f with
         | Meta mv'' ->
-          (match meta_opt_fvalue evd mv'' with
-          | Some (c,_) -> match_name c.rebus l
+          (match Meta.meta_opt_fvalue metas mv'' with
+          | Some c -> match_name c.rebus l
           | None -> None)
         | _ -> None
       else None in
-    let id = try List.find_map f (Evd.meta_list evd) with Not_found -> id in
+    let metas = List.rev @@ Unification.Meta.fold (fun mv accu -> mv :: accu) metas [] in
+    let id = Option.default id (List.find_map f metas) in
     loc,Evar_kinds.VarInstance id
   | src -> src
 
@@ -371,22 +477,21 @@ let adjust_meta_source evd mv = function
    then making the numeric order match the dependency order.
 *)
 
-let clenv_pose_metas_as_evars clenv dep_mvs =
-  let rec fold clenv = function
-  | [] -> clenv
+let clenv_pose_metas_as_evars ~metas env sigma dep_mvs =
+  let rec fold metas sigma = function
+  | [] -> metas, sigma
   | mv::mvs ->
-      let ty = clenv_meta_type clenv mv in
+      let ty = clenv_meta_type ~metas env sigma mv in
       (* Postpone the evar-ization if dependent on another meta *)
       (* This assumes no cycle in the dependencies - is it correct ? *)
-      if occur_meta clenv.evd ty then fold clenv (mvs@[mv])
+      if occur_meta sigma ty then fold metas sigma (mvs@[mv])
       else
-        let src = evar_source_of_meta mv clenv.evd in
-        let src = adjust_meta_source clenv.evd mv src in
-        let evd = clenv.evd in
-        let (evd, evar) = new_evar (cl_env clenv) evd ~src ty in
-        let clenv = clenv_assign mv evar {clenv with evd=evd} in
-        fold clenv mvs in
-  fold clenv dep_mvs
+        let src = Meta.evar_source_of_meta mv metas in
+        let src = adjust_meta_source ~metas sigma mv src in
+        let (sigma, evar) = new_evar env sigma ~src ty in
+        let sigma, metas = clenv_assign ~metas env sigma mv evar in
+        fold metas sigma mvs in
+  fold metas sigma dep_mvs
 
 (******************************************************************)
 
@@ -418,31 +523,27 @@ let fchain_flags () =
   { (default_unify_flags ()) with
     allow_K_in_toplevel_higher_order_unification = true }
 
-let clenv_instantiate ?(flags=fchain_flags ()) mv clenv (c, ty) =
-  (* unify the type of the template of [nextclenv] with the type of [mv] *)
-  let clenv = clenv_unify ~flags CUMUL ty (clenv_meta_type clenv mv) clenv in
-  clenv_assign mv c clenv
-
-let clenv_fchain ?with_univs ?(flags=fchain_flags ()) mv clenv nextclenv =
-  (* Add the metavars of [nextclenv] to [clenv], with their name-environment *)
-  let evd = meta_merge ?with_univs nextclenv.evd clenv.evd in
-  let clenv' =
-    { templval = clenv.templval;
-      templtyp = clenv.templtyp;
-      evd;
-      env = nextclenv.env;
-      cache = create_meta_instance_subst evd } in
-  (* unify the type of the template of [nextclenv] with the type of [mv] *)
-  let clenv'' =
-    clenv_unify ~flags CUMUL
-      (clenv_term clenv' nextclenv.templtyp)
-      (clenv_meta_type clenv' mv)
-      clenv' in
-  (* assign the metavar *)
-  let clenv''' =
-    clenv_assign mv (clenv_term clenv' nextclenv.templval) clenv''
+let clenv_instantiate ?(flags=fchain_flags ()) ?submetas mv clenv (c, ty) =
+  let clenv, c = match submetas with
+  | None -> clenv, c
+  | Some (metas, metam) ->
+    let metam = Unification.Meta.meta_merge metam clenv.metam in
+    let clenv = update_clenv_evd clenv clenv.evd metam in
+    let c = applist (c, List.map mkMeta metas) in
+    let map arg =
+      if Int.equal mv arg.marg_meta then
+        (* we never chain more than 2 clenvs *)
+        let () = assert (Option.is_empty arg.marg_chain) in
+        { arg with marg_chain = Some metas }
+      else arg
+    in
+    let metas = List.map map clenv.metas in
+    { clenv with metas = metas }, c
   in
-  clenv'''
+  (* unify the type of the template of [nextclenv] with the type of [mv] *)
+  let clenv = clenv_unify ~flags CUMUL ty (clenv_meta_type ~metas:clenv.metam clenv.env clenv.evd mv) clenv in
+  let evd, metam = clenv_assign ~metas:clenv.metam clenv.env clenv.evd mv c in
+  update_clenv_evd clenv evd metam
 
 (***************************************************************)
 (* Bindings *)
@@ -455,103 +556,95 @@ let clenv_fchain ?with_univs ?(flags=fchain_flags ()) mv clenv nextclenv =
 
 let clenv_independent clenv =
   let mvs = collect_metas clenv.evd (clenv_value clenv) in
-  let ctyp_mvs = (mk_freelisted (clenv_type clenv)).freemetas in
-  let deps = Metaset.union (dependent_in_type_of_metas clenv mvs) ctyp_mvs in
+  let ctyp_mvs = metavars_of (clenv_type clenv) in
+  let deps = Metaset.union (dependent_in_type_of_metas ~metas:clenv.metam clenv.env clenv.evd mvs) ctyp_mvs in
   List.filter (fun mv -> not (Metaset.mem mv deps)) mvs
 
 let qhyp_eq h1 h2 = match h1, h2 with
-| NamedHyp n1, NamedHyp n2 -> Id.equal n1 n2
+| NamedHyp n1, NamedHyp n2 -> lident_eq n1 n2
 | AnonHyp i1, AnonHyp i2 -> Int.equal i1 i2
 | _ -> false
 
 let check_bindings bl =
   match List.duplicates qhyp_eq (List.map (fun {CAst.v=x} -> fst x) bl) with
     | NamedHyp s :: _ ->
-        user_err
-          (str "The variable " ++ Id.print s ++
-           str " occurs more than once in binding list.");
+        user_err ?loc:s.CAst.loc
+          Pp.(str "The variable " ++ Id.print s.CAst.v ++
+              str " occurs more than once in binding list.");
     | AnonHyp n :: _ ->
         user_err
-          (str "The position " ++ int n ++
-           str " occurs more than once in binding list.")
+          Pp.(str "The position " ++ int n ++
+              str " occurs more than once in binding list.")
     | [] -> ()
 
-let explain_no_such_bound_variable evd id =
-  let fold l (n, clb) =
-    let na = match clb with
-    | Cltyp (na, _) -> na
-    | Clval (na, _, _) -> na
-    in
-    if na != Anonymous then Name.get_id na :: l else l
+let explain_no_such_bound_variable mvl {CAst.v=id;loc} =
+  let open Pp in
+  let expl = match mvl with
+  | [] -> str "(no bound variables at all in the expression)."
+  | [id] -> str "(possible name is: " ++ Id.print id ++ str ")."
+  | _ -> str "(possible names are: " ++ pr_enum Id.print mvl ++ str ")."
   in
-  let mvl = List.fold_left fold [] (Evd.meta_list evd) in
-  user_err ~hdr:"Evd.meta_with_name"
-    (str"No such bound variable " ++ Id.print id ++
-     (if mvl == [] then str " (no bound variables at all in the expression)."
-      else
-        (str" (possible name" ++
-         str (if List.length mvl == 1 then " is: " else "s are: ") ++
-         pr_enum Id.print mvl ++ str").")))
+  user_err ?loc (str "No such bound variable " ++ Id.print id ++ spc () ++ expl)
 
-let meta_with_name evd id =
+let meta_with_name metas ({CAst.v=id} as lid) =
   let na = Name id in
-  let fold (l1, l2 as l) (n, clb) =
-    let (na',def) = match clb with
-    | Cltyp (na, _) -> (na, false)
-    | Clval (na, _, _) -> (na, true)
-    in
+  let fold n (l1, l2 as l) =
+    let na' = Unification.Meta.meta_name metas n in
+    let def = Option.has_some (Unification.Meta.meta_opt_fvalue metas n) in
     if Name.equal na na' then if def then (n::l1,l2) else (n::l1,n::l2)
     else l
   in
-  let (mvl, mvnodef) = List.fold_left fold ([], []) (Evd.meta_list evd) in
-  match mvnodef, mvl with
+  let (mvl, mvnodef) = Unification.Meta.fold fold metas ([], []) in
+  match List.rev mvnodef, List.rev mvl with
     | _,[]  ->
-      explain_no_such_bound_variable evd id
-    | ([n],_|_,[n]) ->
+      let fold n l =
+        let na = Unification.Meta.meta_name metas n in
+        if na != Anonymous then Name.get_id na :: l else l
+      in
+      let mvl = List.rev (Unification.Meta.fold fold metas []) in
+      explain_no_such_bound_variable mvl lid
+    | (n::_,_|_,n::_) ->
         n
-    | _  ->
-        user_err ~hdr:"Evd.meta_with_name"
-          (str "Binder name \"" ++ Id.print id ++
-           strbrk "\" occurs more than once in clause.")
 
 let meta_of_binder clause loc mvs = function
-  | NamedHyp s -> meta_with_name clause.evd s
+  | NamedHyp s -> meta_with_name clause.metam s
   | AnonHyp n ->
       try List.nth mvs (n-1)
       with (Failure _|Invalid_argument _) ->
-        user_err  (str "No such binder.")
+        user_err Pp.(str "No such binder.")
 
 let error_already_defined b =
   match b with
     | NamedHyp id ->
-        user_err
-          (str "Binder name \"" ++ Id.print id ++
-           str"\" already defined with incompatible value.")
+        user_err ?loc:id.CAst.loc
+          Pp.(str "Binder name \"" ++ Id.print id.CAst.v ++
+              str"\" already defined with incompatible value.")
     | AnonHyp n ->
         anomaly
-          (str "Position " ++ int n ++ str" already defined.")
+          Pp.(str "Position " ++ int n ++ str" already defined.")
 
-let clenv_unify_binding_type clenv c t u =
-  if isMeta clenv.evd (fst (decompose_app_vect clenv.evd (whd_nored clenv.env clenv.evd u))) then
+let clenv_unify_binding_type ~metas env sigma c t u =
+  if isMeta sigma (fst (decompose_app sigma (whd_nored ~metas:(meta_handler metas) env sigma u))) then
     (* Not enough information to know if some subtyping is needed *)
-    CoerceToType, clenv, c
+    Meta.CoerceToType, metas, sigma, c
   else
     (* Enough information so as to try a coercion now *)
     try
-      let evd,c = w_coerce_to_type (cl_env clenv) clenv.evd c t u in
-      TypeProcessed, { clenv with evd = evd }, c
+      let sigma, metas, c = w_coerce_to_type ~metas env sigma c t u in
+      Meta.TypeProcessed, metas, sigma, c
     with
       | PretypeError (_,_,ActualTypeNotCoercible (_,_,
           (NotClean _ | ConversionFailed _))) as e ->
           raise e
       | e when precatchable_exception e ->
-          TypeNotProcessed, clenv, c
+          Meta.TypeNotProcessed, metas, sigma, c
 
 let clenv_assign_binding clenv k c =
-  let k_typ = clenv_hnf_constr clenv (clenv_meta_type clenv k) in
-  let c_typ = nf_betaiota clenv.env clenv.evd (clenv_get_type_of clenv c) in
-  let status,clenv',c = clenv_unify_binding_type clenv c c_typ k_typ in
-  update_clenv_evd clenv' (meta_assign k (c,(Conv,status)) clenv'.evd)
+  let k_typ = hnf_constr clenv.env clenv.evd (clenv_meta_type ~metas:clenv.metam clenv.env clenv.evd k) in
+  let c_typ = nf_betaiota clenv.env clenv.evd (Retyping.get_type_of clenv.env clenv.evd c) in
+  let status, metas, sigma, c = clenv_unify_binding_type ~metas:clenv.metam clenv.env clenv.evd c c_typ k_typ in
+  let sigma, metas = Meta.meta_assign k (c, status) metas sigma in
+  update_clenv_evd clenv sigma metas
 
 let clenv_match_args bl clenv =
   if List.is_empty bl then
@@ -562,36 +655,30 @@ let clenv_match_args bl clenv =
     List.fold_left
       (fun clenv {CAst.loc;v=(b,c)} ->
         let k = meta_of_binder clenv loc mvs b in
-        if meta_defined clenv.evd k then
-          if EConstr.eq_constr clenv.evd (fst (meta_fvalue clenv.evd k)).rebus c then clenv
+        match Meta.meta_opt_fvalue clenv.metam k with
+        | Some body ->
+          if EConstr.eq_constr clenv.evd body.rebus c then clenv
           else error_already_defined b
-        else
+        | None ->
           clenv_assign_binding clenv k c)
       clenv bl
 
-exception NoSuchBinding
-
-let clenv_constrain_last_binding c clenv =
-  let all_mvs = collect_metas clenv.evd clenv.templval.rebus in
-  let k = try List.last all_mvs with Failure _ -> raise NoSuchBinding in
-  clenv_assign_binding clenv k c
-
 let error_not_right_number_missing_arguments n =
   user_err
-    (strbrk "Not the right number of missing arguments (expected " ++
-      int n ++ str ").")
+    Pp.(strbrk "Not the right number of missing arguments (expected " ++
+        int n ++ str ").")
 
 let clenv_constrain_dep_args hyps_only bl clenv =
   if List.is_empty bl then
     clenv
   else
-    let occlist = clenv_dependent_gen hyps_only clenv in
+    let occlist = clenv_dependent_gen ~metas:clenv.metam hyps_only clenv.env clenv.evd (clenv_type clenv) in
     if Int.equal (List.length occlist) (List.length bl) then
       List.fold_left2 clenv_assign_binding clenv occlist bl
     else
       if hyps_only then
         (* Tolerance for compatibility <= 8.3 *)
-        let occlist' = clenv_dependent_gen hyps_only ~iter:false clenv in
+        let occlist' = clenv_dependent_gen ~metas:clenv.metam hyps_only ~iter:false clenv.env clenv.evd (clenv_type clenv) in
         if Int.equal (List.length occlist') (List.length bl) then
           List.fold_left2 clenv_assign_binding clenv occlist' bl
         else
@@ -599,47 +686,196 @@ let clenv_constrain_dep_args hyps_only bl clenv =
       else
         error_not_right_number_missing_arguments (List.length occlist)
 
-
-(* This function put casts around metavariables whose type could not be
- * inferred by the refiner, that is head of applications, predicates and
- * subject of Cases.
- * Does check that the casted type is closed. Anyway, the refiner would
- * fail in this case... *)
-
-let clenv_cast_meta clenv =
-  let rec crec u =
-    match EConstr.kind clenv.evd u with
-      | App _ | Case _ -> crec_hd u
-      | Cast (c,_,_) when isMeta clenv.evd c -> u
-      | Proj (p, c) -> mkProj (p, crec_hd c)
-      | _  -> EConstr.map clenv.evd crec u
-
-  and crec_hd u =
-    match EConstr.kind clenv.evd (strip_outer_cast clenv.evd u) with
-      | Meta mv ->
-          (try
-            let b = Typing.meta_type clenv.env clenv.evd mv in
-            assert (not (occur_meta clenv.evd b));
-            if occur_meta clenv.evd b then u
-            else mkCast (mkMeta mv, DEFAULTcast, b)
-          with Not_found -> u)
-      | App(f,args) -> mkApp (crec_hd f, Array.map crec args)
-      | Case(ci,u,pms,p,iv,c,br) ->
-          (* FIXME: we only change c because [p] is always a lambda and [br] is
-             most of the time??? *)
-          mkCase (ci, u, pms, p, iv, crec_hd c, br)
-      | Proj (p, c) -> mkProj (p, crec_hd c)
-      | _ -> u
-  in
-  crec
-
-let clenv_pose_dependent_evars ?(with_evars=false) clenv =
-  let dep_mvs = clenv_dependent clenv in
-  let env, sigma = clenv.env, clenv.evd in
+let pose_dependent_evars ?(with_evars=false) ~metas env sigma concl =
+  let dep_mvs = clenv_dependent_gen ~metas false env sigma concl in
   if not (List.is_empty dep_mvs) && not with_evars then
     raise
-      (RefinerError (env, sigma, UnresolvedBindings (List.map (meta_name clenv.evd) dep_mvs)));
-  clenv_pose_metas_as_evars clenv dep_mvs
+      (RefinerError (env, sigma, UnresolvedBindings (List.map (Meta.meta_name metas) dep_mvs)));
+  clenv_pose_metas_as_evars ~metas env sigma dep_mvs
+
+let clenv_pose_dependent_evars ?with_evars clenv =
+  let metas, sigma = pose_dependent_evars ?with_evars ~metas:clenv.metam clenv.env clenv.evd (clenv_type clenv) in
+  update_clenv_evd clenv sigma metas
+
+type case_node = (case_info * EInstance.t * EConstr.t array * EConstr.case_return * EConstr.case_invert * EConstr.t)
+
+module Internal =
+struct
+
+open Pp
+open Constr
+open Termops
+open Retyping
+
+let error_unsupported_deep_meta () =
+  user_err  (strbrk "Application of lemmas whose beta-iota normal " ++
+    strbrk "form contains metavariables deep inside the term is not " ++
+    strbrk "supported; try \"refine\" instead.")
+
+type proof =
+| RfHole of metavariable
+| RfGround of EConstr.t
+| RfApp of proof * proof list
+| RfProj of Projection.t * ERelevance.t * proof
+
+exception NonLinear
+
+let is_ground = function
+| RfGround _ -> true
+| RfHole _ | RfApp _ | RfProj _ -> false
+
+let make_proof env sigma c =
+  let metas = ref Metaset.empty in
+  let rec make c = match EConstr.kind sigma c with
+  | Meta mv ->
+    if Metaset.mem mv !metas then raise NonLinear
+    else
+      let () = metas := Metaset.add mv !metas in
+      RfHole mv
+  | App (f, args) ->
+    let f = make f in
+    let args = Array.map_to_list (fun c -> make c) args in
+    if is_ground f && List.for_all is_ground args then RfGround c
+    else RfApp (f, args)
+  | Proj (p, r, a) ->
+    let a = make a in
+    if is_ground a then RfGround c else RfProj (p, r, a)
+  | _ ->
+    if occur_meta sigma c then error_unsupported_deep_meta ()
+    else RfGround c
+  in
+  try make c
+  with NonLinear -> raise (RefinerError (env, sigma, NonLinearProof c))
+
+let rec as_constr = function
+| RfHole mv -> EConstr.mkMeta mv
+| RfGround c -> c
+| RfApp (f, args) -> EConstr.mkApp (as_constr f, Array.map_of_list as_constr args)
+| RfProj (p, r, c) -> EConstr.mkProj (p, r, as_constr c)
+
+(* Old style mk_goal primitive *)
+let mk_goal env evars hyps concl =
+  (* A goal created that way will not be used by refine and will not
+      be shelved. It must not appear as a future_goal, so the future
+      goals are restored to their initial value after the evar is
+      created. *)
+  let evars = Evd.push_future_goals evars in
+  let inst = EConstr.identity_subst_val hyps in
+  let relevance = Retyping.relevance_of_type env evars concl in
+  let (evars,evk) =
+    Evarutil.new_pure_evar ~src:(Loc.tag Evar_kinds.GoalEvar) ~typeclass_candidate:false hyps evars ~relevance concl
+  in
+  let _, evars = Evd.pop_future_goals evars in
+  let ev = EConstr.mkEvar (evk,inst) in
+  (evk, ev, evars)
+
+let rec mk_refgoals ~metas env sigma goalacc conclty trm = match trm with
+| RfGround trm ->
+  let ty = Retyping.get_type_of env sigma trm in
+  (goalacc, ty, sigma, trm)
+| RfHole mv ->
+  let conclty = match conclty with
+  | None -> Unification.Meta.meta_type metas env sigma mv
+  | Some conclty -> conclty
+  in
+  let conclty = nf_betaiota env sigma conclty in
+  let hyps = Environ.named_context_val env in
+  let (gl,ev,sigma) = mk_goal env sigma hyps conclty in
+  gl::goalacc, conclty, sigma, ev
+| RfApp (f, l) ->
+  let (acc',hdty,sigma,applicand) = match f with
+  | RfGround f when Termops.is_template_polymorphic_ref env sigma f ->
+    let ty =
+      (* Template polymorphism of definitions and inductive types *)
+      let args, _ = List.split_when (fun p -> not (is_ground p)) l in
+      let args = Array.map_of_list as_constr args in
+      type_of_global_reference_knowing_parameters env sigma f args
+    in
+    goalacc, ty, sigma, f
+  | _ -> mk_refgoals ~metas env sigma goalacc None f
+  in
+  let ((acc'',conclty',sigma), args) = mk_arggoals ~metas env sigma acc' hdty l in
+  let ans = EConstr.applist (applicand, args) in
+  (acc'', conclty', sigma, ans)
+| RfProj (p, r, c) ->
+  let (acc',cty,sigma,c') = mk_refgoals ~metas env sigma goalacc None c in
+  let c = EConstr.mkProj (p, r, c') in
+  let ty = get_type_of env sigma c in
+  (acc',ty,sigma,c)
+
+and mk_arggoals ~metas env sigma goalacc funty allargs =
+  let foldmap (goalacc, funty, sigma) harg =
+    let t = whd_all ~metas:(meta_handler metas) env sigma funty in
+    match EConstr.kind sigma t with
+    | Prod (_, c1, b) ->
+      let (acc, hargty, sigma, arg) = mk_refgoals ~metas env sigma goalacc (Some c1) harg in
+      (acc, EConstr.Vars.subst1 arg b, sigma), arg
+    | _ ->
+      raise (RefinerError (env,sigma,CannotApply (t, as_constr harg)))
+  in
+  List.fold_left_map foldmap (goalacc, funty, sigma) allargs
+
+let treat_case env sigma ci lbrty accu =
+  let open EConstr in
+  let fold (sigma, accu) (ctx, ty) =
+    let open Context.Rel.Declaration in
+    let brctx = Array.of_list (List.rev_map get_annot ctx) in
+    let args = Context.Rel.instance mkRel 0 ctx in
+    (* TODO: tweak this to prevent dummy β-cuts *)
+    let ty = nf_betaiota env sigma (it_mkProd_or_LetIn ty ctx) in
+    let hyps = Environ.named_context_val env in
+    let (gl, ev, sigma) = mk_goal env sigma hyps ty in
+    let br' = mkApp (ev, args) in
+    (sigma, gl :: accu), (brctx, br')
+  in
+  Array.fold_left_map fold (sigma, accu) lbrty
+
+let std_refine ~metas env sigma cl r =
+  let r = make_proof env sigma r in
+  let (sgl, _, sigma, trm) = mk_refgoals ~metas env sigma [] (Some cl) r in
+  (sigma, sgl, trm)
+
+(***********************************************)
+(* find appropriate names for pattern variables. Useful in the Case
+   and Inversion (case_then_using et case_nodep_then_using) tactics. *)
+
+type refiner_kind =
+| Std of Meta.t * EConstr.t
+| Case of case_node * (EConstr.rel_context * EConstr.t) array
+
+let refiner_gen is_case =
+  let open Proofview.Notations in
+  Proofview.Goal.enter begin fun gl ->
+  let sigma = Proofview.Goal.sigma gl in
+  let env = Proofview.Goal.env gl in
+  let st = Proofview.Goal.state gl in
+  let cl = Proofview.Goal.concl gl in
+  let (sigma, sgl, c) = match is_case with
+  | Case ((ci, u, pms, p, iv, c), branches) ->
+    let ((sigma, accu), lf) = treat_case env sigma ci branches [] in
+    let ans = EConstr.mkCase (ci, u, pms, p, iv, c, lf) in
+    (sigma, accu, ans)
+  | Std (metas, r) ->
+    std_refine ~metas  env sigma cl r
+  in
+  let map gl = Proofview.goal_with_state gl st in
+  let sgl = List.rev_map map sgl in
+  let evk = Proofview.Goal.goal gl in
+  (* Check that the goal itself does not appear in the refined term *)
+  let _ =
+    if not (Evarutil.occur_evar_upto sigma evk c) then ()
+    else Pretype_errors.error_occur_check env sigma evk c
+  in
+  let sigma = Evd.define evk c sigma in
+  Proofview.Unsafe.tclEVARS sigma <*>
+  Proofview.Unsafe.tclSETGOALS sgl
+  end
+
+let refiner clenv =
+  let r = clenv_value clenv in
+  refiner_gen (Std (clenv.metam, r))
+
+end
 
 open Unification
 
@@ -649,22 +885,159 @@ let res_pf ?(with_evars=false) ?(with_classes=true) ?(flags=dft ()) clenv =
   Proofview.Goal.enter begin fun gl ->
     let concl = Proofview.Goal.concl gl in
     let clenv = clenv_unique_resolver ~flags clenv concl in
-    let clenv = clenv_pose_dependent_evars ~with_evars clenv in
-    let evd' =
+    let metas, sigma = pose_dependent_evars ~with_evars ~metas:clenv.metam clenv.env clenv.evd (clenv_type clenv) in
+    let sigma =
       if with_classes then
-        let evd' =
+        let sigma =
           Typeclasses.resolve_typeclasses ~filter:Typeclasses.all_evars
-            ~fail:(not with_evars) clenv.env clenv.evd
+            ~fail:(not with_evars) clenv.env sigma
         in
         (* After an apply, all the subgoals including those dependent shelved ones are in
           the hands of the user and resolution won't be called implicitely on them. *)
-        Typeclasses.make_unresolvables (fun x -> true) evd'
-      else clenv.evd
+        Typeclasses.make_unresolvables (fun x -> true) sigma
+      else sigma
     in
-    let clenv = update_clenv_evd clenv evd' in
+    let clenv = update_clenv_evd clenv sigma metas in
+    let r = clenv_value clenv in
     Proofview.tclTHEN
-      (Proofview.Unsafe.tclEVARS (Evd.clear_metas evd'))
-      (refiner ~check:false EConstr.Unsafe.(to_constr (clenv_cast_meta clenv (clenv_value clenv))))
+      (Proofview.Unsafe.tclEVARS sigma)
+      (Internal.refiner_gen (Std (metas, r)))
+  end
+
+type case_analysis =
+| RealCase of case_node
+| PrimitiveEta of EConstr.t array
+
+let build_case_analysis env sigma (ind, u) params pred indices indarg dep knd =
+  let open Inductiveops in
+  let open Context.Rel.Declaration in
+  (* Assumes that the arguments do not contain free rels *)
+  let indf = make_ind_family ((ind, u), Array.to_list params) in
+  let projs = get_projections env ind in
+  let relevance = Retyping.relevance_of_sort knd in
+
+  let pnas, deparsign =
+    let arsign = get_arity env indf in
+    let r = Inductiveops.relevance_of_inductive_family env indf in
+    let depind = build_dependent_inductive env indf in
+    let deparsign = LocalAssum (make_annot Anonymous r,depind)::arsign in
+    let set_names env l =
+      let ident_hd env ids t na =
+        let na = Namegen.named_hd env (Evd.from_env env) t na in
+        Namegen.next_name_away na ids
+      in
+      let fold d (ids, l) =
+        let id = ident_hd env ids (get_type d) (get_name d) in
+        (Id.Set.add id ids, set_name (Name id) d :: l)
+      in
+      snd (List.fold_right fold l (Id.Set.empty,[]))
+    in
+    let pctx =
+      let deparsign = set_names env deparsign in
+      if dep then deparsign
+      else LocalAssum (make_annot Anonymous r, depind) :: List.tl deparsign
+    in
+    let pnas = Array.of_list (List.rev_map get_annot pctx) in
+    pnas, deparsign
+  in
+
+  match projs with
+  | None ->
+    let ci = make_case_info env ind RegularStyle in
+    let pbody =
+      mkApp
+        (pred,
+          if dep then Context.Rel.instance mkRel 0 deparsign
+          else Context.Rel.instance mkRel 1 (List.tl deparsign)) in
+    let iv =
+      if Typeops.should_invert_case env (ERelevance.kind sigma relevance) ci
+      then CaseInvert { indices = indices }
+      else NoInvert
+    in
+    RealCase (ci, u, params, ((pnas, pbody), relevance), iv, indarg)
+  | Some ps ->
+    let args = Array.map (fun (p,r) ->
+        let r = EConstr.Vars.subst_instance_relevance u (ERelevance.make r) in
+        mkProj (Projection.make p true, r, indarg))
+        ps
+    in
+    PrimitiveEta args
+
+let case_pf ?(with_evars=false) ~dep (indarg, typ) =
+  Proofview.Goal.enter begin fun gl ->
+  let env = Proofview.Goal.env gl in
+  let sigma = Proofview.Goal.sigma gl in
+  let concl = Proofview.Goal.concl gl in
+  (* Extract inductive data from the argument. *)
+  let hd, args = decompose_app sigma typ in
+  (* Workaround to #5645: reduce_to_atomic_ind produces ill-typed terms *)
+  let sigma, _ = Typing.checked_appvect env sigma hd args in
+  let ind, u = destInd sigma hd in
+  let s = Retyping.get_sort_of env sigma concl in
+  let (mib, mip) = Inductive.lookup_mind_specif env ind in
+  let params, indices = Array.chop mib.mind_nparams args in
+
+  let sigma = Indrec.check_valid_elimination env sigma (ind, u) ~dep s in
+
+  let indf =
+    Inductiveops.make_ind_family ((ind, u), Array.to_list params)
+  in
+
+  (* Extract the return clause using unification with the conclusion *)
+  let typP = Inductiveops.make_arity env sigma dep indf s in
+  let mvP = new_meta () in
+  let metas = Meta.meta_declare mvP typP Meta.empty in
+  let depargs = Array.append indices [|indarg|] in
+  let templtyp = if dep then mkApp (mkMeta mvP, depargs) else mkApp (mkMeta mvP, indices) in
+  let flags = elim_flags () in
+  let metas, sigma = w_unify_meta_types ~metas ~flags env sigma in
+  let metas, sigma = w_unify ~metas ~flags env sigma CUMUL templtyp concl in
+  let pred = Meta.meta_instance metas env sigma (mkMeta mvP) in
+
+  (* Create the branch types *)
+  let branches =
+    let open Inductiveops in
+    let constrs = get_constructors env indf in
+    let get_branch cs =
+      let base = mkApp (pred, cs.cs_concl_realargs) in
+      let argctx = cs.cs_args in
+      if dep then
+        let argctx = Namegen.name_context env sigma argctx in
+        (argctx, applist (base, [build_dependent_constructor cs]))
+      else
+        (argctx, base)
+    in
+    Array.map get_branch constrs
+  in
+
+  (* Build the case node proper *)
+  let body = build_case_analysis env sigma (ind, u) params pred indices indarg dep s in
+
+  (* After an apply, all the subgoals including those dependent shelved ones are in
+    the hands of the user and resolution won't be called implicitely on them. *)
+  let sigma =
+    Typeclasses.resolve_typeclasses ~filter:Typeclasses.all_evars
+      ~fail:(not with_evars) env sigma
+  in
+  let sigma = Typeclasses.make_unresolvables (fun x -> true) sigma in
+  (* Note that the environment rel context does not matter for betaiota *)
+  let rec nf_betaiota c = EConstr.map sigma nf_betaiota (whd_betaiota ~metas:(meta_handler metas) env sigma c) in
+  (* Call the legacy refiner on the result *)
+  let arg = match body with
+  | RealCase (ci, u, pms, (p,r), iv, c) ->
+    let c = nf_betaiota c in
+    let pms = Array.map nf_betaiota pms in
+    let p = on_snd nf_betaiota p in
+    Internal.Case ((ci, u, pms, (p,r), iv, c), branches)
+  | PrimitiveEta args ->
+    let mv = new_meta () in
+    let (ctx, t) = branches.(0) in
+    let metas = Meta.meta_declare mv (it_mkProd_or_LetIn t ctx) metas in
+    Internal.Std (metas, mkApp (mkMeta mv, Array.map nf_betaiota args))
+  in
+  Proofview.tclTHEN
+    (Proofview.Unsafe.tclEVARS sigma)
+    (Internal.refiner_gen arg)
   end
 
 (* [unifyTerms] et [unify] ne semble pas gérer les Meta, en
@@ -696,14 +1069,14 @@ let fail_quick_unif_flags = {
 }
 
 (* let unifyTerms m n = walking (fun wc -> fst (w_Unify CONV m n [] wc)) *)
-let unify ?(flags=fail_quick_unif_flags) m =
+let unify ?(flags=fail_quick_unif_flags) ~cv_pb m =
   Proofview.Goal.enter begin fun gl ->
-    let env = Tacmach.New.pf_env gl in
-    let n = Tacmach.New.pf_concl gl in
-    let evd = clear_metas (Tacmach.New.project gl) in
+    let env = Tacmach.pf_env gl in
+    let sigma = Proofview.Goal.sigma gl in
+    let n = Tacmach.pf_concl gl in
     try
-      let evd' = w_unify env evd CONV ~flags m n in
-        Proofview.Unsafe.tclEVARSADVANCE evd'
+      let _, sigma = w_unify ~metas:Meta.empty env sigma cv_pb ~flags m n in
+      Proofview.Unsafe.tclEVARSADVANCE sigma
     with e when CErrors.noncritical e ->
       let info = Exninfo.reify () in
       Proofview.tclZERO ~info e
@@ -717,10 +1090,7 @@ let make_clenv_binding_gen hyps_only n env sigma (c,t) = function
       let clause = mk_clenv_from_env env sigma n (c,t) in
       clenv_constrain_dep_args hyps_only largs clause
   | ExplicitBindings lbind ->
-      let t = rename_bound_vars_as_displayed sigma Id.Set.empty [] t in
-      let clause = mk_clenv_from_env env sigma n
-        (c, t)
-      in clenv_match_args lbind clause
+      let clause = mk_clenv_from_env env sigma n (c, t) in clenv_match_args lbind clause
   | NoBindings ->
       mk_clenv_from_env env sigma n (c,t)
 
@@ -731,148 +1101,7 @@ let make_clenv_binding env sigma = make_clenv_binding_gen false None env sigma
 (* Pretty-print *)
 
 let pr_clenv clenv =
-  h
-    (str"TEMPL: " ++ Termops.Internal.print_constr_env clenv.env clenv.evd clenv.templval.rebus ++
-     str" : " ++ Termops.Internal.print_constr_env clenv.env clenv.evd clenv.templtyp.rebus ++ fnl () ++
-     pr_evar_map (Some 2) clenv.env clenv.evd)
-
-(****************************************************************)
-(** Evar version of mk_clenv *)
-
-type hole = {
-  hole_evar : EConstr.constr;
-  hole_type : EConstr.types;
-  hole_deps  : bool;
-  hole_name : Name.t;
-}
-
-type clause = {
-  cl_holes : hole list;
-  cl_concl : EConstr.types;
-}
-
-let make_evar_clause env sigma ?len t =
-  let open EConstr in
-  let open Vars in
-  let bound = match len with
-  | None -> -1
-  | Some n -> assert (0 <= n); n
-  in
-  (* FIXME: do the renaming online *)
-  let t = rename_bound_vars_as_displayed sigma Id.Set.empty [] t in
-  let rec clrec (sigma, holes) inst n t =
-    if n = 0 then (sigma, holes, t)
-    else match EConstr.kind sigma t with
-    | Cast (t, _, _) -> clrec (sigma, holes) inst n t
-    | Prod (na, t1, t2) ->
-      (* Share the evar instances as we are living in the same context *)
-      let inst, ctx, args, subst = match inst with
-      | None ->
-        (* Dummy type *)
-        let ctx, _, args, subst = push_rel_context_to_named_context env sigma mkProp in
-        Some (ctx, args, subst), ctx, args, subst
-      | Some (ctx, args, subst) -> inst, ctx, args, subst
-      in
-      let (sigma, ev) = new_pure_evar ~typeclass_candidate:false ctx sigma (csubst_subst subst t1) in
-      let ev = mkEvar (ev, args) in
-      let dep = not (noccurn sigma 1 t2) in
-      let hole = {
-        hole_evar = ev;
-        hole_type = t1;
-        hole_deps = dep;
-        (* We fix it later *)
-        hole_name = na.binder_name;
-      } in
-      let t2 = if dep then subst1 ev t2 else t2 in
-      clrec (sigma, hole :: holes) inst (pred n) t2
-    | LetIn (na, b, _, t) -> clrec (sigma, holes) inst n (subst1 b t)
-    | _ -> (sigma, holes, t)
-  in
-  let (sigma, holes, t) = clrec (sigma, []) None bound t in
-  let holes = List.rev holes in
-  let clause = { cl_concl = t; cl_holes = holes } in
-  (sigma, clause)
-
-let explain_no_such_bound_variable holes id =
-  let fold h accu = match h.hole_name with
-  | Anonymous -> accu
-  | Name id -> id :: accu
-  in
-  let mvl = List.fold_right fold holes [] in
-  let expl = match mvl with
-  | [] -> str " (no bound variables at all in the expression)."
-  | [id] -> str "(possible name is: " ++ Id.print id ++ str ")."
-  | _ -> str "(possible names are: " ++ pr_enum Id.print mvl ++ str ")."
-  in
-  user_err  (str "No such bound variable " ++ Id.print id ++ expl)
-
-let evar_with_name holes id =
-  let map h = match h.hole_name with
-  | Anonymous -> None
-  | Name id' -> if Id.equal id id' then Some h else None
-  in
-  let hole = List.map_filter map holes in
-  match hole with
-  | [] -> explain_no_such_bound_variable holes id
-  | [h] -> h.hole_evar
-  | _ ->
-    user_err
-      (str "Binder name \"" ++ Id.print id ++
-        str "\" occurs more than once in clause.")
-
-let evar_of_binder holes = function
-| NamedHyp s -> evar_with_name holes s
-| AnonHyp n ->
-  try
-    let nondeps = List.filter (fun hole -> not hole.hole_deps) holes in
-    let h = List.nth nondeps (pred n) in
-    h.hole_evar
-  with e when CErrors.noncritical e ->
-    user_err  (str "No such binder.")
-
-let define_with_type sigma env ev c =
-  let open EConstr in
-  let t = Retyping.get_type_of env sigma ev in
-  let ty = Retyping.get_type_of env sigma c in
-  let j = Environ.make_judge c ty in
-  let (sigma, j, _trace) = Coercion.inh_conv_coerce_to ~program_mode:false true env sigma j t in
-  let (ev, _) = destEvar sigma ev in
-  let sigma = Evd.define ev j.Environ.uj_val sigma in
-  sigma
-
-let solve_evar_clause env sigma hyp_only clause = function
-| NoBindings -> sigma
-| ImplicitBindings largs ->
-  let open EConstr in
-  let fold holes h =
-    if h.hole_deps then
-      (* Some subsequent term uses the hole *)
-      let (ev, _) = destEvar sigma h.hole_evar in
-      let is_dep hole = occur_evar sigma ev hole.hole_type in
-      let in_hyp = List.exists is_dep holes in
-      let in_ccl = occur_evar sigma ev clause.cl_concl in
-      let dep = if hyp_only then in_hyp && not in_ccl else in_hyp || in_ccl in
-      let h = { h with hole_deps = dep } in
-      h :: holes
-    else
-      (* The hole does not occur anywhere *)
-      h :: holes
-  in
-  let holes = List.fold_left fold [] (List.rev clause.cl_holes) in
-  let map h = if h.hole_deps then Some h.hole_evar else None in
-  let evs = List.map_filter map holes in
-  let len = List.length evs in
-  if Int.equal len (List.length largs) then
-    let fold sigma ev arg = define_with_type sigma env ev arg in
-    let sigma = List.fold_left2 fold sigma evs largs in
-    sigma
-  else
-    error_not_right_number_missing_arguments len
-| ExplicitBindings lbind ->
-  let () = check_bindings lbind in
-  let fold sigma {CAst.v=(binder, c)} =
-    let ev = evar_of_binder clause.cl_holes binder in
-    define_with_type sigma env ev c
-  in
-  let sigma = List.fold_left fold sigma lbind in
-  sigma
+  let prc = Termops.Internal.print_constr_env clenv.env clenv.evd in
+  Pp.(h (str"TEMPL: " ++ prc clenv.templval ++
+         str" : " ++ prc (fst clenv.templtyp) ++ fnl () ++
+         pr_evar_map (Some 2) clenv.env clenv.evd))

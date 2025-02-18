@@ -1,6 +1,5 @@
-(* -*- coding: utf-8; coq-prog-args: ("-top" "Coq.Classes.Morphisms") -*- *)
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -15,10 +14,10 @@
    Institution: LRI, CNRS UMR 8623 - University Paris Sud
 *)
 
-Require Import Coq.Program.Basics.
-Require Import Coq.Program.Tactics.
-Require Import Coq.Relations.Relation_Definitions.
-Require Export Coq.Classes.RelationClasses.
+Require Import Corelib.Program.Basics.
+Require Import Corelib.Program.Tactics.
+Require Import Corelib.Relations.Relation_Definitions.
+Require Export Corelib.Classes.RelationClasses.
 
 Generalizable Variables A eqA B C D R RA RB RC m f x y.
 Local Obligation Tactic := try solve [ simpl_relation ].
@@ -50,13 +49,28 @@ Section Proper.
   Class ProperProxy (R : relation A) (m : A) : Prop :=
     proper_proxy : R m m.
 
+  Class ReflexiveProxy (R : relation A) : Prop :=
+    reflexive_proxy : forall x, R x x.
+
   Lemma eq_proper_proxy (x : A) : ProperProxy (@eq A) x.
   Proof. firstorder. Qed.
   
-  Lemma reflexive_proper_proxy `(Reflexive A R) (x : A) : ProperProxy R x.
+  (** Every reflexive relation gives rise to a morphism.
+    If the relation is not determined (is an evar),
+    then we restrict the solutions to predefined ones (equality, or iff on Prop),
+    using ground instances. If the relation is determined then
+    [ReflexiveProxy] calls back to [Reflexive]. *)
+
+  Lemma reflexive_proper `{ReflexiveProxy R} (x : A) : Proper R x.
+  Proof. firstorder. Qed.
+
+  Lemma reflexive_proper_proxy `(ReflexiveProxy R) (x : A) : ProperProxy R x.
   Proof. firstorder. Qed.
 
   Lemma proper_proper_proxy x `(Proper R x) : ProperProxy R x.
+  Proof. firstorder. Qed.
+
+  Lemma reflexive_reflexive_proxy `(Reflexive A R) : ReflexiveProxy R.
   Proof. firstorder. Qed.
 
   (** Respectful morphisms. *)
@@ -78,6 +92,42 @@ Section Proper.
 
 End Proper.
 
+(** Non-dependent pointwise lifting *)
+Definition pointwise_relation A {B} (R : relation B) : relation (A -> B) :=
+  fun f g => forall a, R (f a) (g a).
+
+(** We let Rocq infer these relations when a default relation should
+  be found on the function space. *)
+Lemma rewrite_relation_pointwise {A B R} `{RewriteRelation B R}:
+  RewriteRelation (@pointwise_relation A B R).
+Proof. split. Qed.
+
+Lemma rewrite_relation_eq_dom {A B R} `{RewriteRelation B R}:
+  RewriteRelation (respectful (@Logic.eq A) R).
+Proof. split. Qed.
+
+(** Pointwise reflexive *)
+
+Ltac rewrite_relation_fun :=
+  (* If we're looking for a default rewrite relation on a
+    function type, we favor pointwise equality *)
+  class_apply @rewrite_relation_pointwise ||
+  (* The relation might be already determined to be (eq ==> _) instead of a
+    pointwise equality, but we want to treat them the same. No point in
+    backtracking on the previous instance though *)
+  class_apply @rewrite_relation_eq_dom.
+
+Global Hint Extern 2 (@RewriteRelation (_ -> _) _) =>
+  rewrite_relation_fun : typeclass_instances.
+
+Lemma eq_rewrite_relation {A} : RewriteRelation (@eq A).
+Proof. split. Qed.
+
+Ltac eq_rewrite_relation A :=
+  solve [unshelve class_apply @eq_rewrite_relation].
+
+Global Hint Extern 100 (@RewriteRelation ?A _) => eq_rewrite_relation A : typeclass_instances.
+
 (** We favor the use of Leibniz equality or a declared reflexive relation 
   when resolving [ProperProxy], otherwise, if the relation is given (not an evar),
   we fall back to [Proper]. *)
@@ -88,6 +138,32 @@ Hint Extern 1 (ProperProxy _ _) =>
 #[global]
 Hint Extern 2 (ProperProxy ?R _) => 
   not_evar R; class_apply @proper_proper_proxy : typeclass_instances.
+
+(* This tactics takes a type and (partially defined) relation and tries
+   to find all instances matching it which completely determine the relation,
+   feeding them to kont. *)
+Ltac find_rewrite_relation A R kont :=
+  assert (@RewriteRelation A R); [solve [unshelve typeclasses eauto]|]; kont R.
+
+(** This hint helps infer "generic" reflexive relations, based only on the type of the
+    carrier, when the relation is only partially defined (contains evars). *)
+
+Ltac reflexive_proxy_tac A R :=
+  tryif has_evar R then
+    (* If the user declared a specific rewrite relation on the type, we favor it.
+      By default, [iff] and and [impl] are favored for Prop,
+      pointwise equality for function types and finally leibniz equality. *)
+    find_rewrite_relation A R ltac:(fun RA =>
+      class_apply (@reflexive_reflexive_proxy A RA))
+      (* The [Reflexive] subgoal produced here will need no backtracking,
+          being a Prop goal without existential variables,
+          but we don't have `cut` to explicitely say it. *)
+  else
+    (* If the relation is determined then we look for a relexivity proof on it *)
+    class_apply @reflexive_reflexive_proxy.
+
+#[global]
+Hint Extern 1 (@ReflexiveProxy ?A ?R) => reflexive_proxy_tac A R : typeclass_instances.
 
 (** Notations reminiscent of the old syntax for declaring morphisms. *)
 Declare Scope signature_scope.
@@ -106,8 +182,8 @@ Module ProperNotations.
 
 End ProperNotations.
 
-Arguments Proper {A}%type R%signature m.
-Arguments respectful {A B}%type (R R')%signature _ _.
+Arguments Proper {A}%_type R%_signature m.
+Arguments respectful {A B}%_type (R R')%_signature _ _.
 
 Export ProperNotations.
 
@@ -162,12 +238,8 @@ Section Relations.
              (sig : forall a, relation (P a)) : relation (forall x, P x) :=
     fun f g => forall a, sig a (f a) (g a).
 
-  (** Non-dependent pointwise lifting *)
-  Definition pointwise_relation (R : relation B) : relation (A -> B) :=
-    fun f g => forall a, R (f a) (g a).
-
   Lemma pointwise_pointwise (R : relation B) :
-    relation_equivalence (pointwise_relation R) (@eq A ==> R).
+    relation_equivalence (pointwise_relation A R) (@eq A ==> R).
   Proof. intros. split; reduce; subst; firstorder. Qed.
   
   (** Subrelations induce a morphism on the identity. *)
@@ -202,7 +274,7 @@ Section Relations.
   Proof. reduce. subst. firstorder. Qed.
 
   Global Instance pointwise_subrelation `(sub : subrelation B R R') :
-    subrelation (pointwise_relation R) (pointwise_relation R') | 4.
+    subrelation (pointwise_relation A R) (pointwise_relation A R') | 4.
   Proof. intros x y H a. unfold pointwise_relation in *. apply sub. apply H. Qed.
   
   (** For dependent function types. *)
@@ -211,9 +283,9 @@ Section Relations.
   Proof. intros H x y H0 a. apply H. apply H0. Qed.
 End Relations.
 
-Typeclasses Opaque respectful pointwise_relation forall_relation.
-Arguments forall_relation {A P}%type sig%signature _ _.
-Arguments pointwise_relation A%type {B}%type R%signature _ _.
+Global Typeclasses Opaque respectful pointwise_relation forall_relation.
+Arguments forall_relation {A P}%_type sig%_signature _ _.
+Arguments pointwise_relation A%_type {B}%_type R%_signature _ _.
   
 #[global]
 Hint Unfold Reflexive : core.
@@ -262,7 +334,7 @@ Section GenericInstances.
   Let U := Type.
   Context {A B C : U}.
 
-  (** We can build a PER on the Coq function space if we have PERs on the domain and
+  (** We can build a PER on the Rocq function space if we have PERs on the domain and
    codomain. *)
   
   Program Instance respectful_per `(PER A R, PER B R') : PER (R ==> R').
@@ -407,11 +479,8 @@ Section GenericInstances.
     unfold compose. apply H. apply H0. apply H1.
   Qed.
 
-  (** Coq functions are morphisms for Leibniz equality,
-     applied only if really needed. *)
-
-  Global Instance reflexive_eq_dom_reflexive `(Reflexive B R') :
-    Reflexive (@Logic.eq A ==> R').
+  Global Instance reflexive_eq_dom_reflexive `{Reflexive B R'}:
+    Reflexive (respectful (@Logic.eq A) R').
   Proof. simpl_relation. Qed.
 
   (** [respectful] is a morphism for relation equivalence. *)
@@ -424,15 +493,8 @@ Section GenericInstances.
     unfold respectful, relation_equivalence, predicate_equivalence in * ; simpl in *.
     split ; intros H1 x3 y1 H2.
     
-    - rewrite <- H0.
-      apply H1.
-      rewrite H.
-      assumption.
-
-    - rewrite H0.
-      apply H1.
-      rewrite <- H.
-      assumption.
+    - now apply H0, H1, H.
+    - now apply H0, H1, H.
   Qed.
 
   (** [R] is Reflexive, hence we can build the needed proof. *)
@@ -468,14 +530,8 @@ Section GenericInstances.
   
   Definition proper_flip_proper `(mor : Proper A R m) : Proper (flip R) m := mor.
   
-  (** Every reflexive relation gives rise to a morphism, 
-  only for immediately solving goals without variables. *)
-  
-  Lemma reflexive_proper `{Reflexive A R} (x : A) : Proper R x.
-  Proof. firstorder. Qed.
-  
   Lemma proper_eq (x : A) : Proper (@eq A) x.
-  Proof. intros. apply reflexive_proper. Qed.
+  Proof. intros. reflexivity. Qed.
   
 End GenericInstances.
 
@@ -484,6 +540,10 @@ Class PartialApplication.
 CoInductive normalization_done : Prop := did_normalization.
 
 Class Params {A : Type} (of : A) (arity : nat).
+#[global] Instance eq_pars : Params (@eq) 1 := {}.
+#[global] Instance iff_pars : Params (@iff) 0 := {}.
+#[global] Instance impl_pars : Params (@impl) 0 := {}.
+#[global] Instance flip_pars : Params (@flip) 4 := {}.
 
 Ltac partial_application_tactic :=
   let rec do_partial_apps H m cont := 
@@ -536,10 +596,8 @@ Proof.
   intros x y H y0 y1 e; destruct e.
   reduce in H.
   split ; red ; intros H0.
-  - setoid_rewrite <- H.
-    apply H0.
-  - setoid_rewrite H.
-    apply H0.
+  - apply H, H0.
+  - apply H, H0.
 Qed.
 
 Ltac proper_reflexive :=
@@ -547,7 +605,6 @@ Ltac proper_reflexive :=
     | [ _ : normalization_done |- _ ] => fail 1
     | _ => class_apply proper_eq || class_apply @reflexive_proper
   end.
-
 
 #[global]
 Hint Extern 1 (subrelation (flip _) _) => class_apply @flip1 : typeclass_instances.
@@ -583,8 +640,7 @@ Section Normalize.
 
   Lemma proper_normalizes_proper `(Normalizes R0 R1, Proper A R1 m) : Proper R0 m.
   Proof.
-    rewrite normalizes.
-    assumption.
+    eapply proper_proper; eauto.
   Qed.
 
   Lemma flip_atom R : Normalizes R (flip (flip R)).
@@ -693,7 +749,8 @@ split; compute.
   + intro Hxz.
     apply Hxy'.
     apply partial_order_antisym; auto.
-    rewrite Hxz; auto.
+    eapply PartialOrder_proper; eauto.
+    apply reflexivity.
 Qed.
 
 
@@ -709,8 +766,10 @@ split.
 - intros x. right. reflexivity.
 - intros x y z [Hxy|Hxy] [Hyz|Hyz].
   + left. transitivity y; auto.
-  + left. rewrite <- Hyz; auto.
-  + left. rewrite Hxy; auto.
+  + left. eapply H1; eauto.
+    * apply reflexivity.
+    * now apply symmetry.
+  + left. eapply H1; try eassumption. now apply reflexivity.
   + right. transitivity y; auto.
 Qed.
 
@@ -722,7 +781,7 @@ Lemma StrictOrder_PartialOrder
   `(Equivalence A eqA, StrictOrder A R, Proper _ (eqA==>eqA==>iff) R) :
   PartialOrder eqA (relation_disjunction R eqA).
 Proof.
-intros. intros x y. compute. intuition.
+intros. intros x y. compute. intuition auto with relations.
 elim (StrictOrder_Irreflexive x).
 transitivity y; auto.
 Qed.
@@ -734,3 +793,16 @@ Hint Extern 4 (StrictOrder (relation_conjunction _ _)) =>
 #[global]
 Hint Extern 4 (PartialOrder _ (relation_disjunction _ _)) => 
   class_apply StrictOrder_PartialOrder : typeclass_instances.
+
+(* Register bindings for the generalized rewriting tactic *)
+
+Register forall_relation as rewrite.prop.forall_relation.
+Register pointwise_relation as rewrite.prop.pointwise_relation.
+Register respectful as rewrite.prop.respectful.
+Register forall_def as rewrite.prop.forall_def.
+Register do_subrelation as rewrite.prop.do_subrelation.
+Register apply_subrelation as rewrite.prop.apply_subrelation.
+Register RewriteRelation as rewrite.prop.RewriteRelation.
+Register Proper as rewrite.prop.Proper.
+Register proper_prf as rewrite.prop.proper_prf.
+Register ProperProxy as rewrite.prop.ProperProxy.

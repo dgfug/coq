@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,10 +12,13 @@ open Util
 open Names
 open Constr
 open EConstr
-open Tacmach.New
+open Tacmach
 open Tactics
-open Tacticals.New
+open Tacticals
 open Indfun_common
+
+(* funind doesn't support univ poly *)
+open UnsafeMonomorphic
 
 (***********************************************)
 
@@ -51,7 +54,7 @@ let revert_graph kn post_tac hid =
           | Some f_complete ->
             let f_args, res = Array.chop (Array.length args - 1) args in
             tclTHENLIST
-              [ generalize
+              [ Generalize.generalize
                   [ applist
                       ( mkConst f_complete
                       , Array.to_list f_args @ [res.(0); mkVar hid] ) ]
@@ -93,15 +96,15 @@ let functional_inversion kn hid fconst f_correct =
             ((fun hid -> intros_symmetry (Locusops.onHyp hid)), f_args, args.(2))
           | _, App (f, f_args) when EConstr.eq_constr sigma f fconst ->
             ((fun hid -> tclIDTAC), f_args, args.(1))
-          | _ -> ((fun hid -> tclFAIL 1 Pp.(mt ())), [||], args.(2))
+          | _ -> ((fun hid -> tclFAILn 1 Pp.(mt ())), [||], args.(2))
         in
         tclTHENLIST
           [ pre_tac hid
-          ; generalize
+          ; Generalize.generalize
               [applist (f_correct, Array.to_list f_args @ [res; mkVar hid])]
           ; clear [hid]
           ; Simple.intro hid
-          ; Inv.inv Inv.FullInversion None (Tactypes.NamedHyp hid)
+          ; Inv.inv Inv.FullInversion None (Tactypes.NamedHyp (CAst.make hid))
           ; Proofview.Goal.enter (fun gl ->
                 let new_ids =
                   List.filter
@@ -109,7 +112,7 @@ let functional_inversion kn hid fconst f_correct =
                     (pf_ids_of_hyps gl)
                 in
                 tclMAP (revert_graph kn pre_tac) (hid :: new_ids)) ]
-      | _ -> tclFAIL 1 Pp.(mt ()))
+      | _ -> tclFAILn 1 Pp.(mt ()))
 
 let invfun qhyp f =
   let f =

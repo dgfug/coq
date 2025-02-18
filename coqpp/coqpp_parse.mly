@@ -1,5 +1,5 @@
 /************************************************************************/
-/*         *   The Coq Proof Assistant / The Coq Development Team       */
+/*         *      The Rocq Prover / The Rocq Development Team           */
 /*  v      *         Copyright INRIA, CNRS and contributors             */
 /* <O___,, * (see version control and CREDITS file for authors & dates) */
 /*   \VV/  **************************************************************/
@@ -57,7 +57,10 @@ let parse_user_entry s sep =
   in
   parse s sep table
 
-let no_code = { code = ""; loc = { loc_start=Lexing.dummy_pos; loc_end=Lexing.dummy_pos} }
+let no_code = { code = ""; loc = None }
+
+let rhs_loc n =
+  { loc_start = Parsing.rhs_start_pos n; loc_end = Parsing.rhs_end_pos n }
 
 %}
 
@@ -68,7 +71,7 @@ let no_code = { code = ""; loc = { loc_start=Lexing.dummy_pos; loc_end=Lexing.du
 %token <int> INT
 %token VERNAC TACTIC GRAMMAR DOC_GRAMMAR EXTEND END DECLARE PLUGIN DEPRECATED ARGUMENT
 %token RAW_PRINTED GLOB_PRINTED
-%token COMMAND CLASSIFIED STATE PRINTED TYPED INTERPRETED GLOBALIZED SUBSTITUTED BY AS
+%token SYNTERP COMMAND CLASSIFIED STATE PRINTED TYPED INTERPRETED GLOBALIZED SUBSTITUTED BY AS
 %token BANGBRACKET HASHBRACKET LBRACKET RBRACKET PIPE ARROW FUN COMMA EQUAL STAR
 %token LPAREN RPAREN COLON SEMICOLON
 %token GLOBAL TOP FIRST LAST BEFORE AFTER LEVEL LEFTA RIGHTA NONA
@@ -103,7 +106,8 @@ node:
 ;
 
 declare_plugin:
-| DECLARE PLUGIN STRING { DeclarePlugin $3 }
+| DECLARE PLUGIN STRING { DeclarePlugin (Some $3) }
+| DECLARE GLOBAL PLUGIN { DeclarePlugin None }
 ;
 
 grammar_extend:
@@ -156,9 +160,14 @@ glob_printed_opt:
 | GLOB_PRINTED BY CODE { Some $3 }
 ;
 
+interpreted_modifier_opt:
+| { None }
+| LBRACKET IDENT RBRACKET { Some $2 }
+;
+
 interpreted_opt:
 | { None }
-| INTERPRETED BY CODE { Some $3 }
+| INTERPRETED interpreted_modifier_opt BY CODE { Some ($2,$4) }
 ;
 
 globalized_opt:
@@ -220,14 +229,15 @@ vernac_rules:
 ;
 
 vernac_rule:
-| PIPE vernac_attributes_opt rule_state LBRACKET ext_tokens RBRACKET rule_deprecation rule_classifier ARROW CODE
+| PIPE vernac_attributes_opt rule_state LBRACKET ext_tokens RBRACKET rule_deprecation rule_classifier synterp_fun ARROW CODE
   { {
       vernac_atts = $2;
       vernac_state = $3;
       vernac_toks = $5;
       vernac_depr = $7;
       vernac_class= $8;
-      vernac_body = $10;
+      vernac_synterp = $9;
+      vernac_body = $11;
   } }
 ;
 
@@ -248,8 +258,9 @@ vernac_attributes:
 ;
 
 vernac_attribute:
-| qualid_or_ident EQUAL qualid_or_ident { ($1, $3) }
-| qualid_or_ident { ($1, $1) }
+| qualid_or_ident EQUAL qualid_or_ident {
+  ($1, { code = $3; loc = Some (rhs_loc 3) }) }
+| qualid_or_ident { ($1, { code = $1; loc = Some (rhs_loc 1) }) }
 ;
 
 rule_deprecation:
@@ -261,6 +272,10 @@ rule_classifier:
 | { None }
 | FUN CODE { Some $2 }
 ;
+
+synterp_fun:
+| { None }
+| SYNTERP AS IDENT CODE { Some ($3,$4) }
 
 tactic_extend:
 | TACTIC EXTEND IDENT tactic_deprecated tactic_level tactic_rules END

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,6 +8,10 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
+type time_output
+
+val make_time_output : Coqargs.time_config -> time_output
+
 (** Parsing of vernacular. *)
 module State : sig
 
@@ -15,7 +19,7 @@ module State : sig
     doc : Stm.doc;
     sid : Stateid.t;
     proof : Proof.t option;
-    time : bool;
+    time : time_output option;
   }
 
 end
@@ -29,5 +33,5 @@ val process_expr : state:State.t -> Vernacexpr.vernac_control -> State.t
 (** [load_vernac echo sid file] Loads [file] on top of [sid], will
     echo the commands if [echo] is set. Callers are expected to handle
     and print errors in form of exceptions. *)
-val load_vernac : echo:bool -> check:bool -> interactive:bool ->
-  state:State.t -> ?ldir:Names.DirPath.t -> string -> State.t
+val load_vernac : echo:bool -> check:bool ->
+  state:State.t -> ?source:Loc.source -> string -> State.t

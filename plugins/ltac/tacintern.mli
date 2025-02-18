@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -23,11 +23,12 @@ type glob_sign = Genintern.glob_sign = {
   genv : Environ.env;
   extra : Genintern.Store.t;
   intern_sign : Genintern.intern_variable_status;
+  strict_check : bool;
 }
 
-val make_empty_glob_sign : unit -> glob_sign
+val make_empty_glob_sign : strict:bool -> glob_sign
  (** build an empty [glob_sign] using [Global.env()] as
-     environment *)
+     environment; strict_check if true *)
 
 (** Main globalization functions *)
 
@@ -57,8 +58,6 @@ val intern_genarg : glob_sign -> raw_generic_argument -> glob_generic_argument
 
 (** Reduction expressions *)
 
-val intern_red_expr : glob_sign -> raw_red_expr -> glob_red_expr
-val dump_glob_red_expr : raw_red_expr -> unit
+val intern_red_expr : glob_sign -> Genredexpr.raw_red_expr -> Genredexpr.glob_red_expr
 
-(* Hooks *)
-val strict_check : bool ref
+val intern_strategy : glob_sign -> raw_strategy -> glob_strategy

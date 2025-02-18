@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,7 +8,7 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
-open Constr
+open EConstr
 open Environ
 
 (** This module is about the computation of an approximation of the
@@ -19,4 +19,4 @@ open Environ
 (** [is_rigid] tells if some term is known to ultimately reduce to a term
     with a rigid head symbol *)
 
-val is_rigid : env -> constr -> bool
+val is_rigid : env -> Evd.evar_map -> constr -> bool

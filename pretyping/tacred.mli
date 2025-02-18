@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -15,15 +15,7 @@ open EConstr
 open Reductionops
 open Pattern
 open Locus
-open Univ
 open Ltac_pretype
-
-(* XXX: Move to a module *)
-type evaluable_global_reference =
-  | EvalVarRef of Id.t
-  | EvalConstRef of Constant.t
-
-val eq_egr : evaluable_global_reference ->  evaluable_global_reference -> bool
 
 (** Here the semantics is completely unclear.
    What does "Hint Unfold t" means when "t" is a parameter?
@@ -31,10 +23,13 @@ val eq_egr : evaluable_global_reference ->  evaluable_global_reference -> bool
    where X.t is later on instantiated with y? I choose the first
    interpretation (i.e. an evaluable reference is never expanded). *)
 val subst_evaluable_reference :
-  Mod_subst.substitution -> evaluable_global_reference -> evaluable_global_reference
+  Mod_subst.substitution -> Evaluable.t -> Evaluable.t
 
 type reduction_tactic_error =
     InvalidAbstraction of env * evar_map * constr * (env * Type_errors.type_error)
+
+type 'a change = NoChange | Changed of 'a
+type change_function = env -> evar_map -> constr -> (evar_map * constr) change
 
 exception ReductionTacticError of reduction_tactic_error
 
@@ -42,23 +37,25 @@ exception ReductionTacticError of reduction_tactic_error
 
 (** Evaluable global reference *)
 
-val is_evaluable : Environ.env -> evaluable_global_reference -> bool
+val is_evaluable : Environ.env -> Evaluable.t -> bool
 
-val error_not_evaluable : GlobRef.t -> 'a
+exception NotEvaluableRef of GlobRef.t
+val error_not_evaluable : ?loc:Loc.t -> GlobRef.t -> 'a
 
 val evaluable_of_global_reference :
-  Environ.env -> GlobRef.t -> evaluable_global_reference
+  Environ.env -> GlobRef.t -> Evaluable.t
+(** Fails on opaque constants and variables
+    (both those without bodies and those marked Opaque in the conversion oracle). *)
+
+val soft_evaluable_of_global_reference :
+  ?loc:Loc.t -> GlobRef.t -> Evaluable.t
+(** Succeeds for any constant or variable even if marked opaque or otherwise not evaluable. *)
 
 val global_of_evaluable_reference :
-  evaluable_global_reference -> GlobRef.t
+  Evaluable.t -> GlobRef.t
 
-exception Redelimination
-
-(** Red (raise user error if nothing reducible) *)
-val red_product : reduction_function
-
-(** Red (raise Redelimination if nothing reducible) *)
-val try_red_product : reduction_function
+(** Red (returns None if nothing reducible) *)
+val red_product : env -> evar_map -> constr -> constr option
 
 (** Simpl *)
 val simpl : reduction_function
@@ -70,23 +67,27 @@ val whd_simpl : reduction_function
    not immediately hide a non reducible fix or cofix *)
 val hnf_constr : reduction_function
 
+(** Variant of the above that does not perform nf-βι *)
+val hnf_constr0 : reduction_function
+
 (** Unfold *)
 val unfoldn :
-  (occurrences * evaluable_global_reference) list ->  reduction_function
+  (occurrences * Evaluable.t) list ->  reduction_function
 
 (** Fold *)
 val fold_commands : constr list ->  reduction_function
 
 (** Pattern *)
-val pattern_occs : (occurrences * constr) list -> e_reduction_function
+val pattern_occs : (occurrences * constr) list -> change_function
 
 (** Rem: Lazy strategies are defined in Reduction *)
 
 (** Call by value strategy (uses Closures) *)
-val cbv_norm_flags : CClosure.RedFlags.reds ->  reduction_function
+val cbv_norm_flags : RedFlags.reds -> strong:bool -> reduction_function
   val cbv_beta : reduction_function
   val cbv_betaiota : reduction_function
   val cbv_betadeltaiota :  reduction_function
+  val whd_compute :  reduction_function
   val compute :  reduction_function  (** = [cbv_betadeltaiota] *)
 
 (** [reduce_to_atomic_ind env sigma t] puts [t] in the form [t'=(I args)]
@@ -99,13 +100,19 @@ val reduce_to_atomic_ind : env ->  evar_map -> types -> (inductive * EInstance.t
    returns [I] and [t'] or fails with a user error *)
 val reduce_to_quantified_ind : env ->  evar_map -> types -> (inductive * EInstance.t) * types
 
+(** Same as {!reduce_to_quantified_ind} but more efficient because it does not
+    return the normalized type. *)
+val eval_to_quantified_ind : env -> evar_map -> types -> (inductive * EInstance.t)
+
 (** [reduce_to_quantified_ref env sigma ref t] try to put [t] in the form
-   [t'=(x1:A1)..(xn:An)(ref args)] and fails with user error if not possible *)
+    [t'=(x1:A1)..(xn:An)(ref args)]. When this is not possible, if [allow_failure]
+    is specified, [t] is unfolded until the point where this impossibility is plainly
+    visible. Otherwise, it fails with user error. *)
 val reduce_to_quantified_ref :
-  env ->  evar_map -> GlobRef.t -> types -> types
+  ?allow_failure:bool -> env ->  evar_map -> GlobRef.t -> types -> types
 
 val reduce_to_atomic_ref :
-  env ->  evar_map -> GlobRef.t -> types -> types
+  ?allow_failure:bool -> env ->  evar_map -> GlobRef.t -> types -> types
 
 val find_hnf_rectype :
   env ->  evar_map -> types -> (inductive * EInstance.t) * constr list
@@ -114,12 +121,7 @@ val contextually : bool -> occurrences * constr_pattern ->
   (patvar_map -> reduction_function) -> reduction_function
 
 val e_contextually : bool -> occurrences * constr_pattern ->
-  (patvar_map -> e_reduction_function) -> e_reduction_function
+  (patvar_map -> change_function) -> change_function
 
-(** Returns the same inductive if it is allowed for pattern-matching
-    raises an error otherwise. **)
-val check_privacy : env -> inductive puniverses -> inductive puniverses
-
-(** Returns the same inductive if it is not a primitive record
-    raises an error otherwise. **)
-val check_not_primitive_record : env -> inductive puniverses -> inductive puniverses
+(** Errors if the inductive is not allowed for pattern-matching. **)
+val check_privacy : env -> inductive -> unit

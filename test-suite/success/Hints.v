@@ -1,25 +1,25 @@
 (* Checks syntax of Hints commands *)
 (* Old-style syntax *)
-Hint Resolve eq_refl eq_sym.
-Hint Resolve eq_refl eq_sym: foo.
-Hint Immediate eq_refl eq_sym.
-Hint Immediate eq_refl eq_sym: foo.
-Hint Unfold fst eq_sym.
-Hint Unfold fst eq_sym: foo.
+#[export] Hint Resolve eq_refl eq_sym.
+#[export] Hint Resolve eq_refl eq_sym: foo.
+#[export] Hint Immediate eq_refl eq_sym.
+#[export] Hint Immediate eq_refl eq_sym: foo.
+#[export] Hint Unfold fst eq_sym.
+#[export] Hint Unfold fst eq_sym: foo.
 
 (* Checks that qualified names are accepted *)
 
 (* New-style syntax *)
-Hint Resolve eq_refl: core arith.
-Hint Immediate eq_trans.
-Hint Unfold eq_sym: core.
-Hint Constructors eq: foo bar.
-Hint Extern 3 (_ = _) => apply eq_refl: foo bar.
+#[export] Hint Resolve eq_refl: core arith.
+#[export] Hint Immediate eq_trans.
+#[export] Hint Unfold eq_sym: core.
+#[export] Hint Constructors eq: foo bar.
+#[export] Hint Extern 3 (_ = _) => apply eq_refl: foo bar.
 
 (* Extended new syntax with patterns *)
-Hint Resolve eq_refl | 4 (_ = _) : baz.
-Hint Resolve eq_sym eq_trans : baz.
-Hint Extern 3 (_ = _) => apply eq_sym : baz.
+#[export] Hint Resolve eq_refl | 4 (_ = _) : baz.
+#[export] Hint Resolve eq_sym eq_trans : baz.
+#[export] Hint Extern 3 (_ = _) => apply eq_sym : baz.
 
 Parameter pred : nat -> Prop.
 Parameter pred0 : pred 0.
@@ -27,44 +27,35 @@ Parameter f : nat -> nat.
 Parameter predf : forall n, pred n -> pred (f n).
 
 (* No conversion on let-bound variables and constants in pred (the default) *)
-Hint Resolve pred0 | 1 (pred _) : pred.
-Hint Resolve predf | 0 : pred.
+#[export] Hint Resolve pred0 | 1 (pred _) : pred.
+#[export] Hint Resolve predf | 0 : pred.
 
 (* Allow full conversion on let-bound variables and constants *)
 Create HintDb predconv discriminated.
-Hint Resolve pred0 | 1 (pred _) : predconv.
-Hint Resolve predf | 0 : predconv.
-
-Goal exists n, pred n.
-  eexists.
-  Set Typeclasses Filtered Unification.
-  Set Typeclasses Debug Verbosity 2.
-  (* predf is not tried as it doesn't match the goal *)
-  typeclasses eauto with pred.
-Qed.
+#[export] Hint Resolve pred0 | 1 (pred _) : predconv.
+#[export] Hint Resolve predf | 0 : predconv.
 
 Parameter predconv : forall n, pred n -> pred (0 + S n).
 
 (* The inferred pattern contains 0 + ?n, syntactic match will fail to see convertible
  terms *)
-Hint Resolve pred0 : pred2.
-Hint Resolve predconv : pred2.
+#[export] Hint Resolve pred0 : pred2.
+#[export] Hint Resolve predconv : pred2.
 
 (** In this database we allow predconv to apply to pred (S _) goals, more generally
   than the inferred pattern (pred (0 + S _)). *)
 Create HintDb pred2conv discriminated.
-Hint Resolve pred0 : pred2conv.
-Hint Resolve predconv | 1 (pred (S _)) : pred2conv.
+#[export] Hint Resolve pred0 : pred2conv.
+#[export] Hint Resolve predconv | 1 (pred (S _)) : pred2conv.
 
 Goal pred 3.
   Fail typeclasses eauto with pred2.
   typeclasses eauto with pred2conv.
 Abort.
 
-Set Typeclasses Filtered Unification.
 Set Typeclasses Debug Verbosity 2.
-Hint Resolve predconv | 1 (pred _) : pred.
-Hint Resolve predconv | 1 (pred (S _)) : predconv.
+#[export] Hint Resolve predconv | 1 (pred _) : pred.
+#[export] Hint Resolve predconv | 1 (pred (S _)) : predconv.
 Test Typeclasses Limit Intros.
 Goal pred 3.
   (* predf is not tried as it doesn't match the goal *)
@@ -75,14 +66,6 @@ Goal pred 3.
      full unification is allowed *)
   typeclasses eauto with predconv.
 Qed.
-
-(** The other way around: goal contains redexes instead of instances *)
-Goal exists n, pred (0 + n).
-  eexists.
-  (* pred0 (pred _) matches the goal *)
-  typeclasses eauto with predconv.
-Qed.
-
 
 (* Checks that local names are accepted *)
 Section A.
@@ -111,7 +94,7 @@ End A.
 
 Axiom a : forall n, n=0 <-> n<=0.
 
-Hint Resolve -> a.
+#[export] Hint Resolve -> a.
 Goal forall n, n=0 -> n<=0.
 auto.
 Qed.
@@ -129,9 +112,15 @@ Axiom cast_coalesce :
   forall (T1 T2 T3 : Set) (e : T1) (pf1 : T1 = T2) (pf2 : T2 = T3),
   ((e :? pf1) :? pf2) = (e :? trans_eq pf1 pf2).
 
-Hint Rewrite cast_coalesce : ltamer.
+#[export] Hint Rewrite cast_coalesce : ltamer.
 
-Require Import Program.
+Definition id := fun {A : Type} (x : A) => x.
+
+Definition compose :=
+  fun {A B C : Type} (g : B -> C) (f : A -> B) (x : A) => g (f x).
+
+Notation "g ∘ f " := (compose g f) (at level 10).
+
 Module HintCut.
 Class A (f : nat -> nat) := a : True.
 Class B (f : nat -> nat) := b : True.
@@ -139,34 +128,34 @@ Class C (f : nat -> nat) := c : True.
 Class D (f : nat -> nat) := d : True.
 Class E (f : nat -> nat) := e : True.
 
-Instance a_is_b f : A f -> B f.
+#[export] Instance a_is_b f : A f -> B f.
 Proof. easy. Qed.
-Instance b_is_c f : B f -> C f.
+#[export] Instance b_is_c f : B f -> C f.
 Proof. easy. Qed.
-Instance c_is_d f : C f -> D f.
+#[export] Instance c_is_d f : C f -> D f.
 Proof. easy. Qed.
-Instance d_is_e f : D f -> E f.
-Proof. easy. Qed.
-
-Instance a_compose f g : A f -> A g -> A (compose f g).
-Proof. easy. Qed.
-Instance b_compose f g : B f -> B g -> B (compose f g).
-Proof. easy. Qed.
-Instance c_compose f g : C f -> C g -> C (compose f g).
-Proof. easy. Qed.
-Instance d_compose f g : D f -> D g -> D (compose f g).
-Proof. easy. Qed.
-Instance e_compose f g : E f -> E g -> E (compose f g).
+#[export] Instance d_is_e f : D f -> E f.
 Proof. easy. Qed.
 
-Instance a_id : A id.
+#[export] Instance a_compose f g : A f -> A g -> A (compose f g).
+Proof. easy. Qed.
+#[export] Instance b_compose f g : B f -> B g -> B (compose f g).
+Proof. easy. Qed.
+#[export] Instance c_compose f g : C f -> C g -> C (compose f g).
+Proof. easy. Qed.
+#[export] Instance d_compose f g : D f -> D g -> D (compose f g).
+Proof. easy. Qed.
+#[export] Instance e_compose f g : E f -> E g -> E (compose f g).
 Proof. easy. Qed.
 
-Instance foo f :
+#[export] Instance a_id : A id.
+Proof. easy. Qed.
+
+#[export] Instance foo f :
   E (id ∘ id ∘ id ∘ id ∘ id ∘ id ∘ id ∘ id ∘ id ∘ id ∘ id ∘ id ∘ id ∘ id ∘ id ∘
      id ∘ id ∘ id ∘ id ∘ id ∘ f ∘ id ∘ id ∘ id ∘ id ∘ id ∘ id ∘ id).
 Proof.
-Hint Cut [_* (a_is_b | b_is_c | c_is_d | d_is_e)
+#[export] Hint Cut [_* (a_is_b | b_is_c | c_is_d | d_is_e)
                  (a_compose | b_compose | c_compose | d_compose | e_compose)] : typeclass_instances.
 
   Timeout 1 Fail apply _. (* 0.06s *)
@@ -213,3 +202,29 @@ Section HintTransparent.
   Qed.
 
 End HintTransparent.
+
+Module RepeatCreat.
+  Axiom T : Type.
+  Axiom v : T.
+
+  Set Warnings "+mismatched-hint-db".
+
+  (* if this fails it means the db already exists as a discriminated db *)
+  Succeed Create HintDb repeated.
+
+  Create HintDb repeated discriminated.
+
+  Fail Definition foo : T := ltac:(eauto with foo).
+
+  Hint Resolve v : foo.
+  Definition foo : T := ltac:(eauto with foo).
+
+  Create HintDb repeated discriminated.
+  (* hint is still there *)
+  Definition foo' : T := ltac:(eauto with foo).
+
+  Fail Create HintDb repeated.
+
+  (* implicit hint db *)
+  Fail Create HintDb foo discriminated.
+End RepeatCreat.

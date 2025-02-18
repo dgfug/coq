@@ -28,8 +28,9 @@ for :n:`let @ident := fun {+ @binder} => @term__1 in @term__2`.
 
 .. index::
    single: ... : ... (type cast)
-   single: ... <: ...
-   single: ... <<: ...
+   single: ... <: ... (VM type cast)
+   single: ... <<: ... (native compute type cast)
+   single: ... :> ... (volatile type cast)
 
 .. _type-cast:
 
@@ -42,6 +43,7 @@ Type cast
    term_cast ::= @term10 : @type
    | @term10 <: @type
    | @term10 <<: @type
+   | @term10 :> @type
 
 The expression :n:`@term10 : @type` is a type cast expression. It enforces
 the type of :n:`@term10` to be :n:`@type`.
@@ -51,6 +53,13 @@ to type check that :n:`@term10` has type :n:`@type` (see :tacn:`vm_compute`).
 
 :n:`@term10 <<: @type` specifies that compilation to OCaml will be used
 to type check that :n:`@term10` has type :n:`@type` (see :tacn:`native_compute`).
+
+:n:`@term10 :> @type` enforces the type of :n:`@term10` to be
+:n:`@type` without leaving a trace in the produced value.
+This is a :gdef:`volatile cast`.
+
+If a scope is :ref:`bound <LocalInterpretationRulesForNotations>` to
+:n:`@type` then :n:`@term10` is interpreted in that scope.
 
 .. _gallina-definitions:
 
@@ -85,17 +94,18 @@ Section :ref:`typing-rules`.
 
    These commands bind :n:`@term` to the name :n:`@ident` in the global environment,
    provided that :n:`@term` is well-typed.  They can take the :attr:`local` :term:`attribute`,
-   which makes the defined :n:`@ident` accessible by :cmd:`Import` and its variants
-   only through their fully qualified names.
+   which makes the defined :n:`@ident` accessible only through their fully
+   qualified names, even if :cmd:`Import` or its variants has been used on the
+   current :cmd:`Module`.
    If :n:`@reduce` is present then :n:`@ident` is bound to the result of the specified
    computation on :n:`@term`.
 
    These commands also support the :attr:`universes(polymorphic)`,
    :attr:`program` (see :ref:`program_definition`), :attr:`canonical`,
-   :attr:`bypass_check(universes)`, :attr:`bypass_check(guard)`, and
-   :attr:`using` attributes.
+   :attr:`bypass_check(universes)`, :attr:`bypass_check(guard)`, :attr:`deprecated`,
+   :attr:`warn` and :attr:`using` attributes.
 
-   If :n:`@term` is omitted, :n:`@type` is required and Coq enters proof mode.
+   If :n:`@term` is omitted, :n:`@type` is required and Rocq enters proof mode.
    This can be used to define a term incrementally, in particular by relying on the :tacn:`refine` tactic.
    In this case, the proof should be terminated with :cmd:`Defined` in order to define a :term:`constant`
    for which the computational behavior is relevant.  See :ref:`proof-editing-mode`.
@@ -123,7 +133,7 @@ Assertions and proofs
 
 An assertion states a proposition (or a type) for which the proof (or an
 inhabitant of the type) is interactively built using :term:`tactics <tactic>`.
-Assertions cause Coq to enter :term:`proof mode` (see :ref:`proofhandling`).
+Assertions cause Rocq to enter :term:`proof mode` (see :ref:`proofhandling`).
 Common tactics are described in the :ref:`writing-proofs` chapter.
 The basic assertion command is:
 
@@ -141,7 +151,7 @@ The basic assertion command is:
       | Proposition
       | Property
 
-   After the statement is asserted, Coq needs a proof. Once a proof of
+   After the statement is asserted, Rocq needs a proof. Once a proof of
    :n:`@type` under the assumptions represented by :n:`@binder`\s is given and
    validated, the proof is generalized into a proof of :n:`forall {* @binder }, @type` and
    the theorem is bound to the name :n:`@ident` in the global environment.
@@ -150,11 +160,11 @@ The basic assertion command is:
 
    Forms using the :n:`with` clause are useful for theorems that are proved by simultaneous induction
    over a mutually inductive assumption, or that assert mutually dependent
-   statements in some mutual co-inductive type. It is equivalent to
+   statements in some mutual coinductive type. It is equivalent to
    :cmd:`Fixpoint` or :cmd:`CoFixpoint` but using tactics to build the proof of
    the statements (or the :term:`body` of the specification, depending on the point of
-   view). The inductive or co-inductive types on which the induction or
-   co-induction has to be done is assumed to be unambiguous and is guessed by
+   view). The inductive or coinductive types on which the induction or
+   coinduction has to be done is assumed to be unambiguous and is guessed by
    the system.
 
    Like in a :cmd:`Fixpoint` or :cmd:`CoFixpoint` definition, the induction hypotheses
@@ -166,7 +176,7 @@ The basic assertion command is:
    command :cmd:`Guarded`.
 
    This command accepts the :attr:`bypass_check(universes)`,
-   :attr:`bypass_check(guard)`, and :attr:`using` attributes.
+   :attr:`bypass_check(guard)`, :attr:`deprecated`, :attr:`warn`, and :attr:`using` attributes.
 
    .. exn:: The term @term has type @type which should be Set, Prop or Type.
       :undocumented:
@@ -184,7 +194,7 @@ The basic assertion command is:
       This feature, called nested proofs, is disabled by default.
       To activate it, turn the :flag:`Nested Proofs Allowed` flag on.
 
-Proofs start with the keyword :cmd:`Proof`. Then Coq enters the proof mode
+Proofs start with the keyword :cmd:`Proof`. Then Rocq enters the proof mode
 until the proof is completed. In proof mode, the user primarily enters
 tactics (see :ref:`writing-proofs`). The user may also enter
 commands to manage the proof mode (see :ref:`proofhandling`).

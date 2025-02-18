@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -11,45 +11,22 @@
 open Ccalgo
 open Constr
 
-type rule=
-    Ax of constr
-  | SymAx of constr
-  | Refl of ATerm.t
-  | Trans of proof*proof
-  | Congr of proof*proof
-  | Inject of proof*pconstructor*int*int
+type rule =
+| Ax of axiom
+  (** if ⊢ t = u :: A, then ⊢ t = u :: A *)
+| SymAx of axiom
+  (** if ⊢ t = u : A, then ⊢ u = t :: A *)
+| Refl of ATerm.t (* ⊢ t = t :: A *)
+| Trans of proof * proof
+  (** ⊢ t = u :: A -> ⊢ u = v :: A -> ⊢ t = v :: A *)
+| Congr of proof * proof
+  (** ⊢ f = g :: forall x : A, B -> ⊢ t = u :: A -> f t = g u :: B{t}
+      Assumes that B{t} ≡ B{u} for this to make sense! *)
+| Inject of proof * pconstructor * int * int
+  (** ⊢ ci v = ci w :: Ind(args) -> ⊢ v = w :: T
+      where T is the type of the n-th argument of ci, assuming they coincide *)
 and proof =
     private {p_lhs:ATerm.t;p_rhs:ATerm.t;p_rule:rule}
-
-(** Proof smart constructors *)
-
-val prefl:ATerm.t -> proof
-
-val pcongr: proof -> proof -> proof
-
-val ptrans: proof -> proof -> proof
-
-val psym: proof -> proof
-
-val pax : (ATerm.t * ATerm.t) Ccalgo.Constrhash.t ->
-           Ccalgo.Constrhash.key -> proof
-
-val psymax :  (ATerm.t * ATerm.t) Ccalgo.Constrhash.t ->
-           Ccalgo.Constrhash.key -> proof
-
-val pinject :  proof -> pconstructor -> int -> int -> proof
-
-(** Proof building functions *)
-
-val equal_proof : Environ.env -> Evd.evar_map -> forest -> int -> int -> proof
-
-val edge_proof : Environ.env -> Evd.evar_map -> forest -> (int*int)*equality -> proof
-
-val path_proof : Environ.env -> Evd.evar_map -> forest -> int -> ((int*int)*equality) list -> proof
-
-val congr_proof : Environ.env -> Evd.evar_map -> forest -> int -> int -> proof
-
-val ind_proof : Environ.env -> Evd.evar_map -> forest -> int -> pa_constructor -> int -> pa_constructor -> proof
 
 (** Main proof building function *)
 

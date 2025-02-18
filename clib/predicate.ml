@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -45,6 +45,7 @@ module type S =
     val equal: t -> t -> bool
     val subset: t -> t -> bool
     val elements: t -> bool * elt list
+    val is_finite : t -> bool
   end
 
 module Make(Ord: OrderedType) =
@@ -56,6 +57,8 @@ module Make(Ord: OrderedType) =
     (* (false, s) represents a set which is equal to the set s
        (true, s)  represents a set which is equal to the complement of set s *)
     type t = bool * EltSet.t
+
+    let is_finite (b,_) = not b
 
     let elements (b,s) = (b, EltSet.elements s)
 

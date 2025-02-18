@@ -7,14 +7,11 @@ ci_dir="$(dirname "$0")"
 
 git_download elpi
 
+if [ "$DOWNLOAD_ONLY" ]; then exit 0; fi
+
 ( cd "${CI_BUILD_DIR}/elpi"
-  make
-  make install
-)
-
-git_download hierarchy_builder
-
-( cd "${CI_BUILD_DIR}/hierarchy_builder"
-  make
-  make install
+  touch dune-workspace
+  make dune-files
+  dune build --root  . --only-packages=rocq-elpi @install
+  dune install --root . rocq-elpi --prefix="$CI_INSTALL_DIR"
 )

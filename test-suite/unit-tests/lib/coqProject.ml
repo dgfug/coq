@@ -16,24 +16,23 @@ let t () =
   (fun (project_file_path, project_file_channel) ->
     output_string project_file_channel project_file_contents;
     flush project_file_channel;
-    let expected : project = {
+    let expected : unit project = {
       project_file = Some project_file_path;
       makefile = None;
       native_compiler = None;
       docroot = None;
 
-      v_files = [];
-      ml_files = [];
-      mli_files = [];
-      mlg_files = [];
-      mllib_files = [];
-      mlpack_files = [];
+      files = [];
+      cmd_line_files = [];
+      meta_file = Absent;
 
       ml_includes = [];
       r_includes = [];
       q_includes = [];
       extra_args = [];
       defs = [];
+
+      extra_data = ();
     } in
     assert_equal expected (read_project_file ~warning_fn project_file_path)
   ) ()
@@ -45,24 +44,23 @@ let t () =
   (fun (project_file_path, project_file_channel) ->
     output_string project_file_channel project_file_contents;
     flush project_file_channel;
-    let expected : project = {
+    let expected : unit project = {
       project_file = Some project_file_path;
       makefile = None;
       native_compiler = None;
       docroot = None;
 
-      v_files = [];
-      ml_files = [];
-      mli_files = [];
-      mlg_files = [];
-      mllib_files = [];
-      mlpack_files = [];
+      files = [];
+      cmd_line_files = [];
+      meta_file = Absent;
 
       ml_includes = [];
       r_includes = [];
       q_includes = [];
       extra_args = List.map sourced_file ["-w"; "default"; "-w"; "foo"; "-set"; "Default Goal Selector=!"];
       defs = [];
+
+      extra_data = ();
     } in
     assert_equal expected (read_project_file ~warning_fn project_file_path)
   ) ()

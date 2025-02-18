@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -17,7 +17,7 @@ open Context
 open Vars
 open Names
 open Pp
-open Tactics
+open Induction
 open Context.Rel.Declaration
 open Indfun_common
 module RelDecl = Context.Rel.Declaration
@@ -32,10 +32,9 @@ let pop t = Vars.lift (-1) t
    Transform an inductive induction principle into
    a functional one
 *)
-let compute_new_princ_type_from_rel rel_to_fun sorts princ_type =
+let compute_new_princ_type_from_rel env rel_to_fun sorts princ_type =
   let princ_type = EConstr.of_constr princ_type in
   let princ_type_info = compute_elim_sig Evd.empty princ_type (* FIXME *) in
-  let env = Global.env () in
   let env_with_params = EConstr.push_rel_context princ_type_info.params env in
   let tbl = Hashtbl.create 792 in
   let rec change_predicates_names (avoid : Id.t list)
@@ -61,14 +60,14 @@ let compute_new_princ_type_from_rel rel_to_fun sorts princ_type =
   let change_predicate_sort i decl =
     let new_sort = sorts.(i) in
     let args, _ =
-      decompose_prod_assum (EConstr.Unsafe.to_constr (RelDecl.get_type decl))
+      decompose_prod_decls (EConstr.Unsafe.to_constr (RelDecl.get_type decl))
     in
     let real_args =
       if princ_type_info.indarg_in_concl then List.tl args else args
     in
-    Context.Named.Declaration.LocalAssum
-      ( map_annot Nameops.Name.get_id (Context.Rel.Declaration.get_annot decl)
-      , Term.it_mkProd_or_LetIn (mkSort new_sort) real_args )
+    let na = map_annot Nameops.Name.get_id (Context.Rel.Declaration.get_annot decl) in
+    let na = EConstr.Unsafe.to_binder_annot na in
+    Context.Named.Declaration.LocalAssum (na, Term.it_mkProd_or_LetIn (mkSort new_sort) real_args)
   in
   let new_predicates =
     List.map_i change_predicate_sort 0 princ_type_info.predicates
@@ -262,6 +261,4 @@ let compute_new_princ_type_from_rel rel_to_fun sorts princ_type =
                 , t
                 , b ))
           new_predicates))
-    (List.map
-       (fun d -> Termops.map_rel_decl EConstr.Unsafe.to_constr d)
-       princ_type_info.params)
+    (EConstr.Unsafe.to_rel_context princ_type_info.params)

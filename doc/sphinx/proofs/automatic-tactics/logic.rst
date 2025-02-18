@@ -17,7 +17,7 @@ Solvers for logic and equality
       The following goal can be proved by :tacn:`tauto` whereas :tacn:`auto` would
       fail:
 
-      .. coqtop:: reset all
+      .. rocqtop:: reset all
 
          Goal forall (x:nat) (P:nat -> Prop), x = 0 \/ P x -> x <> 0 -> P x.
          intros.
@@ -29,7 +29,7 @@ Solvers for logic and equality
 
    .. example::
 
-      .. coqtop:: reset all
+      .. rocqtop:: reset all
 
          Goal forall (A:Prop) (P:nat -> Prop), A \/ (forall x:nat, ~ A -> P x) -> forall x:nat, ~ A -> P x.
          tauto.
@@ -56,7 +56,17 @@ Solvers for logic and equality
    Uses the search tree built by the decision procedure for :tacn:`tauto`
    to generate a set of subgoals equivalent to the original one (but
    simpler than it) and applies :n:`@ltac_expr` to them :cite:`Mun94`. If
-   :n:`@ltac_expr` is not specified, it defaults to :n:`auto with *`
+   :n:`@ltac_expr` is not specified, it defaults to ``Tauto.intuition_solver``.
+
+   The initial value of ``intuition_solver`` is equivalent to :n:`auto
+   with *` but prints warning ``intuition-auto-with-star`` when it
+   solves a goal that :tacn:`auto` cannot solve. In a future version
+   it will be changed to just :tacn:`auto`. Use ``intuition tac``
+   locally or ``Ltac Tauto.intuition_solver ::= tac`` globally to
+   silence the warning in a forward compatible way with your choice of
+   tactic ``tac`` (``auto``, ``auto with *``, ``auto with`` your
+   prefered databases, or any other tactic).
+
    If :n:`@ltac_expr` fails on some goals then :tacn:`intuition` fails. In fact,
    :tacn:`tauto` is simply :g:`intuition fail`.
 
@@ -124,8 +134,9 @@ Solvers for logic and equality
 
    .. opt:: Firstorder Solver @ltac_expr
 
-      The default tactic used by :tacn:`firstorder` when no rule applies in
-      :g:`auto with core`.  It can be set locally or globally using this :term:`option`.
+      The default tactic used by :tacn:`firstorder` when no rule
+      applies in :g:`auto with core`. This command supports the same
+      locality attributes as :cmd:`Obligation Tactic`.
 
    .. cmd:: Print Firstorder Solver
 
@@ -172,7 +183,7 @@ Solvers for logic and equality
 
    .. example::
 
-      .. coqtop:: reset all
+      .. rocqtop:: reset all
 
          Theorem T (A:Type) (f:A -> A) (g: A -> A -> A) a b: a=(f a) -> (g b (f a))=(f (f a)) -> (g a b)=(f (g b a)) -> (g a b)=a.
          intros.
@@ -187,7 +198,7 @@ Solvers for logic and equality
    .. exn:: I don’t know how to handle dependent equality.
 
       The decision procedure managed to find a proof of the goal or of a
-      discriminable equality but this proof could not be built in Coq because of
+      discriminable equality but this proof could not be built in Rocq because of
       dependently-typed functions.
 
    .. exn:: Goal is solvable by congruence but some arguments are missing. Try congruence with {+ @term}, replacing metavariables by arbitrary terms.
@@ -198,7 +209,7 @@ Solvers for logic and equality
       additional arguments can be given to congruence by filling in the holes in the
       terms given in the error message, using the `with` clause.
 
-   :opt:`Debug` ``"congruence"`` makes :tacn:`congruence` print debug information.
+   Setting :opt:`Debug` ``"congruence"`` makes :tacn:`congruence` print debug information.
 
 .. tacn:: btauto
 

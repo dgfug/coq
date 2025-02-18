@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -50,9 +50,6 @@ type unify_flags = {
      unifications. *)
   allowed_evars : AllowedEvars.t;
   (* Disallowed evars are treated like rigid variables during unification: they can not be instantiated. *)
-  allow_K_at_toplevel : bool;
-  (* During higher-order unifications, allow to produce K-redexes: i.e. to produce
-     an abstraction for an unused argument *)
   with_cs : bool
   (* Enable canonical structure resolution during unification *)
 }
@@ -127,7 +124,7 @@ val refresh_universes :
   env -> evar_map -> types -> evar_map * types
 
 val solve_refl : ?can_drop:bool -> conversion_check -> unify_flags -> env ->  evar_map ->
-  bool option -> Evar.t -> constr list -> constr list -> evar_map
+  bool option -> Evar.t -> constr SList.t -> constr SList.t -> evar_map
 
 val solve_evar_evar : ?force:bool ->
   (env -> evar_map -> bool option -> existential -> constr -> evar_map) ->
@@ -179,4 +176,7 @@ val remove_instance_local_defs :
   evar_map -> Evar.t -> 'a list -> 'a list
 
 val get_type_of_refresh :
-  ?polyprop:bool -> ?lax:bool -> env -> evar_map -> constr -> evar_map * types
+  ?lax:bool -> env -> evar_map -> constr
+  -> evar_map * types
+
+val checked_appvect_hook : (env -> evar_map -> constr -> constr array -> evar_map * constr) Hook.t

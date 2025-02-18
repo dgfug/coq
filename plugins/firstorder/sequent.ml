@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -9,10 +9,8 @@
 (************************************************************************)
 
 open Util
-open Pp
 open CErrors
 open Names
-open EConstr
 open Formula
 open Unify
 
@@ -20,9 +18,9 @@ let newcnt ()=
   let cnt=ref (-1) in
     fun b->if b then incr cnt;!cnt
 
-let priority = (* pure heuristics, <=0 for non reversible *)
+let priority : type a. a pattern -> int = (* pure heuristics, <=0 for non reversible *)
   function
-      Right rf->
+      RightPattern rf->
         begin
           match rf with
               Rarrow               -> 100
@@ -32,7 +30,7 @@ let priority = (* pure heuristics, <=0 for non reversible *)
             | Rforall              -> 100
             | Rexists (_,_,_)      -> -29
         end
-    | Left lf ->
+    | LeftPattern lf ->
         match lf with
             Lfalse                 -> 999
           | Land _                 ->  90
@@ -51,139 +49,170 @@ let priority = (* pure heuristics, <=0 for non reversible *)
 
 module OrderedFormula=
 struct
-  type t=Formula.t
-  let compare e1 e2=
+  type t=Formula.any_formula
+  let compare (AnyFormula e1) (AnyFormula e2) =
         (priority e1.pat) - (priority e2.pat)
 end
 
-type h_item = GlobRef.t * (int*Constr.t) option
+type h_item = GlobRef.t * Unify.Item.t option
+
+let h_canonize env (hr, item) =
+  (Environ.QGlobRef.canonize env hr, item)
 
 module Hitem=
 struct
   type t = h_item
   let compare (id1,co1) (id2,co2)=
-    let c = GlobRef.CanOrd.compare id1 id2 in
-    if c = 0 then
-      let cmp (i1, c1) (i2, c2) =
-        let c = Int.compare i1 i2 in
-        if c = 0 then Constr.compare c1 c2 else c
-      in
-      Option.compare cmp co1 co2
+    let c = GlobRef.UserOrd.compare id1 id2 in
+    if c = 0 then Option.compare Unify.Item.compare co1 co2
     else c
 end
 
-module CM=Map.Make(Constr)
-
 module History=Set.Make(Hitem)
 
-let cm_add sigma typ nam cm=
-  let typ = EConstr.to_constr ~abort_on_undefined_evars:false sigma typ in
+module Context :
+sig
+  type t
+  val empty : t
+  val find : Evd.evar_map -> atom -> t -> GlobRef.t
+  val add : Evd.evar_map -> atom -> GlobRef.t -> t -> t
+  val remove : Environ.env -> Evd.evar_map -> atom -> GlobRef.t -> t -> t
+end =
+struct
+
+module Atom =
+struct
+  type t = atom
+  let compare = compare_atom
+end
+
+module CM = Map.Make(Atom)
+
+type t = GlobRef.t list CM.t
+
+let empty = CM.empty
+
+let find sigma t cm =
+  List.hd (CM.find t cm)
+
+let add sigma typ nam cm =
   try
     let l=CM.find typ cm in CM.add typ (nam::l) cm
   with
       Not_found->CM.add typ [nam] cm
 
-let cm_remove sigma typ nam cm=
-  let typ = EConstr.to_constr ~abort_on_undefined_evars:false sigma typ in
+let remove env sigma typ nam cm =
   try
     let l=CM.find typ cm in
-    let l0=List.filter (fun id-> not (GlobRef.equal id nam)) l in
+    let l0=List.filter (fun id-> not (Environ.QGlobRef.equal env id nam)) l in
       match l0 with
           []->CM.remove typ cm
         | _ ->CM.add typ l0 cm
       with Not_found ->cm
 
+end
+
 module HP=Heap.Functional(OrderedFormula)
+
+type seqgoal = GoalTerm of atom | GoalAtom of atom
 
 type t=
     {redexes:HP.t;
-     context:(GlobRef.t list) CM.t;
-     latoms:constr list;
-     gl:types;
-     glatom:constr option;
+     context:Context.t;
+     state : Env.t;
+     latoms:atom list;
+     gl: seqgoal;
      cnt:counter;
      history:History.t;
      depth:int}
 
+let has_fuel seq = seq.depth > 0
+
+let iter_redexes f seq = HP.iter f seq.redexes
+
 let deepen seq={seq with depth=seq.depth-1}
 
-let record item seq={seq with history=History.add item seq.history}
+let record env item seq={seq with history=History.add (h_canonize env item) seq.history}
 
 let lookup env sigma item seq=
-  History.mem item seq.history ||
+  History.mem (h_canonize env item) seq.history ||
   match item with
       (_,None)->false
-    | (id,Some (m, t))->
+    | (id,Some i1)->
         let p (id2,o)=
           match o with
               None -> false
-            | Some (m2, t2)-> GlobRef.equal id id2 && m2>m && more_general env sigma (m2, EConstr.of_constr t2) (m, EConstr.of_constr t) in
+            | Some i2 -> Environ.QGlobRef.equal env id id2 && more_general env sigma i2 i1 in
           History.exists p seq.history
 
-let add_formula env sigma side nam t seq =
-  match build_formula env sigma side nam t seq.cnt with
-      Left f->
-        begin
-          match side with
-              Concl ->
-                {seq with
-                   redexes=HP.add f seq.redexes;
-                   gl=f.constr;
-                   glatom=None}
-            | _ ->
-                {seq with
-                   redexes=HP.add f seq.redexes;
-                   context=cm_add sigma f.constr nam seq.context}
-        end
-    | Right t->
-        match side with
-            Concl ->
-              {seq with gl=t;glatom=Some t}
-          | _ ->
-              {seq with
-                 context=cm_add sigma t nam seq.context;
-                 latoms=t::seq.latoms}
+let add_concl ~flags env sigma t seq =
+  match build_formula ~flags seq.state env sigma Concl goal_id t seq.cnt with
+  | state, Left f ->
+    {seq with redexes=HP.add (AnyFormula f) seq.redexes; gl = GoalTerm f.constr; state }
+  | state, Right t ->
+    {seq with gl = GoalAtom t; state}
+
+let add_formula ~flags ~hint env sigma id t seq =
+  let side = Hyp hint in
+  match build_formula ~flags seq.state env sigma side (formula_id env id) t seq.cnt with
+  | state, Left f ->
+    {seq with
+      redexes=HP.add (AnyFormula f) seq.redexes;
+      context=Context.add sigma f.constr id seq.context;
+      state}
+  | state, Right t ->
+    {seq with
+      context=Context.add sigma t id seq.context;
+      latoms=t::seq.latoms;
+      state}
 
 let re_add_formula_list sigma lf seq=
-  let do_one f cm=
-    if f.id == dummy_id then cm
-    else cm_add sigma f.constr f.id cm in
+  let do_one (AnyFormula f) cm = match f.id with
+  | GoalId -> cm
+  | FormulaId id -> Context.add sigma f.constr id cm
+  in
   {seq with
      redexes=List.fold_right HP.add lf seq.redexes;
      context=List.fold_right do_one lf seq.context}
 
-let find_left sigma t seq=List.hd (CM.find (EConstr.to_constr ~abort_on_undefined_evars:false sigma t) seq.context)
+let find_left sigma t seq = Context.find sigma t seq.context
 
-(*let rev_left seq=
-  try
-    let lpat=(HP.maximum seq.redexes).pat in
-      left_reversible lpat
-  with Heap.EmptyHeap -> false
-*)
+let find_goal sigma seq =
+  let t = match seq.gl with GoalAtom a -> a | GoalTerm t -> t in
+  find_left sigma t seq
 
-let rec take_formula sigma seq=
-  let hd=HP.maximum seq.redexes
-  and hp=HP.remove seq.redexes in
-    if hd.id == dummy_id then
-      let nseq={seq with redexes=hp} in
-        if seq.gl==hd.constr then
-          hd,nseq
-        else
-          take_formula sigma nseq (* discarding deprecated goal *)
-    else
+let rec take_formula env sigma seq=
+  let hd = HP.maximum seq.redexes in
+  let hp = HP.remove seq.redexes in
+  let AnyFormula hd0 = hd in
+  match hd0.id with
+  | GoalId ->
+    let nseq={seq with redexes=hp} in
+    begin match seq.gl with
+    | GoalTerm t when t == hd0.constr -> hd, nseq
+    | GoalAtom _ | GoalTerm _ -> take_formula env sigma nseq (* discarding deprecated goal *)
+    end
+  | FormulaId id ->
       hd,{seq with
             redexes=hp;
-            context=cm_remove sigma hd.constr hd.id seq.context}
+            context=Context.remove env sigma hd0.constr id seq.context}
 
 let empty_seq depth=
   {redexes=HP.empty;
-   context=CM.empty;
+   context=Context.empty;
    latoms=[];
-   gl=(mkMeta 1);
-   glatom=None;
+   gl= GoalTerm hole_atom;
    cnt=newcnt ();
    history=History.empty;
-   depth=depth}
+   depth=depth;
+   state=Env.empty}
+
+let make_simple_atoms seq =
+  let ratoms=
+    match seq.gl with
+    | GoalAtom t -> [t]
+    | GoalTerm _ -> []
+  in {negative=seq.latoms;positive=ratoms}
 
 let expand_constructor_hints =
   List.map_append (function
@@ -193,17 +222,17 @@ let expand_constructor_hints =
     | gr ->
         [gr])
 
-let extend_with_ref_list env sigma l seq =
+let extend_with_ref_list ~flags env sigma l seq =
   let l = expand_constructor_hints l in
   let f gr (seq, sigma) =
     let sigma, c = Evd.fresh_global env sigma gr in
     let sigma, typ= Typing.type_of env sigma c in
-      (add_formula env sigma Hyp gr typ seq, sigma) in
+      (add_formula ~flags ~hint:false env sigma gr typ seq, sigma) in
     List.fold_right f l (seq, sigma)
 
 open Hints
 
-let extend_with_auto_hints env sigma l seq =
+let extend_with_auto_hints ~flags env sigma l seq =
   let f (seq,sigma) p_a_t =
     match FullHint.repr p_a_t with
     | Res_pf c | Give_exact c
@@ -213,7 +242,7 @@ let extend_with_auto_hints env sigma l seq =
        | exception Constr.DestKO -> seq, sigma
        | gr, _ ->
          let sigma, typ = Typing.type_of env sigma c in
-         add_formula env sigma Hint gr typ seq, sigma)
+         add_formula ~flags ~hint:true env sigma gr typ seq, sigma)
     | _ -> seq, sigma
   in
   let h acc dbname =
@@ -227,21 +256,4 @@ let extend_with_auto_hints env sigma l seq =
   in
   List.fold_left h (seq,sigma) l
 
-let print_cmap map=
-  let print_entry c l s=
-    let env = Global.env () in
-    let sigma = Evd.from_env env in
-    let xc=Constrextern.extern_constr env sigma (EConstr.of_constr c) in
-      str "| " ++
-      prlist Printer.pr_global l ++
-      str " : " ++
-      Ppconstr.pr_constr_expr env sigma xc ++
-      cut () ++
-      s in
-    (v 0
-             (str "-----" ++
-              cut () ++
-              CM.fold print_entry map (mt ()) ++
-              str "-----"))
-
-
+let state seq = seq.state

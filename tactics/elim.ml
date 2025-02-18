@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -10,133 +10,67 @@
 
 open Util
 open Names
-open Constr
 open Termops
 open EConstr
 open Inductiveops
 open Hipattern
-open Tacmach.New
-open Tacticals.New
-open Clenv
+open Tacmach
+open Tacticals
 open Tactics
-
-type branch_args = {
-  branchnum  : int;         (* the branch number *)
-  nassums    : int;         (* number of assumptions/letin to be introduced *)
-  branchsign : bool list;   (* the signature of the branch.
-                               true=assumption, false=let-in *)
-  branchnames : Tactypes.intro_patterns}
 
 type elim_kind = Case of bool | Elim
 
 (* Find the right elimination suffix corresponding to the sort of the goal *)
 (* c should be of type A1->.. An->B with B an inductive definition *)
-let general_elim_then_using mk_elim
-    rec_flag allnames tac predicate (ind, u, args) id =
-  let open Pp in
+let general_elim_using mk_elim (ind, u, args) id = match mk_elim with
+| Case dep ->
+  Clenv.case_pf ~dep (mkVar id, mkApp (mkIndU (ind, u), args))
+| Elim ->
   Proofview.Goal.enter begin fun gl ->
     let env = Proofview.Goal.env gl in
     let sigma = Proofview.Goal.sigma gl in
     let sort = Retyping.get_sort_family_of env sigma (Proofview.Goal.concl gl) in
-    let sigma, elim = match mk_elim with
-    | Case dep ->
-      let u = EInstance.kind sigma u in
-      let (sigma, r) = Indrec.build_case_analysis_scheme env sigma (ind, u) dep sort in
-      (sigma, EConstr.of_constr r)
-    | Elim ->
-      let gr = Indrec.lookup_eliminator env ind sort in
-      Evd.fresh_global env sigma gr
-    in
-    (* applying elimination_scheme just a little modified *)
-    let elimclause = mk_clenv_from env sigma (elim, Retyping.get_type_of env sigma elim) in
-    let indmv =
-      match EConstr.kind elimclause.evd (last_arg elimclause.evd elimclause.templval.Evd.rebus) with
-      | Meta mv -> mv
-      | _         -> CErrors.anomaly (str"elimination.")
-    in
-    let pmv =
-      let p, _ = decompose_app elimclause.evd elimclause.templtyp.Evd.rebus in
-      match EConstr.kind elimclause.evd p with
-      | Meta p -> p
-      | _ ->
-          let name_elim =
-            match EConstr.kind sigma elim with
-            | Const _ | Var _ -> str " " ++ Printer.pr_econstr_env env sigma elim
-            | _ -> mt ()
-          in
-          CErrors.user_err ~hdr:"Tacticals.general_elim_then_using"
-            (str "The elimination combinator " ++ name_elim ++ str " is unknown.")
-    in
-    let elimclause' = clenv_instantiate indmv elimclause (mkVar id, mkApp (mkIndU (ind, u), args)) in
-    let branchsigns = Tacticals.compute_constructor_signatures ~rec_flag (ind, u) in
-    let brnames = Tacticals.compute_induction_names false branchsigns allnames in
     let flags = Unification.elim_flags () in
-    let elimclause' =
-      match predicate with
-      | None   -> elimclause'
-      | Some p -> clenv_unify ~flags Reduction.CONV (mkMeta pmv) p elimclause'
-    in
-    let after_tac i =
-      let ba = { branchsign = branchsigns.(i);
-                  branchnames = brnames.(i);
-                  nassums = List.length branchsigns.(i);
-                  branchnum = i+1; }
-      in
-      tac ba
-    in
-    let branchtacs = List.init (Array.length branchsigns) after_tac in
-    Proofview.tclTHEN
-      (Clenv.res_pf ~flags elimclause')
-      (Proofview.tclEXTEND [] tclIDTAC branchtacs)
+    let gr = Indrec.lookup_eliminator env ind sort in
+    let sigma, elim = Evd.fresh_global env sigma gr in
+    let elimt = Retyping.get_type_of env sigma elim in
+    (* applying elimination_scheme just a little modified *)
+    let elimclause = Clenv.mk_clenv_from env sigma (elim, elimt) in
+    let indmv = List.last (Clenv.clenv_arguments elimclause) in
+    let elimclause = Clenv.clenv_instantiate indmv elimclause (mkVar id, mkApp (mkIndU (ind, u), args)) in
+    Clenv.res_pf ~flags elimclause
   end
 
 (* computing the case/elim combinators *)
 
-let make_elim_branch_assumptions ba hyps =
-  let assums =
-    try List.rev (List.firstn ba.nassums hyps)
-    with Failure _ -> CErrors.anomaly (Pp.str "make_elim_branch_assumptions.") in
-  assums
-
-let elim_on_ba tac ba =
+let elim_on_ba tac nassums =
   Proofview.Goal.enter begin fun gl ->
-  let branches = make_elim_branch_assumptions ba (Proofview.Goal.hyps gl) in
+  let branches =
+    try List.rev (List.firstn nassums (Proofview.Goal.hyps gl))
+    with Failure _ -> CErrors.anomaly (Pp.str "make_elim_branch_assumptions.")
+  in
   tac branches
   end
 
-let elimination_then tac id =
-  let open Declarations in
+let case_tac dep names tac (ind, u, args as spec) c =
+  let open Proofview.Notations in
   Proofview.Goal.enter begin fun gl ->
-  let ((ind, u), t) = pf_apply Tacred.reduce_to_atomic_ind gl (pf_get_type_of gl (mkVar id)) in
-  let _, args = decompose_app_vect (Proofview.Goal.sigma gl) t in
-  let isrec,mkelim =
-    match (Global.lookup_mind (fst ind)).mind_record with
-    | NotRecord -> true, Elim
-    | FakeRecord | PrimRecord _ -> false, Case true
-  in
-  general_elim_then_using mkelim isrec None tac None (ind, u, args) id
+    let env = Proofview.Goal.env gl in
+    let branchsigns = Tacticals.compute_constructor_signatures env ~rec_flag:false (ind, u) in
+    let brnames = Tacticals.compute_induction_names false branchsigns names in
+    let after_tac i =
+      let branchnames = brnames.(i) in
+      let n1 = List.length branchsigns.(i) in
+      let n2 = List.length branchnames in
+      let (l1,l2),l3 =
+        if n1 < n2 then List.chop n1 branchnames, []
+        else (branchnames, []), List.make (n1-n2) false in
+      (intro_patterns false l1) <*> (intros_clearing l3) <*> (elim_on_ba (tac l2) n1)
+    in
+    let branchtacs = List.init (Array.length branchsigns) after_tac in
+    general_elim_using (Case dep) spec c <*>
+    (Proofview.tclEXTEND [] tclIDTAC branchtacs)
   end
-
-(* Supposed to be called without as clause *)
-let introElimAssumsThen tac ba =
-  assert (ba.branchnames == []);
-  let introElimAssums = tclDO ba.nassums intro in
-  (tclTHEN introElimAssums (elim_on_ba tac ba))
-
-(* Supposed to be called with a non-recursive scheme *)
-let introCaseAssumsThen with_evars tac ba =
-  let n1 = List.length ba.branchsign in
-  let n2 = List.length ba.branchnames in
-  let (l1,l2),l3 =
-    if n1 < n2 then List.chop n1 ba.branchnames, []
-    else (ba.branchnames, []), List.make (n1-n2) false in
-  let introCaseAssums =
-    tclTHEN (intro_patterns with_evars l1) (intros_clearing l3) in
-  (tclTHEN introCaseAssums (elim_on_ba (tac l2) ba))
-
-let case_tac dep names tac elim ind c =
-  let tac = introCaseAssumsThen false (* ApplyOn not supported by inversion *) tac in
-  general_elim_then_using (Case dep) false names tac (Some elim) ind c
 
 (* The following tactic Decompose repeatedly applies the
    elimination(s) rule(s) of the types satisfying the predicate
@@ -156,17 +90,32 @@ Another example :
    Qed.
 *)
 
-let rec general_decompose_on_hyp recognizer =
-  ifOnHyp recognizer (general_decompose_aux recognizer) (fun _ -> Proofview.tclUNIT())
+let rec general_decompose_aux recognizer id =
+  let open Declarations in
+  let open Proofview.Notations in
+  Proofview.Goal.enter begin fun gl ->
+  let env = Proofview.Goal.env gl in
+  let ((ind, u), t) = pf_apply Tacred.reduce_to_atomic_ind gl (pf_get_type_of gl (mkVar id)) in
+  let _, args = decompose_app (Proofview.Goal.sigma gl) t in
+  let rec_flag, mkelim =
+    match (Environ.lookup_mind (fst ind) env).mind_record with
+    | NotRecord -> true, Elim
+    | FakeRecord | PrimRecord _ -> false, Case true
+  in
+  let branchsigns = Tacticals.compute_constructor_signatures env ~rec_flag (ind, u) in
+  let next_tac bas =
+    let map id = ifOnHyp recognizer (general_decompose_aux recognizer) (fun _ -> tclIDTAC) id in
+    tclMAP map (ids_of_named_context bas)
+  in
+  let after_tac i =
+    let nassums = List.length branchsigns.(i) in
+    (tclDO nassums intro) <*> (clear [id]) <*> (elim_on_ba next_tac nassums)
+  in
+  let branchtacs = List.init (Array.length branchsigns) after_tac in
+  general_elim_using mkelim (ind, u, args) id <*>
+  (Proofview.tclEXTEND [] tclIDTAC branchtacs)
+  end
 
-and general_decompose_aux recognizer id =
-  elimination_then
-    (introElimAssumsThen
-       (fun bas ->
-          tclTHEN (clear [id])
-            (tclMAP (general_decompose_on_hyp recognizer)
-               (ids_of_named_context bas))))
-    id
 
 (* We should add a COMPLETE to be sure that the created hypothesis
    doesn't stay if no elimination is possible *)
@@ -186,15 +135,16 @@ let general_decompose recognizer c =
   end
 
 let head_in indl t gl =
-  let sigma = Tacmach.New.project gl in
+  let env = Proofview.Goal.env gl in
+  let sigma = Tacmach.project gl in
   try
     let ity,_ = extract_mrectype sigma t in
-    List.exists (fun i -> Ind.CanOrd.equal (fst i) (fst ity)) indl
+    List.exists (fun i -> Environ.QInd.equal env (fst i) (fst ity)) indl
   with Not_found -> false
 
 let decompose_these c l =
   Proofview.Goal.enter begin fun gl ->
-  let indl = List.map (fun x -> x, Univ.Instance.empty) l in
+  let indl = List.map (fun x -> x, UVars.Instance.empty) l in
   general_decompose (fun env sigma (_,t) -> head_in indl t gl) c
   end
 

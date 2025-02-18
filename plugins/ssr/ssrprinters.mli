@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -11,9 +11,6 @@
 (* This file is (C) Copyright 2006-2015 Microsoft Corporation and Inria. *)
 
 open Ssrast
-
-val pp_term :
-  Goal.goal Evd.sigma -> EConstr.constr -> Pp.t
 
 val pr_spc : unit -> Pp.t
 val pr_bar : unit -> Pp.t

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,7 +8,8 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
+val get_flags : unit -> Formula.flags
 
-val ground_tac: unit Proofview.tactic ->
+val ground_tac: flags:Formula.flags -> unit Proofview.tactic ->
   ((Sequent.t -> unit Proofview.tactic) -> unit Proofview.tactic) -> unit Proofview.tactic
 

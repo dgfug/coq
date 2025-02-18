@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -25,7 +25,7 @@ let type_of_string = function
   | "inst" -> Instance
   | "var" -> Variable
   | "defax" | "prfax" | "ax" -> Axiom
-  | "syndef" -> Abbreviation
+  | "abbrev" | "syndef" -> Abbreviation
   | "not" -> Notation
   | "lib" -> Library
   | "mod" | "modtype" -> Module

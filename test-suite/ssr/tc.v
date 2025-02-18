@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -14,9 +14,9 @@ Require Import ssreflect.
 
 
 Class foo (A : Type) : Type := mkFoo { val : A }.
-Instance foo_pair {A B} {f1 : foo A} {f2 : foo B} : foo (A * B) | 2 :=
+#[export] Instance foo_pair {A B} {f1 : foo A} {f2 : foo B} : foo (A * B) | 2 :=
   {| val := (@val _ f1, @val _ f2) |}.
-Instance foo_nat : foo nat | 3 := {| val := 0 |}.
+#[export] Instance foo_nat : foo nat | 3 := {| val := 0 |}.
 
 Definition id {A} (x : A) := x.
 Axiom E : forall A {f : foo A} (a : A), id a = (@val _ f).

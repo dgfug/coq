@@ -7,9 +7,15 @@ ci_dir="$(dirname "$0")"
 
 git_download vst
 
-export COMPCERT=bundled
+if [ "$DOWNLOAD_ONLY" ]; then exit 0; fi
 
-sed -i.bak 's/\(COQC=.*\)/\1 -native-compiler no/' "$CI_BUILD_DIR/vst/Makefile"
+# sometimes (rarely) CompCert master can break VST and it can take
+# weeks or months for VST to catch up, in this case, just uncomment
+# the line below to use the compcert version bundled in VST
+# export COMPCERT=bundled
+
+# See ci-compcert.sh
+export COQEXTRAFLAGS='-native-compiler no'
 ( cd "${CI_BUILD_DIR}/vst"
-  make IGNORECOQVERSION=true
+  make IGNORECOQVERSION=true IGNORECOMPCERTVERSION=true
 )

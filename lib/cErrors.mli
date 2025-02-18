@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -9,12 +9,12 @@
 (************************************************************************)
 
 (** This modules implements basic manipulations of errors for use
-    throughout Coq's code. *)
+    throughout Rocq's code. *)
 
 (** {6 Error handling} *)
 
 val push : exn -> Exninfo.iexn
-[@@ocaml.deprecated "please use [Exninfo.capture]"]
+[@@ocaml.deprecated "(8.12) please use [Exninfo.capture]"]
 
 (** {6 Generic errors.}
 
@@ -30,13 +30,13 @@ val is_anomaly : exn -> bool
     This is mostly provided for compatibility. Please avoid doing specific
     tricks with anomalies thanks to it. See rather [noncritical] below. *)
 
-exception UserError of string option * Pp.t
+exception UserError of Pp.t
 (** Main error signaling exception. It carries a header plus a pretty printing
     doc *)
 
-val user_err : ?loc:Loc.t -> ?info:Exninfo.info -> ?hdr:string -> Pp.t -> 'a
-(** Main error raising primitive. [user_err ?loc ?hdr pp] signals an
-    error [pp] with optional header and location [hdr] [loc] *)
+val user_err : ?loc:Loc.t -> ?info:Exninfo.info -> Pp.t -> 'a
+(** Main error raising primitive. [user_err ?loc pp] signals an
+    error [pp] with optional header and location [loc] *)
 
 exception Timeout
 
@@ -64,16 +64,38 @@ val iprint : Exninfo.iexn -> Pp.t
 val print_no_report : exn -> Pp.t
 val iprint_no_report : Exninfo.iexn -> Pp.t
 
-(** Critical exceptions should not be caught and ignored by mistake
-    by inner functions during a [vernacinterp]. They should be handled
-    only in [Toplevel.do_vernac] (or Ideslave), to be displayed to the user.
-    Typical example: [Sys.Break], [Assert_failure], [Anomaly] ...
-*)
+(** "Critical" exceptions, such as anomalies or interruptions should
+    not be caught and ignored by mistake by inner Rocq functions by
+    means of doing a "catch-all". They should be handled instead by
+    the compiler layer which is in charge of coordinating the
+    intepretation of Rocq vernaculars.
+
+    Please, avoid exceptions catch-all! If you must do so, then use the form:
+    {[
+    try my_comp ()
+    with exn when noncritical exn ->
+      my_handler
+    ]}
+
+    If you need to re-raise the excepction, you must work to preserve
+    the backtrace and other important information:
+    {[
+    try my_comp ()
+    with exn when noncritical exn ->
+      let iexn = Exninfo.capture exn in
+      ...
+      Exninfo.iraise iexn
+    ]}
+ *)
 val noncritical : exn -> bool
 
 (** Register a printer for errors carrying additional information on
    exceptions. This method is fragile and should be considered
    deprecated *)
 val register_additional_error_info
-  :  (Exninfo.info -> Pp.t Loc.located option)
+  :  (Exninfo.info -> Pp.t option)
   -> unit
+
+(** [to_result ~f x] reifies (non-critical) exceptions into a [('a,
+    iexn) Result.t] type *)
+val to_result : f:('a -> 'b) -> 'a -> ('b, Exninfo.iexn) Result.t

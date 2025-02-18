@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -46,14 +46,13 @@ val print_goal_tag_opt_name : string list
     [~impargs:some_list_of_binding_kind] indicates the implicit arguments
     of the external quatification. Only used for printing types (not
     terms), and at toplevel (only "l" versions). It defaults to [None].
+*)
 
-    [~lax:true] is for debugging purpose. It defaults to [~lax:false]. *)
 
+val pr_constr_env          : ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> constr -> Pp.t
+val pr_lconstr_env         : ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> constr -> Pp.t
 
-val pr_constr_env          : ?lax:bool -> ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> constr -> Pp.t
-val pr_lconstr_env         : ?lax:bool -> ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> constr -> Pp.t
-
-val pr_constr_n_env        : ?lax:bool -> ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> Constrexpr.entry_relative_level -> constr -> Pp.t
+val pr_constr_n_env        : ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> Constrexpr.entry_relative_level -> constr -> Pp.t
 
 (** Same, but resilient to [Nametab] errors. Prints fully-qualified
     names when [shortest_qualid_of_global] has failed. Prints "??"
@@ -62,16 +61,16 @@ val pr_constr_n_env        : ?lax:bool -> ?inctx:bool -> ?scope:scope_name -> en
 val safe_pr_constr_env  : env -> evar_map -> constr -> Pp.t
 val safe_pr_lconstr_env : env -> evar_map -> constr -> Pp.t
 
-val pr_econstr_env      : ?lax:bool -> ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> EConstr.t -> Pp.t
-val pr_leconstr_env     : ?lax:bool -> ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> EConstr.t -> Pp.t
+val pr_econstr_env      : ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> EConstr.t -> Pp.t
+val pr_leconstr_env     : ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> EConstr.t -> Pp.t
 
-val pr_econstr_n_env    : ?lax:bool -> ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> Constrexpr.entry_relative_level -> EConstr.t -> Pp.t
+val pr_econstr_n_env    : ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> Constrexpr.entry_relative_level -> EConstr.t -> Pp.t
 
-val pr_etype_env        : ?lax:bool -> ?goal_concl_style:bool -> env -> evar_map -> EConstr.types -> Pp.t
-val pr_letype_env       : ?lax:bool -> ?goal_concl_style:bool -> env -> evar_map -> ?impargs:Glob_term.binding_kind list -> EConstr.types -> Pp.t
+val pr_etype_env        : ?goal_concl_style:bool -> env -> evar_map -> EConstr.types -> Pp.t
+val pr_letype_env       : ?goal_concl_style:bool -> env -> evar_map -> ?impargs:Glob_term.binding_kind list -> EConstr.types -> Pp.t
 
-val pr_open_constr_env  : ?lax:bool -> ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> open_constr -> Pp.t
-val pr_open_lconstr_env : ?lax:bool -> ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> open_constr -> Pp.t
+val pr_open_constr_env  : ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> open_constr -> Pp.t
+val pr_open_lconstr_env : ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> open_constr -> Pp.t
 
 val pr_constr_under_binders_env  : env -> evar_map -> constr_under_binders -> Pp.t
 
@@ -96,14 +95,13 @@ val pr_lconstr_under_binders_env : env -> evar_map -> constr_under_binders -> Pp
     names of global definitions are printed qualified and only names
     of goal/section variables and rel names that do _not_ occur in the
     scope of the binder to be printed are avoided.
+*)
 
-    [~lax:true] is for debugging purpose. *)
+val pr_ltype_env           : ?goal_concl_style:bool -> env -> evar_map -> ?impargs:Glob_term.binding_kind list -> types -> Pp.t
+val pr_type_env            : ?goal_concl_style:bool -> env -> evar_map -> types -> Pp.t
 
-val pr_ltype_env           : ?lax:bool -> ?goal_concl_style:bool -> env -> evar_map -> ?impargs:Glob_term.binding_kind list -> types -> Pp.t
-val pr_type_env            : ?lax:bool -> ?goal_concl_style:bool -> env -> evar_map -> types -> Pp.t
-
-val pr_closed_glob_n_env   : ?lax:bool -> ?goal_concl_style:bool -> ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> Constrexpr.entry_relative_level -> closed_glob_constr -> Pp.t
-val pr_closed_glob_env     : ?lax:bool -> ?goal_concl_style:bool -> ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> closed_glob_constr -> Pp.t
+val pr_closed_glob_n_env   : ?goal_concl_style:bool -> ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> Constrexpr.entry_relative_level -> closed_glob_constr -> Pp.t
+val pr_closed_glob_env     : ?goal_concl_style:bool -> ?inctx:bool -> ?scope:scope_name -> env -> evar_map -> closed_glob_constr -> Pp.t
 
 val pr_ljudge_env          : env -> evar_map -> EConstr.unsafe_judgment -> Pp.t * Pp.t
 
@@ -111,9 +109,9 @@ val pr_lglob_constr_env    : env -> evar_map -> 'a glob_constr_g -> Pp.t
 
 val pr_glob_constr_env     : env -> evar_map -> 'a glob_constr_g -> Pp.t
 
-val pr_lconstr_pattern_env : env -> evar_map -> constr_pattern -> Pp.t
+val pr_lconstr_pattern_env : env -> evar_map -> _ constr_pattern_r -> Pp.t
 
-val pr_constr_pattern_env  : env -> evar_map -> constr_pattern -> Pp.t
+val pr_constr_pattern_env  : env -> evar_map -> _ constr_pattern_r -> Pp.t
 
 val pr_cases_pattern       : cases_pattern -> Pp.t
 
@@ -121,15 +119,15 @@ val pr_sort                : evar_map -> Sorts.t -> Pp.t
 
 (** Universe constraints *)
 
-val pr_universe_instance   : evar_map -> Univ.Instance.t -> Pp.t
-val pr_universe_instance_constraints : evar_map -> Univ.Instance.t -> Univ.Constraints.t -> Pp.t
-val pr_universe_ctx        : evar_map -> ?variance:Univ.Variance.t array ->
-  Univ.UContext.t -> Pp.t
-val pr_abstract_universe_ctx : evar_map -> ?variance:Univ.Variance.t array ->
-  ?priv:Univ.ContextSet.t -> Univ.AbstractContext.t -> Pp.t
+val pr_universe_instance   : evar_map -> UVars.Instance.t -> Pp.t
+val pr_universe_instance_constraints : evar_map -> UVars.Instance.t -> Univ.Constraints.t -> Pp.t
+val pr_universe_ctx        : evar_map -> ?variance:UVars.Variance.t array ->
+  UVars.UContext.t -> Pp.t
+val pr_abstract_universe_ctx : evar_map -> ?variance:UVars.Variance.t array ->
+  ?priv:Univ.ContextSet.t -> UVars.AbstractContext.t -> Pp.t
 val pr_universe_ctx_set    : evar_map -> Univ.ContextSet.t -> Pp.t
 val pr_universes  : evar_map ->
-  ?variance:Univ.Variance.t array -> ?priv:Univ.ContextSet.t ->
+  ?variance:UVars.Variance.t array -> ?priv:Univ.ContextSet.t ->
   Declarations.universes -> Pp.t
 
 (** [universe_binders_with_opt_names ref l]
@@ -141,8 +139,8 @@ val pr_universes  : evar_map ->
     Otherwise return the bound universe names registered for [ref].
 
     Inefficient on large contexts due to name generation. *)
-val universe_binders_with_opt_names : Univ.AbstractContext.t ->
-  UnivNames.univ_name_list option -> UnivNames.universe_binders
+val universe_binders_with_opt_names : UVars.AbstractContext.t ->
+  (GlobRef.t * UnivNames.full_name_list) option -> UnivNames.universe_binders * UnivNames.rev_binders
 
 (** Printing global references using names as short as possible *)
 
@@ -150,16 +148,18 @@ val pr_global_env          : Id.Set.t -> GlobRef.t -> Pp.t
 val pr_global              : GlobRef.t -> Pp.t
 
 val pr_constant            : env -> Constant.t -> Pp.t
-val pr_existential_key     : evar_map -> Evar.t -> Pp.t
+val pr_existential_key     : env -> evar_map -> Evar.t -> Pp.t
 val pr_existential         : env -> evar_map -> existential -> Pp.t
 val pr_constructor         : env -> constructor -> Pp.t
 val pr_inductive           : env -> inductive -> Pp.t
-val pr_evaluable_reference : Tacred.evaluable_global_reference -> Pp.t
+val pr_evaluable_reference : Evaluable.t -> Pp.t
 
 val pr_pconstant : env -> evar_map -> pconstant -> Pp.t
 val pr_pinductive : env -> evar_map -> pinductive -> Pp.t
 val pr_pconstructor : env -> evar_map -> pconstructor -> Pp.t
 
+val pr_notation_interpretation_env : env -> evar_map -> glob_constr -> Pp.t
+val pr_notation_interpretation : glob_constr -> Pp.t
 
 (** Contexts *)
 
@@ -174,6 +174,10 @@ val pr_named_decl          : env -> evar_map -> Constr.named_declaration -> Pp.t
 val pr_compacted_decl      : env -> evar_map -> Constr.compacted_declaration -> Pp.t
 val pr_rel_decl            : env -> evar_map -> Constr.rel_declaration -> Pp.t
 
+val pr_enamed_decl          : env -> evar_map -> EConstr.named_declaration -> Pp.t
+val pr_ecompacted_decl      : env -> evar_map -> EConstr.compacted_declaration -> Pp.t
+val pr_erel_decl            : env -> evar_map -> EConstr.rel_declaration -> Pp.t
+
 val pr_named_context       : env -> evar_map -> Constr.named_context -> Pp.t
 val pr_named_context_of    : env -> evar_map -> Pp.t
 val pr_rel_context         : env -> evar_map -> Constr.rel_context -> Pp.t
@@ -185,60 +189,22 @@ val pr_context_of          : env -> evar_map -> Pp.t
 val pr_predicate           : ('a -> Pp.t) -> (bool * 'a list) -> Pp.t
 val pr_cpred               : Cpred.t -> Pp.t
 val pr_idpred              : Id.Pred.t -> Pp.t
+val pr_prpred              : PRpred.t -> Pp.t
 val pr_transparent_state   : TransparentState.t -> Pp.t
 
 (** Proofs, these functions obey [Hyps Limit] and [Compact contexts]. *)
 
-(** [pr_goal ~diffs ~og_s g_s] prints the goal specified by [g_s].  If [diffs] is true,
-    highlight the differences between the old goal, [og_s], and [g_s].  [g_s] and [og_s] are
-    records containing the goal and sigma for, respectively, the new and old proof steps,
-    e.g. [{ it = g ; sigma = sigma }].
-*)
-val pr_goal                : ?diffs:bool -> ?og_s:(Goal.goal sigma) -> Goal.goal sigma -> Pp.t
-
-(** [pr_subgoals ~pr_first ~diffs ~os_map close_cmd sigma ~seeds ~shelf ~stack ~unfocused ~goals]
-   prints the goals in [goals] followed by the goals in [unfocused] in a compact form
-   (typically only the conclusion).  If [pr_first] is true, print the first goal in full.
-   [close_cmd] is printed afterwards verbatim.
-
-   If [diffs] is true, then highlight diffs relative to [os_map] in the output for first goal.
-   [os_map] contains sigma for the old proof step and the goal map created by
-   [Proof_diffs.make_goal_map].
-
-   This function prints only the focused goals unless the corresponding option [enable_unfocused_goal_printing] is set.
-   [seeds] is for printing dependent evars (mainly for emacs proof tree mode).  [shelf] is from
-   Proof.proof and is used to identify shelved goals in a message if there are no more subgoals but
-   there are non-instantiated existential variables.  [stack] is used to print summary info on unfocused
-   goals.
-*)
-val pr_subgoals            : ?pr_first:bool -> ?diffs:bool -> ?os_map:(evar_map * Goal.goal Evar.Map.t) -> Pp.t option -> evar_map
-                             -> seeds:Goal.goal list -> shelf:Goal.goal list -> stack:int list
-                             -> unfocused:Goal.goal list -> goals:Goal.goal list -> Pp.t
-
-val pr_subgoal             : int -> evar_map -> Goal.goal list -> Pp.t
-
-(** [pr_concl n ~diffs ~og_s sigma g] prints the conclusion of the goal [g] using [sigma].  The output
-    is labelled "subgoal [n]".  If [diffs] is true, highlight the differences between the old conclusion,
-    [og_s], and [g]+[sigma].  [og_s] is a record containing the old goal and sigma, e.g. [{ it = g ; sigma = sigma }].
-*)
-val pr_concl               : int -> ?diffs:bool -> ?og_s:(Goal.goal sigma) -> evar_map -> Goal.goal -> Pp.t
-
-(** [pr_open_subgoals_diff ~quiet ~diffs ~oproof proof] shows the context for [proof] as used by, for example, coqtop.
+(** [pr_open_subgoals ~quiet ?diffs proof] shows the context for [proof] as used by, for example, coqtop.
     The first active goal is printed with all its antecedents and the conclusion.  The other active goals only show their
-     conclusions.  If [diffs] is true, highlight the differences between the old proof, [oproof], and [proof].  [quiet]
+     conclusions.  If [diffs] is [Some oproof], highlight the differences between the old proof [oproof], and [proof].  [quiet]
      disables printing messages as Feedback.
 *)
-val pr_open_subgoals_diff  : ?quiet:bool -> ?diffs:bool -> ?oproof:Proof.t -> Proof.t -> Pp.t
-val pr_open_subgoals       : proof:Proof.t -> Pp.t
+val pr_open_subgoals       : ?quiet:bool -> ?diffs:Proof.t option -> Proof.t -> Pp.t
 val pr_nth_open_subgoal    : proof:Proof.t -> int -> Pp.t
-val pr_evar                : evar_map -> (Evar.t * evar_info) -> Pp.t
-val pr_evars_int           : evar_map -> shelf:Goal.goal list -> given_up:Goal.goal list -> int -> evar_info Evar.Map.t -> Pp.t
-val pr_evars               : evar_map -> evar_info Evar.Map.t -> Pp.t
+val pr_evar                : evar_map -> (Evar.t * undefined evar_info) -> Pp.t
+val pr_evars_int           : evar_map -> shelf:Evar.t list -> given_up:Evar.t list -> int -> undefined evar_info Evar.Map.t -> Pp.t
 val pr_ne_evar_set         : Pp.t -> Pp.t -> evar_map ->
   Evar.Set.t -> Pp.t
-
-val print_and_diff : Proof.t option -> Proof.t option -> unit
-val print_dependent_evars : Evar.t option -> evar_map -> Evar.t list -> Pp.t
 
 (** Declarations for the "Print Assumption" command *)
 type axiom =
@@ -254,7 +220,7 @@ type context_object =
   | Opaque of Constant.t     (* An opaque constant. *)
   | Transparent of Constant.t
 
-module ContextObjectSet : Set.S with type elt = context_object
+module ContextObjectSet : CSet.ExtS with type elt = context_object
 module ContextObjectMap : CMap.ExtS
   with type key = context_object and module Set := ContextObjectSet
 
@@ -267,3 +233,11 @@ val pr_typing_flags : Declarations.typing_flags -> Pp.t
 
 (** Tells if flag "Printing Goal Names" is activated *)
 val print_goal_names : unit -> bool
+
+module Debug :
+sig
+
+val pr_goal : Proofview.Goal.t -> Pp.t
+
+end
+(** Debug printers *)

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -83,7 +83,11 @@ let get_depth_boxes () = Some (Format.pp_get_max_boxes !std_ft ())
 let set_depth_boxes v =
   Format.pp_set_max_boxes !std_ft (match v with None -> default | Some v -> v)
 
-let get_margin () = Some (Format.pp_get_margin !std_ft ())
+let get_margin0 () = Format.pp_get_margin !std_ft ()
+
+let () = Profile_tactic.set_get_printing_width get_margin0
+
+let get_margin () = Some (get_margin0())
 let set_margin v =
   let v = match v with None -> default_margin | Some v -> v in
   Format.pp_set_margin Format.str_formatter v;
@@ -135,19 +139,23 @@ let info_hdr = mt ()
 let warn_hdr = tag Tag.warning (str "Warning:") ++ spc ()
 let  err_hdr = tag Tag.error   (str "Error:")   ++ spc ()
 
-let make_body quoter info ?pre_hdr s =
-  pr_opt_no_spc (fun x -> x ++ fnl ()) pre_hdr ++ quoter (hov 0 (info ++ s))
+let make_body quoter info ?pre_hdr ?(qf=[]) s =
+  let main = hov 0 (info ++ s) in
+  let main = match qf with
+    | (_ :: _ as qf) when !Flags.test_mode -> v 0 (main ++ cut () ++ Quickfix.print qf)
+    | _ -> main in
+  pr_opt_no_spc (fun x -> x ++ fnl ()) pre_hdr ++ quoter main
 
 (* The empty quoter *)
 let noq x = x
 (* Generic logger *)
-let gen_logger dbg warn ?pre_hdr level msg = let open Feedback in match level with
-  | Debug   -> msgnl_with !std_ft (make_body dbg  dbg_hdr ?pre_hdr msg)
-  | Info    -> msgnl_with !std_ft (make_body dbg info_hdr ?pre_hdr msg)
-  | Notice  -> msgnl_with !std_ft (make_body noq info_hdr ?pre_hdr msg)
+let gen_logger dbg warn ?qf ?pre_hdr level msg = let open Feedback in match level with
+  | Debug   -> msgnl_with !std_ft (make_body dbg  dbg_hdr ?pre_hdr ?qf msg)
+  | Info    -> msgnl_with !std_ft (make_body dbg info_hdr ?pre_hdr ?qf msg)
+  | Notice  -> msgnl_with !std_ft (make_body noq info_hdr ?pre_hdr ?qf msg)
   | Warning -> Flags.if_warn (fun () ->
-               msgnl_with !err_ft (make_body warn warn_hdr ?pre_hdr msg)) ()
-  | Error   -> msgnl_with !err_ft (make_body noq   err_hdr ?pre_hdr msg)
+               msgnl_with !err_ft (make_body warn warn_hdr ?pre_hdr ?qf msg)) ()
+  | Error   -> msgnl_with !err_ft (make_body noq   err_hdr ?pre_hdr ?qf msg)
 
 (** Standard loggers *)
 
@@ -156,8 +164,8 @@ let gen_logger dbg warn ?pre_hdr level msg = let open Feedback in match level wi
 *)
 let std_logger_cleanup = ref (fun () -> ())
 
-let std_logger ?pre_hdr level msg =
-  gen_logger (fun x -> x) (fun x -> x) ?pre_hdr level msg;
+let std_logger ?qf ?pre_hdr level msg =
+  gen_logger (fun x -> x) (fun x -> x) ?qf ?pre_hdr level msg;
   !std_logger_cleanup ()
 
 (** Color logging. Moved from Ppstyle, it may need some more refactoring  *)
@@ -241,50 +249,58 @@ let make_style_stack () =
   | []      -> default_style  (* Anomalous case, but for robustness *)
   | st :: _ -> st
   in
-  let open_tag tag =
-    let (tpfx, ttag) = split_tag tag in
-    if tpfx = end_pfx then "" else
-      let style = get_style ttag in
-      (* Merge the current settings and the style being pushed.  This
-         allows restoring the previous settings correctly in a pop
-         when both set the same attribute.  Example: current settings
-         have red FG, the pushed style has green FG.  When popping the
-         style, we should set red FG, not default FG. *)
-    let style = Terminal.merge (peek ()) style in
-    let diff = Terminal.diff (peek ()) style in
-    style_stack := style :: !style_stack;
-    if tpfx = start_pfx then diff_tag_stack := ttag :: !diff_tag_stack;
-    Terminal.eval diff
+  let open_tag = function
+    | Format.String_tag tag ->
+      let (tpfx, ttag) = split_tag tag in
+      if tpfx = end_pfx then "" else
+        let style = get_style ttag in
+        (* Merge the current settings and the style being pushed.  This
+           allows restoring the previous settings correctly in a pop
+           when both set the same attribute.  Example: current settings
+           have red FG, the pushed style has green FG.  When popping the
+           style, we should set red FG, not default FG. *)
+        let style = Terminal.merge (peek ()) style in
+        let diff = Terminal.diff (peek ()) style in
+        style_stack := style :: !style_stack;
+        if tpfx = start_pfx then diff_tag_stack := ttag :: !diff_tag_stack;
+        Terminal.eval diff
+    | _ -> Terminal.eval default_style
   in
-  let close_tag tag =
-    let (tpfx, _) = split_tag tag in
+  let close_tag = function
+    | Format.String_tag tag ->
+      let (tpfx, _) = split_tag tag in
       if tpfx = start_pfx then "" else begin
-        if tpfx = end_pfx then diff_tag_stack := (try List.tl !diff_tag_stack with tl -> []);
+        if tpfx = end_pfx then diff_tag_stack := (match !diff_tag_stack with _ :: tl -> tl | [] -> []);
         match !style_stack with
         | []       -> (* Something went wrong, we fallback *)
-                      Terminal.eval default_style
+          Terminal.eval default_style
         | cur :: rem -> style_stack := rem;
-                      if cur = (peek ()) then "" else
-                        if rem = [] then Terminal.reset else
-                          Terminal.eval (Terminal.diff cur (peek ()))
+          if cur = (peek ()) then "" else
+          if rem = [] then Terminal.reset else
+            Terminal.eval (Terminal.diff cur (peek ()))
       end
+    | _ -> Terminal.eval default_style
   in
   let clear () = style_stack := [] in
   open_tag, close_tag, clear
 
 let make_printing_functions () =
-  let print_prefix ft tag =
-    let (tpfx, ttag) = split_tag tag in
-    if tpfx <> end_pfx then
-      let style = get_style ttag in
-      match style.Terminal.prefix with Some s -> Format.pp_print_as ft 0 s | None -> () in
-
-  let print_suffix ft tag =
-    let (tpfx, ttag) = split_tag tag in
-    if tpfx <> start_pfx then
-      let style = get_style ttag in
-      match style.Terminal.suffix with Some s -> Format.pp_print_as ft 0 s | None -> () in
-
+  let print_prefix ft = function
+    | Format.String_tag tag ->
+      let (tpfx, ttag) = split_tag tag in
+      if tpfx <> end_pfx then
+        let style = get_style ttag in
+        (match style.Terminal.prefix with Some s -> Format.pp_print_as ft 0 s | None -> ())
+    | _ -> ()
+  in
+  let print_suffix ft = function
+    | Format.String_tag tag ->
+      let (tpfx, ttag) = split_tag tag in
+      if tpfx <> start_pfx then
+        let style = get_style ttag in
+        (match style.Terminal.suffix with Some s -> Format.pp_print_as ft 0 s | None -> ())
+    | _ -> ()
+  in
   print_prefix, print_suffix
 
 let init_output_fns () =
@@ -311,10 +327,10 @@ let init_terminal_output ~color =
   let open_tag, close_tag, clear_tag = make_style_stack () in
   let print_prefix, print_suffix = make_printing_functions () in
   let tag_handler ft = {
-    Format.mark_open_tag   = open_tag;
-    Format.mark_close_tag  = close_tag;
-    Format.print_open_tag  = print_prefix ft;
-    Format.print_close_tag = print_suffix ft;
+    Format.mark_open_stag   = open_tag;
+    Format.mark_close_stag  = close_tag;
+    Format.print_open_stag  = print_prefix ft;
+    Format.print_close_stag = print_suffix ft;
   } in
   if color then
     (* Use 0-length markers *)
@@ -330,8 +346,8 @@ let init_terminal_output ~color =
       Format.pp_set_print_tags !std_ft true;
       Format.pp_set_print_tags !err_ft true
     end;
-  Format.pp_set_formatter_tag_functions !std_ft (tag_handler !std_ft) [@warning "-3"];
-  Format.pp_set_formatter_tag_functions !err_ft (tag_handler !err_ft) [@warning "-3"]
+  Format.pp_set_formatter_stag_functions !std_ft (tag_handler !std_ft);
+  Format.pp_set_formatter_stag_functions !err_ft (tag_handler !err_ft)
 
 (* Rules for emacs:
    - Debug/info: emacs_quote_info
@@ -365,16 +381,7 @@ let in_phase ~phase f x =
     Exninfo.iraise iexn
 
 let pr_loc loc =
-    let fname = loc.Loc.fname in
-    match fname with
-    | Loc.ToplevelInput ->
-      Loc.(str"Toplevel input, characters " ++ int loc.bp ++
-           str"-" ++ int loc.ep ++ str":")
-    | Loc.InFile { file } ->
-      Loc.(str"File " ++ str "\"" ++ str file ++ str "\"" ++
-           str", line " ++ int loc.line_nb ++ str", characters " ++
-           int (loc.bp-loc.bol_pos) ++ str"-" ++ int (loc.ep-loc.bol_pos) ++
-           str":")
+  Loc.pr loc ++ str ":"
 
 let pr_phase ?loc () =
   match !default_phase, loc with
@@ -401,8 +408,15 @@ let print_err_exn any =
   let msg = CErrors.iprint (e, info) ++ fnl () in
   std_logger ?pre_hdr Feedback.Error msg
 
-let with_output_to_file fname func input =
-  let channel = open_out (String.concat "." [fname; "out"]) in
+let with_output_to_file ~truncate fname func input =
+  let fname = String.concat "." [fname; "out"] in
+  let fullfname = System.get_output_path fname in
+  System.mkdir (Filename.dirname fullfname);
+  let channel =
+    let flags = [Open_wronly; Open_creat; Open_text] in
+    let flags = if truncate then Open_trunc :: flags else flags in
+    open_out_gen flags 0o666 fullfname
+  in
   let old_fmt = !std_ft, !err_ft, !deep_ft in
   let new_ft = Format.formatter_of_out_channel channel in
   set_gp new_ft (get_gp !std_ft);

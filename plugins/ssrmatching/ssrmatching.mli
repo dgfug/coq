@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -10,7 +10,6 @@
 
 (* (c) Copyright 2006-2015 Microsoft Corporation and Inria.                  *)
 
-open Goal
 open Environ
 open Evd
 open Constr
@@ -44,7 +43,11 @@ type ('ident, 'term) ssrpattern =
   | E_In_X_In_T of 'term * 'ident * 'term
   | E_As_X_In_T of 'term * 'ident * 'term
 
-type pattern = evar_map * (constr, constr) ssrpattern
+type pattern = {
+  pat_sigma : Evd.evar_map;
+  pat_pat : (EConstr.existential, EConstr.t) ssrpattern;
+}
+
 val pp_pattern : env -> pattern -> Pp.t
 
 (** The type of rewrite patterns, the patterns of the [rewrite] tactic.
@@ -56,8 +59,7 @@ val pr_rpattern : rpattern -> Pp.t
 (** Extracts the redex and applies to it the substitution part of the pattern.
   @raise Anomaly if called on [In_T] or [In_X_In_T] *)
 val redex_of_pattern :
-  ?resolve_typeclasses:bool -> env -> pattern ->
-     constr Evd.in_evar_universe_context
+  pattern -> (Evd.evar_map * EConstr.t) option
 
 (** [interp_rpattern ise gl rpat] "internalizes" and "interprets" [rpat]
     in the current [Ltac] interpretation signature [ise] and tactic input [gl]*)
@@ -80,7 +82,7 @@ type occ = (bool * int list) option
 
 (** [subst e p t i]. [i] is the number of binders
     traversed so far, [p] the term from the pattern, [t] the matched one *)
-type subst = env -> constr -> constr -> int -> constr
+type subst = Environ.env -> EConstr.t -> EConstr.t -> int -> EConstr.t
 
 (** [eval_pattern b env sigma t pat occ subst] maps [t] calling [subst] on every
     [occ] occurrence of [pat]. The [int] argument is the number of
@@ -92,9 +94,9 @@ type subst = env -> constr -> constr -> int -> constr
     [subst] *)
 val eval_pattern :
   ?raise_NoMatch:bool ->
-  env -> evar_map -> constr ->
+  env -> evar_map -> EConstr.t ->
   pattern option -> occ -> subst ->
-    constr
+    EConstr.t
 
 (** [fill_occ_pattern b env sigma t pat occ h] is a simplified version of
     [eval_pattern].
@@ -106,9 +108,15 @@ val eval_pattern :
     transformed as described above. *)
 val fill_occ_pattern :
   ?raise_NoMatch:bool ->
-  env -> evar_map -> constr ->
+  env -> evar_map -> EConstr.t ->
   pattern -> occ -> int ->
-    constr Evd.in_evar_universe_context * constr
+    EConstr.t Evd.in_ustate * EConstr.t
+
+(** Variant of the above function where we fix [h := 1] and return
+    [redex_of_pattern pat] if [pat] has no occurrence. *)
+val fill_rel_occ_pattern :
+  env -> evar_map -> EConstr.t -> pattern -> occ ->
+    evar_map * EConstr.t * EConstr.t
 
 (** *************************** Low level APIs ****************************** *)
 
@@ -118,8 +126,10 @@ val fill_occ_pattern :
 type ssrdir = L2R | R2L
 val pr_dir_side : ssrdir -> Pp.t
 
-(** a pattern for a term with wildcards *)
-type tpattern
+(** patterns for a term with wildcards *)
+type tpatterns
+
+val empty_tpatterns : Evd.evar_map -> tpatterns
 
 (** [mk_tpattern env sigma0 sigma_p ok p_origin dir t] compiles a term [t]
     living in [env] [sigma] (an extension of [sigma0]) intro a [tpattern].
@@ -128,12 +138,13 @@ type tpattern
   @return the compiled [tpattern] and its [evar_map]
   @raise UserEerror is the pattern is a wildcard *)
 val mk_tpattern :
-  ?p_origin:ssrdir * constr ->
-  env -> evar_map ->
-  evar_map * constr ->
-  (constr -> evar_map -> bool) ->
-  ssrdir -> constr ->
-    evar_map * tpattern
+  ?p_origin:ssrdir * EConstr.t ->
+  ?ok:(EConstr.t -> evar_map -> bool) ->
+  rigid:(Evar.t -> bool) ->
+  env ->
+  EConstr.t ->
+  ssrdir -> EConstr.t ->
+  tpatterns -> tpatterns
 
 (** [findP env t i k] is a stateful function that finds the next occurrence
     of a tpattern and calls the callback [k] to map the subterm matched.
@@ -146,14 +157,14 @@ val mk_tpattern :
   @raise UserEerror if the raise_NoMatch flag given to [mk_tpattern_matcher] is
     [false] and if the pattern did not match *)
 type find_P =
-  env -> constr -> int -> k:subst -> constr
+  Environ.env -> EConstr.t -> int -> k:subst -> EConstr.t
 
 (** [conclude ()] asserts that all mentioned occurrences have been visited.
   @return the instance of the pattern, the evarmap after the pattern
     instantiation, the proof term and the ssrdit stored in the tpattern
   @raise UserEerror if too many occurrences were specified *)
 type conclude =
-  unit -> constr * ssrdir * (evar_map * UState.t * constr)
+  unit -> EConstr.t * ssrdir * (bool * evar_map * UState.t * EConstr.t)
 
 (** [mk_tpattern_matcher b o sigma0 occ sigma_tplist] creates a pair
     a function [find_P] and [conclude] with the behaviour explained above.
@@ -164,9 +175,8 @@ type conclude =
 val mk_tpattern_matcher :
   ?all_instances:bool ->
   ?raise_NoMatch:bool ->
-  ?upats_origin:ssrdir * constr ->
-  evar_map -> occ -> evar_map * tpattern list ->
-    find_P * conclude
+  ?upats_origin:ssrdir * EConstr.t ->
+  evar_map -> occ -> tpatterns -> find_P * conclude
 
 (** Example of [mk_tpattern_matcher] to implement
     [rewrite \{occ\}\[in t\]rules].
@@ -176,7 +186,8 @@ val mk_tpattern_matcher :
     are replaced by a De Bruijn index. The [rw_progress] extra check
     selects only occurrences that are not rewritten to themselves (e.g.
     an occurrence "x + x" rewritten with the commutativity law of addition
-    is skipped) {[
+    is skipped)
+{[
   let find_R, conclude = match pat with
   | Some (_, In_T _) ->
       let aux (sigma, pats) (d, r, lhs, rhs) =
@@ -189,12 +200,12 @@ val mk_tpattern_matcher :
       fun cl -> let rdx, d, r = end_R () in (d,r),rdx
   | _ -> ... in
   let concl = eval_pattern env0 sigma0 concl0 pat occ find_R in
-  let (d, r), rdx = conclude concl in ]} *)
+  let (d, r), rdx = conclude concl in
+]} *)
 
-(* convenience shortcut: [pf_fill_occ_term gl occ (sigma,t)] returns
- * the conclusion of [gl] where [occ] occurrences of [t] have been replaced
+(* convenience shortcut: [fill_occ_term env concl sigma occ (sigma,t)] returns
+ * [concl] where [occ] occurrences of [t] have been replaced
  * by [Rel 1] and the instance of [t] *)
-val pf_fill_occ_term : goal sigma -> occ -> evar_map * EConstr.t -> EConstr.t * EConstr.t
 
 val fill_occ_term : Environ.env -> Evd.evar_map -> EConstr.t -> occ -> evar_map * EConstr.t -> EConstr.t * EConstr.t
 
@@ -208,7 +219,8 @@ val fill_occ_term : Environ.env -> Evd.evar_map -> EConstr.t -> occ -> evar_map 
 (** [do_once r f] calls [f] and updates the ref only once *)
 val do_once : 'a option ref -> (unit -> 'a) -> unit
 
-(** [assert_done r] return the content of r. @raise Anomaly is r is [None] *)
+(** [assert_done r] return the content of r.
+    @raise Anomaly is r is [None] *)
 val assert_done : 'a option ref -> 'a
 
 (** Very low level APIs.
@@ -217,19 +229,16 @@ val assert_done : 'a option ref -> 'a
     In case of failure they raise [NoMatch] *)
 
 val unify_HO : env -> evar_map -> EConstr.constr -> EConstr.constr -> evar_map
-val pf_unify_HO : goal sigma -> EConstr.constr -> EConstr.constr -> goal sigma
 
 (** Some more low level functions needed to implement the full SSR language
     on top of the former APIs *)
 val tag_of_cpattern : cpattern -> ssrtermkind
 val loc_of_cpattern : cpattern -> Loc.t option
-val id_of_pattern : pattern -> Names.Id.t option
+val id_of_pattern : evar_map -> pattern -> Names.Id.t option
 val is_wildcard : cpattern -> bool
 val cpattern_of_id : Names.Id.t -> cpattern
 val pr_constr_pat : env -> evar_map -> constr -> Pp.t
 val pr_econstr_pat : env -> evar_map -> econstr -> Pp.t
-val pf_merge_uc : UState.t -> goal Evd.sigma -> goal Evd.sigma
-val pf_unsafe_merge_uc : UState.t -> goal Evd.sigma -> goal Evd.sigma
 
 (* One can also "Set SsrMatchingDebug" from a .v *)
 val debug : bool -> unit
@@ -243,7 +252,7 @@ sig
   val wit_rpatternty : (rpattern, rpattern, rpattern) Genarg.genarg_type
   val glob_rpattern : Genintern.glob_sign -> rpattern -> rpattern
   val subst_rpattern : Mod_subst.substitution -> rpattern -> rpattern
-  val interp_rpattern : Geninterp.interp_sign -> Goal.goal Evd.sigma -> rpattern -> Evd.evar_map * rpattern
+  val interp_rpattern : Geninterp.interp_sign -> env -> evar_map -> rpattern -> rpattern
   val pr_rpattern : rpattern -> Pp.t
   val mk_rpattern : (cpattern, cpattern) ssrpattern -> rpattern
   val mk_lterm : Constrexpr.constr_expr -> Geninterp.interp_sign option -> cpattern
@@ -251,7 +260,7 @@ sig
 
   val glob_cpattern : Genintern.glob_sign -> cpattern -> cpattern
   val subst_ssrterm : Mod_subst.substitution -> cpattern -> cpattern
-  val interp_ssrterm : Geninterp.interp_sign -> Goal.goal Evd.sigma -> cpattern -> Evd.evar_map * cpattern
+  val interp_ssrterm : Geninterp.interp_sign -> env -> evar_map -> cpattern -> cpattern
   val pr_ssrterm : cpattern -> Pp.t
 end
 

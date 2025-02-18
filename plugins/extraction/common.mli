@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -54,6 +54,7 @@ val opened_libraries : unit -> ModPath.t list
 
 type kind = Term | Type | Cons | Mod
 
+val pp_global_with_key : kind -> KerName.t -> GlobRef.t -> string
 val pp_global : kind -> GlobRef.t -> string
 val pp_global_name : kind -> GlobRef.t -> string
 val pp_module : ModPath.t -> string
@@ -89,4 +90,4 @@ val get_native_string : ml_ast -> string
 val pp_native_string : ml_ast -> Pp.t
 
 (* Registered sig type *)
-val sig_type_ref : unit -> GlobRef.t
+val sig_type_name : string

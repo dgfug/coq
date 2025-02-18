@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -11,7 +11,6 @@
 (** Legacy proof engine. Do not use in newly written code. *)
 
 open Names
-open Constr
 open Evd
 
 (** [check] respectively means:\\
@@ -24,20 +23,14 @@ open Evd
   check that the name exist and that its type is convertible\\
 *)
 
-(** The primitive refiner. *)
-
-val refiner : check:bool -> constr -> unit Proofview.tactic
-
 (** {6 Refiner errors. } *)
 
 type refiner_error =
 
   (*i Errors raised by the refiner i*)
-  | BadType of constr * constr * EConstr.t
   | UnresolvedBindings of Name.t list
-  | CannotApply of constr * constr
-  | NonLinearProof of constr
-  | MetaInType of EConstr.constr
+  | CannotApply of EConstr.t * EConstr.t
+  | NonLinearProof of EConstr.t
 
   (*i Errors raised by the tactics i*)
   | IntroNeedsProduct
@@ -60,6 +53,9 @@ val pr_move_location :
 
 val convert_hyp : check:bool -> reorder:bool -> Environ.env -> evar_map ->
   EConstr.named_declaration -> Environ.named_context_val
+
+type cannot_move_hyp
+exception CannotMoveHyp of cannot_move_hyp
 
 val move_hyp_in_named_context : Environ.env -> Evd.evar_map -> Id.t -> Id.t move_location ->
   Environ.named_context_val -> Environ.named_context_val

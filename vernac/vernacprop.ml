@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -18,21 +18,18 @@ let has_query_control { CAst.v } =
 
 (* Navigation commands are allowed in a coqtop session but not in a .v file *)
 let is_navigation_vernac = function
-  | VernacResetInitial
-  | VernacResetName _
-  | VernacBack _ -> true
+  | VernacSynPure (VernacResetInitial | VernacResetName _ | VernacBack _) -> true
   | _ -> false
 
 (* NB: Reset is now allowed again as asked by A. Chlipala *)
 let is_reset = function
-  | VernacResetInitial
-  | VernacResetName _ -> true
+  | VernacSynPure (VernacResetInitial | VernacResetName _) -> true
   | _ -> false
 
 let is_debug = function
-  | VernacSetOption (_, ["Ltac";"Debug"], _) -> true
+  | VernacSynterp (VernacSetOption (_, ["Ltac";"Debug"], _)) -> true
   | _ -> false
 
 let is_undo = function
-  | VernacUndo _ | VernacUndoTo _ -> true
+  | VernacSynPure (VernacUndo _ | VernacUndoTo _) -> true
   | _ -> false

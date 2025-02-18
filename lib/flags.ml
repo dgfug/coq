@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -49,15 +49,16 @@ let load_vos_libraries = ref false
 let xml_debug = ref false
 
 let in_debugger = ref false
-let in_toplevel = ref false
+let in_ml_toplevel = ref false
 
 let raw_print = ref false
 
-let we_are_parsing = ref false
+let in_synterp_phase = ref false
 
 (* Translate *)
 let beautify = ref false
 let beautify_file = ref false
+let record_comments = ref false
 
 (* Silent / Verbose *)
 let quiet = ref false
@@ -78,13 +79,8 @@ let inline_level = ref default_inline_level
 let set_inline_level = (:=) inline_level
 let get_inline_level () = !inline_level
 
-let profile_ltac = ref false
-let profile_ltac_cutoff = ref 2.0
+(* Default output directory *)
 
-let native_compiler = ref None
-let get_native_compiler () = match !native_compiler with
-| None -> assert false
-| Some b -> b
-let set_native_compiler b =
-  let () = assert (!native_compiler == None) in
-  native_compiler := Some b
+let output_directory = ref None
+
+let test_mode = ref false

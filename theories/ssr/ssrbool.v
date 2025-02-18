@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,7 +12,6 @@
 
 (** #<style> .doc { font-family: monospace; white-space: pre; } </style># **)
 
-Require Bool.
 Require Import ssreflect ssrfun.
 
 (**
@@ -154,6 +153,8 @@ Require Import ssreflect ssrfun.
                #[#predC A#]# == complement of the collective predicate A.
           #[#preim f of A#]# == preimage under f of the collective predicate A.
    predU P Q, ..., preim f P == union, etc of applicative predicates.
+                 pred_oapp A == the predicate A lifted to the option type
+                             := #[#pred x | oapp (mem A) false x#]#.
                        pred0 == the empty predicate.
                        predT == the total (always true) predicate.
                                 if T : predArgType, then T coerces to predT.
@@ -298,9 +299,9 @@ Set Implicit Arguments.
 Unset Strict Implicit.
 Unset Printing Implicit Defensive.
 
-Notation reflect := Bool.reflect.
-Notation ReflectT := Bool.ReflectT.
-Notation ReflectF := Bool.ReflectF.
+Notation reflect := Datatypes.reflect.
+Notation ReflectT := Datatypes.ReflectT.
+Notation ReflectF := Datatypes.ReflectF.
 
 Reserved Notation "~~ b" (at level 35, right associativity).
 Reserved Notation "b ==> c" (at level 55, right associativity).
@@ -581,7 +582,7 @@ Proof. by case: b => // /(_ isT). Qed.
 
 (**
  Coercion of sum-style datatypes into bool, which makes it possible
- to use ssr's boolean if rather than Coq's "generic" if.             **)
+ to use ssr's boolean if rather than Rocq's "generic" if.             **)
 
 Coercion isSome T (u : option T) := if u is Some _ then true else false.
 
@@ -747,6 +748,12 @@ Variant alt_spec : bool -> Type :=
 Lemma altP : alt_spec b.
 Proof. by case def_b: b / Pb; constructor; rewrite ?def_b. Qed.
 
+Lemma eqbLR (b1 b2 : bool) : b1 = b2 -> b1 -> b2.
+Proof. by move->. Qed.
+
+Lemma eqbRL (b1 b2 : bool) : b1 = b2 -> b2 -> b1.
+Proof. by move->. Qed.
+
 End Reflect.
 
 Hint View for move/ elimTF|3 elimNTF|3 elimTFn|3 introT|2 introTn|2 introN|2.
@@ -822,6 +829,17 @@ Lemma classic_imply P Q : (P -> classically Q) -> classically (P -> Q).
 Proof.
 move=> iPQ []// notPQ; apply/notPQ=> /iPQ-cQ.
 by case: notF; apply: cQ => hQ; apply: notPQ.
+Qed.
+
+Lemma classic_sigW T (P : T -> Prop) :
+  classically (exists x, P x) <-> classically ({x | P x}).
+Proof. by split; apply: classic_bind => -[x Px]; apply/classicW; exists x. Qed.
+
+Lemma classic_ex T (P : T -> Prop) :
+  ~ (forall x, ~ P x) -> classically (exists x, P x).
+Proof.
+move=> NfNP; apply/classicP => exPF; apply: NfNP => x Px.
+by apply: exPF; exists x.
 Qed.
 
 (**
@@ -903,6 +921,7 @@ Proof. by case b1; constructor. Qed.
 Lemma boolP : alt_spec b1 b1 b1.
 Proof. exact: (altP idP). Qed.
 
+(* Left-to-right reflection of ~~b1 to (b1 = false), no-op otherwise. *)
 Lemma idPn : reflect (~~ b1) (~~ b1).
 Proof. by case b1; constructor. Qed.
 
@@ -912,6 +931,10 @@ Proof. by case b1; constructor; auto. Qed.
 Lemma negPn : reflect b1 (~~ ~~ b1).
 Proof. by case b1; constructor. Qed.
 
+(* Right-to-left reflection, no-op otherwise.
+   C.f., https://github.com/math-comp/math-comp/issues/284
+   To change `b1 = false` into `~~ b1`, use `apply/negbTE` or `apply/idPn` (goal)
+   or `move/negbT` or `move/idPn` (hypothesis). *)
 Lemma negPf : reflect (b1 = false) (~~ b1).
 Proof. by case b1; constructor. Qed.
 
@@ -977,6 +1000,32 @@ Arguments norP {b1 b2}.
 Arguments implyP {b1 b2}.
 Prenex Implicits idP idPn negP negPn negPf.
 Prenex Implicits andP and3P and4P and5P orP or3P or4P nandP norP implyP.
+
+Section ReflectCombinators.
+
+Variables (P Q : Prop) (p q : bool).
+
+Hypothesis rP : reflect P p.
+Hypothesis rQ : reflect Q q.
+
+Lemma negPP : reflect (~ P) (~~ p).
+Proof. by apply:(iffP negP); apply: contra_not => /rP. Qed.
+
+Lemma andPP : reflect (P /\ Q) (p && q).
+Proof. by apply: (iffP andP) => -[/rP ? /rQ ?]. Qed.
+
+Lemma orPP : reflect (P \/ Q) (p || q).
+Proof. by apply: (iffP orP) => -[/rP ?|/rQ ?]; tauto. Qed.
+
+Lemma implyPP : reflect (P -> Q) (p ==> q).
+Proof. by apply: (iffP implyP) => pq /rP /pq /rQ. Qed.
+
+End ReflectCombinators.
+Arguments negPP {P p}.
+Arguments andPP {P Q p q}.
+Arguments orPP {P Q p q}.
+Arguments implyPP {P Q p q}.
+Prenex Implicits negPP andPP orPP implyPP.
 
 (**  Shorter, more systematic names for the boolean connectives laws.        **)
 
@@ -1177,7 +1226,7 @@ Ltac bool_congr :=
  appearing in the premises or right-hand side of a generic lemma parameterized
  by ?P will be indistinguishable from @mem T pT A.
    Users should take care not to inadvertently "strip" (mem A) down to the
- coerced A, since this will expose the internal toP coercion: Coq could then
+ coerced A, since this will expose the internal toP coercion: Rocq could then
  display terms A x that cannot be typed as such. The topredE lemma can be used
  to restore the x \in A syntax in this case. While -topredE can conversely be
  used to change x \in P into P x for an applicative P, it is safer to use the
@@ -1268,20 +1317,21 @@ Definition predC {T} (p : pred T) := SimplPred (xpredC p).
 Definition predD {T} (p1 p2 : pred T) := SimplPred (xpredD p1 p2).
 Definition preim {aT rT} (f : aT -> rT) (d : pred rT) := SimplPred (xpreim f d).
 
-Notation "[ 'pred' : T | E ]" := (SimplPred (fun _ : T => E%B)) : fun_scope.
-Notation "[ 'pred' x | E ]" := (SimplPred (fun x => E%B)) : fun_scope.
-Notation "[ 'pred' x | E1 & E2 ]" := [pred x | E1 && E2 ] : fun_scope.
+Notation "[ 'pred' : T | E ]" := (SimplPred (fun _ : T => E%B)) :
+  function_scope.
+Notation "[ 'pred' x | E ]" := (SimplPred (fun x => E%B)) : function_scope.
+Notation "[ 'pred' x | E1 & E2 ]" := [pred x | E1 && E2 ] : function_scope.
 Notation "[ 'pred' x : T | E ]" :=
-  (SimplPred (fun x : T => E%B)) (only parsing) : fun_scope.
+  (SimplPred (fun x : T => E%B)) (only parsing) : function_scope.
 Notation "[ 'pred' x : T | E1 & E2 ]" :=
-  [pred x : T | E1 && E2 ] (only parsing) : fun_scope.
+  [pred x : T | E1 && E2 ] (only parsing) : function_scope.
 
 (** Coercions for simpl_pred.
    As simpl_pred T values are used both applicatively and collectively we
  need simpl_pred to coerce to both pred T _and_ {pred T}. However it is
  undesirable to have two distinct constants for what are essentially identical
  coercion functions, as this confuses the SSReflect keyed matching algorithm.
- While the Coq Coercion declarations appear to disallow such Coercion aliasing,
+ While the Rocq Coercion declarations appear to disallow such Coercion aliasing,
  it is possible to work around this limitation with a combination of modules
  and functors, which we do below.
    In addition we also give a predType instance for simpl_pred, which will
@@ -1346,9 +1396,9 @@ Definition relU {T} (r1 r2 : rel T) := SimplRel (xrelU r1 r2).
 Definition relpre {aT rT} (f : aT -> rT) (r : rel rT) := SimplRel (xrelpre f r).
 
 Notation "[ 'rel' x y | E ]" := (SimplRel (fun x y => E%B))
-  (only parsing) : fun_scope.
+  (only parsing) : function_scope.
 Notation "[ 'rel' x y : T | E ]" :=
-  (SimplRel (fun x y : T => E%B)) (only parsing) : fun_scope.
+  (SimplRel (fun x y : T => E%B)) (only parsing) : function_scope.
 
 Lemma subrelUl T (r1 r2 : rel T) : subrel r1 (relU r1 r2).
 Proof. by move=> x y r1xy; apply/orP; left. Qed.
@@ -1382,8 +1432,7 @@ Definition eq_mem {T} mp1 mp2 := forall x : T, in_mem x mp1 = in_mem x mp2.
 Definition sub_mem {T} mp1 mp2 := forall x : T, in_mem x mp1 -> in_mem x mp2.
 
 Arguments in_mem {T} x mp : simpl never.
-Typeclasses Opaque eq_mem.
-Typeclasses Opaque sub_mem.
+Global Typeclasses Opaque eq_mem sub_mem.
 
 (** The [simpl_of_mem; pred_of_simpl] path provides a new mem_pred >-> pred
   coercion, but does _not_ override the pred_of_mem : mem_pred >-> pred_sort
@@ -1410,25 +1459,29 @@ Notation "x \notin A" := (~~ (x \in A)) : bool_scope.
 Notation "A =i B" := (eq_mem (mem A) (mem B)) : type_scope.
 Notation "{ 'subset' A <= B }" := (sub_mem (mem A) (mem B)) : type_scope.
 
-Notation "[ 'mem' A ]" :=
-  (pred_of_simpl (simpl_of_mem (mem A))) (only parsing) : fun_scope.
+Notation "[ 'in' A ]" := (in_mem^~ (mem A))
+  (at level 0, format "[ 'in'  A ]") : function_scope.
 
-Notation "[ 'predI' A & B ]" := (predI [mem A] [mem B]) : fun_scope.
-Notation "[ 'predU' A & B ]" := (predU [mem A] [mem B]) : fun_scope.
-Notation "[ 'predD' A & B ]" := (predD [mem A] [mem B]) : fun_scope.
-Notation "[ 'predC' A ]" := (predC [mem A]) : fun_scope.
-Notation "[ 'preim' f 'of' A ]" := (preim f [mem A]) : fun_scope.
-Notation "[ 'pred' x 'in' A ]" := [pred x | x \in A] : fun_scope.
-Notation "[ 'pred' x 'in' A | E ]" := [pred x | x \in A & E] : fun_scope.
+Notation "[ 'mem' A ]" :=
+  (pred_of_simpl (simpl_of_mem (mem A))) (only parsing) : function_scope.
+
+Notation "[ 'predI' A & B ]" := (predI [in A] [in B]) : function_scope.
+Notation "[ 'predU' A & B ]" := (predU [in A] [in B]) : function_scope.
+Notation "[ 'predD' A & B ]" := (predD [in A] [in B]) : function_scope.
+Notation "[ 'predC' A ]" := (predC [in A]) : function_scope.
+Notation "[ 'preim' f 'of' A ]" := (preim f [in A]) : function_scope.
+
+Notation "[ 'pred' x 'in' A ]" := [pred x | x \in A] : function_scope.
+Notation "[ 'pred' x 'in' A | E ]" := [pred x | x \in A & E] : function_scope.
 Notation "[ 'pred' x 'in' A | E1 & E2 ]" :=
-  [pred x | x \in A & E1 && E2 ] : fun_scope.
+  [pred x | x \in A & E1 && E2 ] : function_scope.
 
 Notation "[ 'rel' x y 'in' A & B | E ]" :=
-  [rel x y | (x \in A) && (y \in B) && E] : fun_scope.
+  [rel x y | (x \in A) && (y \in B) && E] : function_scope.
 Notation "[ 'rel' x y 'in' A & B ]" :=
-  [rel x y | (x \in A) && (y \in B)] : fun_scope.
-Notation "[ 'rel' x y 'in' A | E ]" := [rel x y in A & A | E] : fun_scope.
-Notation "[ 'rel' x y 'in' A ]" := [rel x y in A & A] : fun_scope.
+  [rel x y | (x \in A) && (y \in B)] : function_scope.
+Notation "[ 'rel' x y 'in' A | E ]" := [rel x y in A & A | E] : function_scope.
+Notation "[ 'rel' x y 'in' A ]" := [rel x y in A & A] : function_scope.
 
 (** Aliases of pred T that let us tag instances of simpl_pred as applicative
   or collective, via bespoke coercions. This tagging will give control over
@@ -1601,8 +1654,7 @@ Notation "[ 'qualify' 'an' x : T | P ]" :=
 Section KeyPred.
 
 Variable T : Type.
-#[universes(template)]
-Variant pred_key (p : {pred T}) := DefaultPredKey.
+Variant pred_key (p : {pred T}) : Prop := DefaultPredKey.
 
 Variable p : {pred T}.
 Structure keyed_pred (k : pred_key p) :=
@@ -1685,6 +1737,13 @@ Lemma all_sig_cond I T (C : pred I) P :
     T -> (forall x, C x -> {y : T | P x y}) ->
   {f : I -> T | forall x, C x -> P x (f x)}.
 Proof. by move=> y0; apply: all_sig_cond_dep. Qed.
+
+Lemma all_sig2_cond {I T} (C : pred I) P Q :
+  T -> (forall x, C x -> {y : T | P x y & Q x y}) ->
+  {f : I -> T | forall x, C x -> P x (f x) & forall x, C x -> Q x (f x)}.
+Proof.
+by move=> /all_sig_cond/[apply]-[f Pf]; exists f => i Di; have [] := Pf i Di.
+Qed.
 
 Section RelationProperties.
 
@@ -1829,7 +1888,7 @@ Notation "{ 'on' cd , 'bijective' f }" :=
 (**
  Weakening and monotonicity lemmas for localized predicates.
  Note that using these lemmas in backward reasoning will force expansion of
- the predicate definition, as Coq needs to expose the quantifier to apply
+ the predicate definition, as Rocq needs to expose the quantifier to apply
  these lemmas. We define a few specialized variants to avoid this for some
  of the ssrfun predicates.                                                   **)
 
@@ -2037,6 +2096,50 @@ Arguments in_on1S  {T1 T2} D2 {f Q1}.
 Arguments in_on1lS {T1 T2 T3} D2 {f h Q1l}.
 Arguments in_on2S  {T1 T2} D2 {f Q2}.
 
+Lemma can_in_pcan [rT aT : Type] (A : {pred aT}) [f : aT -> rT] [g : rT -> aT] :
+  {in A, cancel f g} -> {in A, pcancel f (fun y : rT => Some (g y))}.
+Proof. by move=> fK x Ax; rewrite fK. Qed.
+
+Lemma pcan_in_inj [rT aT : Type] [A : {pred aT}]
+  [f : aT -> rT] [g : rT -> option aT] :
+  {in A, pcancel f g} -> {in A &, injective f}.
+Proof. by move=> fK x y Ax Ay /(congr1 g); rewrite !fK// => -[]. Qed.
+
+Lemma in_inj_comp A B C (f : B -> A) (h : C -> B) (P : pred B) (Q : pred C) :
+  {in P &, injective f} -> {in Q &, injective h} -> {homo h : x / Q x >-> P x} ->
+  {in Q &, injective (f \o h)}.
+Proof.
+by move=> Pf Qh QP x y xQ yQ xy; apply Qh => //; apply Pf => //; apply QP.
+Qed.
+
+Lemma can_in_comp [A B C : Type] (D : {pred B}) (D' : {pred C})
+  [f : B -> A] [h : C -> B] [f' : A -> B] [h' : B -> C] :
+  {homo h : x / x \in D' >-> x \in D} ->
+  {in D, cancel f f'} -> {in D', cancel h h'} ->
+  {in D', cancel (f \o h) (h' \o f')}.
+Proof. by move=> hD fK hK c cD /=; rewrite fK ?hK ?hD. Qed.
+
+Lemma pcan_in_comp [A B C : Type] (D : {pred B}) (D' : {pred C})
+  [f : B -> A] [h : C -> B] [f' : A -> option B] [h' : B -> option C] :
+  {homo h : x / x \in D' >-> x \in D} ->
+  {in D, pcancel f f'} -> {in D', pcancel h h'} ->
+  {in D', pcancel (f \o h) (obind h' \o f')}.
+Proof. by move=> hD fK hK c cD /=; rewrite fK/= ?hK ?hD. Qed.
+
+Definition pred_oapp T (D : {pred T}) : pred (option T) :=
+  [pred x | oapp (mem D) false x].
+
+Lemma ocan_in_comp [A B C : Type] (D : {pred B}) (D' : {pred C})
+    [f : B -> option A] [h : C -> option B] [f' : A -> B] [h' : B -> C] :
+  {homo h : x / x \in D' >-> x \in pred_oapp D} ->
+  {in D, ocancel f f'} -> {in D', ocancel h h'} ->
+  {in D', ocancel (obind f \o h) (h' \o f')}.
+Proof.
+move=> hD fK hK c cD /=; rewrite -[RHS]hK/=; case hcE : (h c) => [b|]//=.
+have bD : b \in D by have := hD _ cD; rewrite hcE inE.
+by rewrite -[b in RHS]fK; case: (f b) => //=; have /hK := cD; rewrite hcE.
+Qed.
+
 Section in_sig.
 
 Variables T1 T2 T3 : Type.
@@ -2137,15 +2240,17 @@ Variables (aT rT : predArgType) (f : aT -> rT) (g : rT -> aT).
 Variables (aD : {pred aT}) (rD : {pred rT}).
 Variable (aP : pred aT) (rP : pred rT) (aR : rel aT) (rR : rel rT).
 
+Lemma mono1W_in :
+    {in aD, {mono f : x / aP x >-> rP x}} ->
+  {in aD, {homo f : x / aP x >-> rP x}}.
+Proof. by move=> hf x hx ax; rewrite hf. Qed.
+#[deprecated(since="Coq 8.16", note="Use mono1W_in instead.")]
+Notation mono2W_in := mono1W_in.
+
 Lemma monoW_in :
     {in aD &, {mono f : x y / aR x y >-> rR x y}} ->
   {in aD &, {homo f : x y / aR x y >-> rR x y}}.
 Proof. by move=> hf x y hx hy axy; rewrite hf. Qed.
-
-Lemma mono2W_in :
-    {in aD, {mono f : x / aP x >-> rP x}} ->
-  {in aD, {homo f : x / aP x >-> rP x}}.
-Proof. by move=> hf x hx ax; rewrite hf. Qed.
 
 Hypothesis fgK : {in rD, {on aD, cancel g & f}}.
 Hypothesis mem_g : {homo g : x / x \in rD >-> x \in aD}.

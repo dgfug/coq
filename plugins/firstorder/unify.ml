@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -15,7 +15,7 @@ open Vars
 open Termops
 open Reductionops
 
-exception UFAIL of constr*constr
+exception UFAIL
 
 (*
    RIGID-only Martelli-Montanari style unification for CLOSED terms
@@ -57,25 +57,25 @@ let unif env evd t1 t2=
               let t=subst_meta !sigma nt2 in
                 if Int.Set.is_empty (free_rels evd t) &&
                   not (occur_metavariable evd i t) then
-                    bind i t else raise (UFAIL(nt1,nt2))
+                    bind i t else raise UFAIL
           | _,Meta i ->
               let t=subst_meta !sigma nt1 in
                 if Int.Set.is_empty (free_rels evd t) &&
                   not (occur_metavariable evd i t) then
-                    bind i t else raise (UFAIL(nt1,nt2))
+                    bind i t else raise UFAIL
           | Cast(_,_,_),_->Queue.add (strip_outer_cast evd nt1,nt2) bige
           | _,Cast(_,_,_)->Queue.add (nt1,strip_outer_cast evd nt2) bige
           | (Prod(_,a,b),Prod(_,c,d))|(Lambda(_,a,b),Lambda(_,c,d))->
               Queue.add (a,c) bige;Queue.add (pop b,pop d) bige
           | Case (cia,ua,pmsa,pa,iva,ca,va),Case (cib,ub,pmsb,pb,ivb,cb,vb)->
             let env = Global.env () in
-            let (cia,pa,iva,ca,va) = EConstr.expand_case env evd (cia,ua,pmsa,pa,iva,ca,va) in
-            let (cib,pb,iva,cb,vb) = EConstr.expand_case env evd (cib,ub,pmsb,pb,ivb,cb,vb) in
+            let (cia,(pa,_),iva,ca,va) = EConstr.expand_case env evd (cia,ua,pmsa,pa,iva,ca,va) in
+            let (cib,(pb,_),iva,cb,vb) = EConstr.expand_case env evd (cib,ub,pmsb,pb,ivb,cb,vb) in
               Queue.add (pa,pb) bige;
               Queue.add (ca,cb) bige;
               let l=Array.length va in
                 if not (Int.equal l (Array.length vb)) then
-                  raise (UFAIL (nt1,nt2))
+                  raise UFAIL
                 else
                   for i=0 to l-1 do
                     Queue.add (va.(i),vb.(i)) bige
@@ -84,12 +84,12 @@ let unif env evd t1 t2=
               Queue.add (ha,hb) bige;
               let l=Array.length va in
                 if not (Int.equal l (Array.length vb)) then
-                  raise (UFAIL (nt1,nt2))
+                  raise UFAIL
                 else
                   for i=0 to l-1 do
                     Queue.add (va.(i),vb.(i)) bige
                   done
-          | _->if not (eq_constr_nounivs evd nt1 nt2) then raise (UFAIL (nt1,nt2))
+          | _->if not (eq_constr_nounivs evd nt1 nt2) then raise UFAIL
     done;
       assert false
         (* this place is unreachable but needed for the sake of typing *)
@@ -104,6 +104,21 @@ let value evd i t=
       let vr=EConstr.fold evd f (-1) term in
         if vr<0 then -1 else vr+1 in
     vaux t
+
+module Item =
+struct
+
+type t = int * constr
+
+let repr i = i
+
+let compare (i1, c1) (i2, c2) =
+  let c = Int.compare i1 i2 in
+  if c = 0 then Constr.compare (EConstr.Unsafe.to_constr c1) (EConstr.Unsafe.to_constr c2) else c
+
+let is_ground (m, _) = Int.equal m 0
+
+end
 
 type instance=
     Real of (int*constr)*int
@@ -126,13 +141,14 @@ let mk_rel_inst evd t=
   in
   let nt=renum_rec 0 t in (!new_rel - 1,nt)
 
-let unif_atoms env evd i dom t1 t2=
+let unif_atoms state env evd i dom t1 t2 =
   try
-    let t=Int.List.assoc i (unif env evd t1 t2) in
+    let t1 = Formula.repr_atom state t1 in
+    let t=Int.List.assoc i (unif env evd t1 (Formula.repr_atom state t2)) in
       if isMeta evd t then Some (Phantom dom)
       else Some (Real(mk_rel_inst evd t,value evd i t1))
   with
-      UFAIL(_,_) ->None
+    | UFAIL -> None
     | Not_found ->Some (Phantom dom)
 
 let renum_metas_from k n t= (* requires n = max (free_rels t) *)
@@ -140,10 +156,11 @@ let renum_metas_from k n t= (* requires n = max (free_rels t) *)
     substl l t
 
 let more_general env evd (m1,t1) (m2,t2)=
+  m1 > m2 &&
   let mt1=renum_metas_from 0 m1 t1
   and mt2=renum_metas_from m1 m2 t2 in
     try
       let sigma=unif env evd mt1 mt2 in
       let p (n,t)= n<m1 || isMeta evd t in
         List.for_all p sigma
-    with UFAIL(_,_)->false
+    with UFAIL -> false

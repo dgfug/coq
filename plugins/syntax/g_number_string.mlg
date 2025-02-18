@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,28 +8,20 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
-DECLARE PLUGIN "number_string_notation_plugin"
+DECLARE PLUGIN "rocq-runtime.plugins.number_string_notation"
 
 {
 
 open Notation
-open Number
-open String_notation
+open Number_string
 open Pp
 open Stdarg
-open Pcoq.Prim
+open Procq.Prim
 
 let pr_number_after = function
   | Nop -> mt ()
   | Warning n -> str "warning after " ++ NumTok.UnsignedNat.print n
   | Abstract n -> str "abstract after " ++ NumTok.UnsignedNat.print n
-
-let pr_deprecated_number_modifier m = str "(" ++ pr_number_after m ++ str ")"
-
-let warn_deprecated_numeral_notation =
-  CWarnings.create ~name:"numeral-notation" ~category:"deprecated"
-    (fun () ->
-      strbrk "Numeral Notation is deprecated, please use Number Notation instead.")
 
 let pr_number_string_mapping (b, n, n') =
   if b then
@@ -54,13 +46,6 @@ let pr_string_option l =
   str "(" ++ pr_number_string_via l ++ str ")"
 
 }
-
-VERNAC ARGUMENT EXTEND deprecated_number_modifier
-  PRINTED BY { pr_deprecated_number_modifier }
-| [ ] -> { Nop }
-| [ "(" "warning" "after" bignat(waft) ")" ] -> { Warning (NumTok.UnsignedNat.of_string waft) }
-| [ "(" "abstract" "after" bignat(n) ")" ] -> { Abstract (NumTok.UnsignedNat.of_string n) }
-END
 
 VERNAC ARGUMENT EXTEND number_string_mapping
   PRINTED BY { pr_number_string_mapping }
@@ -95,11 +80,6 @@ VERNAC COMMAND EXTEND NumberNotation CLASSIFIED AS SIDEFF
       preident(sc) ] ->
 
     { vernac_number_notation (Locality.make_module_locality locality) ty f g (Option.default [] nl) sc }
-  | #[ locality = Attributes.locality; ] [ "Numeral" "Notation" reference(ty) reference(f) reference(g) ":"
-      preident(sc) deprecated_number_modifier(o) ] ->
-
-    { warn_deprecated_numeral_notation ();
-      vernac_number_notation (Locality.make_module_locality locality) ty f g [After o] sc }
 END
 
 VERNAC COMMAND EXTEND StringNotation CLASSIFIED AS SIDEFF

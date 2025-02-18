@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -15,15 +15,6 @@ open Names
 open Vars
 open Constr
 open Context
-
-(* Deprecated *)
-type sorts_family = Sorts.family = InSProp | InProp | InSet | InType
-[@@ocaml.deprecated "Alias for Sorts.family"]
-
-type sorts = Sorts.t = private
-  | SProp | Prop | Set
-  | Type of Univ.Universe.t  (** Type *)
-[@@ocaml.deprecated "Alias for Sorts.t"]
 
 (****************************************************************************)
 (*              Functions for dealing with constr terms                     *)
@@ -123,7 +114,7 @@ let rec to_lambda n prod =
     match kind prod with
       | Prod (na,ty,bd) -> mkLambda (na,ty,to_lambda (n-1) bd)
       | Cast (c,_,_) -> to_lambda n c
-      | _   -> user_err ~hdr:"to_lambda" (mt ())
+      | _   -> anomaly Pp.(str "Not enough lambda's.")
 
 let rec to_prod n lam =
   if Int.equal n 0 then
@@ -132,9 +123,10 @@ let rec to_prod n lam =
     match kind lam with
       | Lambda (na,ty,bd) -> mkProd (na,ty,to_prod (n-1) bd)
       | Cast (c,_,_) -> to_prod n c
-      | _   -> user_err ~hdr:"to_prod" (mt ())
+      | _   -> anomaly Pp.(str "Not enough prod's.")
 
 let it_mkProd_or_LetIn   = List.fold_left (fun c d -> mkProd_or_LetIn d c)
+let it_mkProd_wo_LetIn   = List.fold_left (fun c d -> mkProd_wo_LetIn d c)
 let it_mkLambda_or_LetIn = List.fold_left (fun c d -> mkLambda_or_LetIn d c)
 
 (* Application with expected on-the-fly reduction *)
@@ -149,7 +141,7 @@ let lambda_applist c l =
 
 let lambda_appvect c v = lambda_applist c (Array.to_list v)
 
-let lambda_applist_assum n c l =
+let lambda_applist_decls n c l =
   let rec app n subst t l =
     if Int.equal n 0 then
       if l == [] then substl subst t
@@ -161,7 +153,7 @@ let lambda_applist_assum n c l =
     | _ -> anomaly (Pp.str "Not enough lambda/let's.") in
   app n [] c l
 
-let lambda_appvect_assum n c v = lambda_applist_assum n c (Array.to_list v)
+let lambda_appvect_decls n c v = lambda_applist_decls n c (Array.to_list v)
 
 (* prod_applist T [ a1 ; ... ; an ] -> (T a1 ... an) *)
 let prod_applist c l =
@@ -175,7 +167,7 @@ let prod_applist c l =
 (* prod_appvect T [| a1 ; ... ; an |] -> (T a1 ... an) *)
 let prod_appvect c v = prod_applist c (Array.to_list v)
 
-let prod_applist_assum n c l =
+let prod_applist_decls n c l =
   let rec app n subst t l =
     if Int.equal n 0 then
       if l == [] then substl subst t
@@ -187,7 +179,7 @@ let prod_applist_assum n c l =
     | _ -> anomaly (Pp.str "Not enough prod/let's.") in
   app n [] c l
 
-let prod_appvect_assum n c v = prod_applist_assum n c (Array.to_list v)
+let prod_appvect_decls n c v = prod_applist_decls n c (Array.to_list v)
 
 (*********************************)
 (* Other term destructors        *)
@@ -198,69 +190,69 @@ let prod_appvect_assum n c v = prod_applist_assum n c (Array.to_list v)
 let decompose_prod =
   let rec prodec_rec l c = match kind c with
     | Prod (x,t,c) -> prodec_rec ((x,t)::l) c
-    | Cast (c,_,_)   -> prodec_rec l c
-    | _              -> l,c
+    | Cast (c,_,_) -> prodec_rec l c
+    | _            -> l,c
   in
   prodec_rec []
 
 (* Transforms a lambda term [x1:T1]..[xn:Tn]T into the pair
    ([(xn,Tn);...;(x1,T1)],T), where T is not a lambda *)
-let decompose_lam =
+let decompose_lambda =
   let rec lamdec_rec l c = match kind c with
     | Lambda (x,t,c) -> lamdec_rec ((x,t)::l) c
-    | Cast (c,_,_)     -> lamdec_rec l c
-    | _                -> l,c
+    | Cast (c,_,_)   -> lamdec_rec l c
+    | _              -> l,c
   in
   lamdec_rec []
 
 (* Given a positive integer n, transforms a product term (x1:T1)..(xn:Tn)T
    into the pair ([(xn,Tn);...;(x1,T1)],T) *)
 let decompose_prod_n n =
-  if n < 0 then user_err (str "decompose_prod_n: integer parameter must be positive");
+  if n < 0 then anomaly (str "decompose_prod_n: integer parameter must be positive.");
   let rec prodec_rec l n c =
     if Int.equal n 0 then l,c
     else match kind c with
       | Prod (x,t,c) -> prodec_rec ((x,t)::l) (n-1) c
-      | Cast (c,_,_)   -> prodec_rec l n c
-      | _ -> user_err (str "decompose_prod_n: not enough products")
+      | Cast (c,_,_) -> prodec_rec l n c
+      | _ -> anomaly (str "decompose_prod_n: not enough products.")
   in
   prodec_rec [] n
 
 (* Given a positive integer n, transforms a lambda term [x1:T1]..[xn:Tn]T
    into the pair ([(xn,Tn);...;(x1,T1)],T) *)
-let decompose_lam_n n =
-  if n < 0 then user_err (str "decompose_lam_n: integer parameter must be positive");
+let decompose_lambda_n n =
+  if n < 0 then anomaly (str "decompose_lambda_n: integer parameter must be positive.");
   let rec lamdec_rec l n c =
     if Int.equal n 0 then l,c
     else match kind c with
       | Lambda (x,t,c) -> lamdec_rec ((x,t)::l) (n-1) c
-      | Cast (c,_,_)     -> lamdec_rec l n c
-      | _ -> user_err (str "decompose_lam_n: not enough abstractions")
+      | Cast (c,_,_)   -> lamdec_rec l n c
+      | _ -> anomaly (str "decompose_lambda_n: not enough abstractions.")
   in
   lamdec_rec [] n
 
 (* Transforms a product term (x1:T1)..(xn:Tn)T into the pair
    ([(xn,Tn);...;(x1,T1)],T), where T is not a product *)
-let decompose_prod_assum =
+let decompose_prod_decls =
   let open Context.Rel.Declaration in
   let rec prodec_rec l c =
     match kind c with
     | Prod (x,t,c)    -> prodec_rec (Context.Rel.add (LocalAssum (x,t)) l) c
     | LetIn (x,b,t,c) -> prodec_rec (Context.Rel.add (LocalDef (x,b,t)) l) c
-    | Cast (c,_,_)      -> prodec_rec l c
+    | Cast (c,_,_)    -> prodec_rec l c
     | _               -> l,c
   in
   prodec_rec Context.Rel.empty
 
 (* Transforms a lambda term [x1:T1]..[xn:Tn]T into the pair
    ([(xn,Tn);...;(x1,T1)],T), where T is not a lambda *)
-let decompose_lam_assum =
+let decompose_lambda_decls =
   let rec lamdec_rec l c =
     let open Context.Rel.Declaration in
     match kind c with
     | Lambda (x,t,c)  -> lamdec_rec (Context.Rel.add (LocalAssum (x,t)) l) c
     | LetIn (x,b,t,c) -> lamdec_rec (Context.Rel.add (LocalDef (x,b,t)) l) c
-    | Cast (c,_,_)      -> lamdec_rec l c
+    | Cast (c,_,_)    -> lamdec_rec l c
     | _               -> l,c
   in
   lamdec_rec Context.Rel.empty
@@ -269,9 +261,9 @@ let decompose_lam_assum =
    of the form [forall (x1:T1)..(xi:=ci:Ti)..(xn:Tn), T] into the pair
    of the quantifying context [(xn,None,Tn);..;(xi,Some
    ci,Ti);..;(x1,None,T1)] and of the inner type [T]) *)
-let decompose_prod_n_assum n =
+let decompose_prod_n_decls n =
   if n < 0 then
-    user_err (str "decompose_prod_n_assum: integer parameter must be positive");
+    anomaly (str "decompose_prod_n_decls: integer parameter must be positive.");
   let rec prodec_rec l n c =
     if Int.equal n 0 then l,c
     else
@@ -279,20 +271,31 @@ let decompose_prod_n_assum n =
       match kind c with
       | Prod (x,t,c)    -> prodec_rec (Context.Rel.add (LocalAssum (x,t)) l) (n-1) c
       | LetIn (x,b,t,c) -> prodec_rec (Context.Rel.add (LocalDef (x,b,t)) l) (n-1) c
-      | Cast (c,_,_)      -> prodec_rec l n c
-      | _ -> user_err (str  "decompose_prod_n_assum: not enough assumptions")
+      | Cast (c,_,_)    -> prodec_rec l n c
+      | _ -> anomaly (str  "decompose_prod_n_decls: not enough declarations.")
   in
   prodec_rec Context.Rel.empty n
 
-(* Given a positive integer n, decompose a lambda or let-in term [fun
-   (x1:T1)..(xi:=ci:Ti)..(xn:Tn) => T] into the pair of the abstracted
-   context [(xn,None,Tn);...;(xi,Some ci,Ti);...;(x1,None,T1)] and of
-   the inner body [T].
-   Lets in between are not expanded but turn into local definitions,
-   but n is the actual number of destructurated lambdas. *)
-let decompose_lam_n_assum n =
+let decompose_lambda_prod_n_decls n =
   if n < 0 then
-    user_err (str  "decompose_lam_n_assum: integer parameter must be positive");
+    anomaly (str "decompose_lambda_prod_n_decls: integer parameter must be positive.");
+  let rec lamprodec_rec l n c t =
+    if Int.equal n 0 then (l, c, t)
+    else
+      let open Context.Rel.Declaration in
+      match kind c, kind t with
+      | Lambda (na, u, c), Prod (_, _, t) -> lamprodec_rec (LocalAssum (na, u) :: l) (n-1) c t
+      | LetIn (na, b, u, c), LetIn (_, _, _, t) -> lamprodec_rec (LocalDef (na, b, u) :: l) (n-1) c t
+      | _ -> anomaly (str "decompose_lambda_prod_n_decls: not same form.")
+  in
+  lamprodec_rec Context.Rel.empty n
+
+(** Given a positive integer n, decompose a lambda term [fun
+   (x1:T1)..(xn:Tn) => T] (possibly with let-ins before xn) into the pair of the
+   abstracted context [(xn,None,Tn);...;(x1,None,T1)] and of the inner body [T]. *)
+let decompose_lambda_n_assum n =
+  if n < 0 then
+    anomaly (str "decompose_lambda_n_assum: integer parameter must be positive.");
   let rec lamdec_rec l n c =
     if Int.equal n 0 then l,c
     else
@@ -300,15 +303,20 @@ let decompose_lam_n_assum n =
       match kind c with
       | Lambda (x,t,c)  -> lamdec_rec (Context.Rel.add (LocalAssum (x,t)) l) (n-1) c
       | LetIn (x,b,t,c) -> lamdec_rec (Context.Rel.add (LocalDef (x,b,t)) l) n c
-      | Cast (c,_,_)      -> lamdec_rec l n c
-      | _c -> user_err (str "decompose_lam_n_assum: not enough abstractions")
+      | Cast (c,_,_)    -> lamdec_rec l n c
+      | _c -> anomaly (str "decompose_lambda_n_assum: not enough abstractions.")
   in
   lamdec_rec Context.Rel.empty n
 
-(* Same, counting let-in *)
-let decompose_lam_n_decls n =
+(* Given a positive integer n, decompose a lambda or let-in term [fun
+   (x1:T1)..(xi:=ci:Ti)..(xn:Tn) => T] into the pair of the abstracted
+   context [(xn,None,Tn);...;(xi,Some ci,Ti);...;(x1,None,T1)] and of
+   the inner body [T].
+   Lets in between are not expanded but turn into local definitions,
+   and n is the number of lambdas and lets to decompose. *)
+let decompose_lambda_n_decls n =
   if n < 0 then
-    user_err (str "decompose_lam_n_decls: integer parameter must be positive");
+    anomaly (str "decompose_lambda_n_decls: integer parameter must be positive.");
   let rec lamdec_rec l n c =
     if Int.equal n 0 then l,c
     else
@@ -316,21 +324,21 @@ let decompose_lam_n_decls n =
       match kind c with
       | Lambda (x,t,c)  -> lamdec_rec (Context.Rel.add (LocalAssum (x,t)) l) (n-1) c
       | LetIn (x,b,t,c) -> lamdec_rec (Context.Rel.add (LocalDef (x,b,t)) l) (n-1) c
-      | Cast (c,_,_)      -> lamdec_rec l n c
-      | _ -> user_err (str "decompose_lam_n_decls: not enough abstractions")
+      | Cast (c,_,_)    -> lamdec_rec l n c
+      | _ -> anomaly (str "decompose_lambda_n_decls: not enough declarations.")
   in
   lamdec_rec Context.Rel.empty n
 
-let prod_assum t = fst (decompose_prod_assum t)
-let prod_n_assum n t = fst (decompose_prod_n_assum n t)
-let strip_prod_assum t = snd (decompose_prod_assum t)
+let prod_decls t = fst (decompose_prod_decls t)
+let prod_n_decls n t = fst (decompose_prod_n_decls n t)
+let strip_prod_decls t = snd (decompose_prod_decls t)
 let strip_prod t = snd (decompose_prod t)
 let strip_prod_n n t = snd (decompose_prod_n n t)
-let lam_assum t = fst (decompose_lam_assum t)
-let lam_n_assum n t = fst (decompose_lam_n_assum n t)
-let strip_lam_assum t = snd (decompose_lam_assum t)
-let strip_lam t = snd (decompose_lam t)
-let strip_lam_n n t = snd (decompose_lam_n n t)
+let lambda_decls t = fst (decompose_lambda_decls t)
+let lam_n_assum n t = fst (decompose_lambda_n_assum n t)
+let strip_lambda_decls t = snd (decompose_lambda_decls t)
+let strip_lam t = snd (decompose_lambda t)
+let strip_lam_n n t = snd (decompose_lambda_n n t)
 
 (***************************)
 (* Arities                 *)
@@ -348,7 +356,7 @@ let destArity =
     match kind c with
     | Prod (x,t,c)    -> prodec_rec (LocalAssum (x,t) :: l) c
     | LetIn (x,b,t,c) -> prodec_rec (LocalDef (x,b,t) :: l) c
-    | Cast (c,_,_)      -> prodec_rec l c
+    | Cast (c,_,_)    -> prodec_rec l c
     | Sort s          -> l,s
     | _               -> anomaly ~label:"destArity" (Pp.str "not an arity.")
   in
@@ -359,7 +367,29 @@ let mkArity (sign,s) = it_mkProd_or_LetIn (mkSort s) sign
 let rec isArity c =
   match kind c with
   | Prod (_,_,c)    -> isArity c
-  | LetIn (_,b,_,c) -> isArity (subst1 b c)
+  | LetIn (_,_,_,c) -> isArity c
   | Cast (c,_,_)      -> isArity c
   | Sort _          -> true
   | _               -> false
+
+(* Deprecated *)
+
+let decompose_prod_assum = decompose_prod_decls
+let decompose_lam_assum = decompose_lambda_decls
+let decompose_prod_n_assum = decompose_prod_n_decls
+let prod_assum = prod_decls
+let lam_assum = lambda_decls
+let prod_n_assum = prod_n_decls
+let strip_prod_assum = strip_prod_decls
+let strip_lam_assum = strip_lambda_decls
+let decompose_lam = decompose_lambda
+let decompose_lam_n = decompose_lambda_n
+let decompose_lam_n_assum = decompose_lambda_n_assum
+let decompose_lam_n_decls = decompose_lambda_n_decls
+
+type sorts_family = Sorts.family = InSProp | InProp | InSet | InType | InQSort
+
+type sorts = Sorts.t = private
+  | SProp | Prop | Set
+  | Type of Univ.Universe.t  (** Type *)
+  | QSort of Sorts.QVar.t * Univ.Universe.t

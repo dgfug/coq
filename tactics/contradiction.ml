@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -9,7 +9,6 @@
 (************************************************************************)
 
 open Constr
-open Context
 open EConstr
 open Hipattern
 open Tactics
@@ -20,10 +19,13 @@ module NamedDecl = Context.Named.Declaration
 
 (* Absurd *)
 
-let mk_absurd_proof coq_not r t =
-  let id = Namegen.default_dependent_ident in
-  mkLambda (make_annot (Names.Name id) Sorts.Relevant,mkApp(coq_not,[|t|]),
-    mkLambda (make_annot (Names.Name id) r,t,mkApp (mkRel 2,[|mkRel 1|])))
+let mk_absurd_proof env r t =
+  Tacticals.pf_constr_of_global (Rocqlib.(lib_ref "core.not.type")) >>= fun rocq_not ->
+  Refine.refine ~typecheck:true begin fun sigma ->
+    let sigma, negev = Evarutil.new_evar env sigma (mkApp (rocq_not, [|t|])) in
+    let sigma, ev = Evarutil.new_evar ~relevance:r env sigma t in
+    sigma, mkApp (negev, [|ev|])
+  end
 
 let absurd c =
   Proofview.Goal.enter begin fun gl ->
@@ -31,15 +33,10 @@ let absurd c =
     let env = Proofview.Goal.env gl in
     let j = Retyping.get_judgment_of env sigma c in
     let sigma, j = Coercion.inh_coerce_to_sort env sigma j in
-    let t = j.Environ.utj_val in
-    let r = Sorts.relevance_of_sort j.Environ.utj_type in
+    let t = nf_betaiota env sigma j.Environ.utj_val in
+    let r = ESorts.relevance_of_sort j.Environ.utj_type in
     Proofview.Unsafe.tclEVARS sigma <*>
-    Tacticals.New.pf_constr_of_global (Coqlib.(lib_ref "core.not.type")) >>= fun coqnot ->
-    Tacticals.New.pf_constr_of_global (Coqlib.(lib_ref "core.False.type")) >>= fun coqfalse ->
-    Tacticals.New.tclTHENLIST [
-      elim_type coqfalse;
-      Simple.apply (mk_absurd_proof coqnot r t)
-    ]
+    Tactics.exfalso <*> mk_absurd_proof env r t
   end
 
 let absurd c = absurd c
@@ -61,12 +58,12 @@ let filter_hyp f tac =
 
 let contradiction_context =
   Proofview.Goal.enter begin fun gl ->
-    let sigma = Tacmach.New.project gl in
+    let sigma = Tacmach.project gl in
     let env = Proofview.Goal.env gl in
     let rec seek_neg l = match l with
       | [] ->
         let info = Exninfo.reify () in
-        Tacticals.New.tclZEROMSG ~info (Pp.str"No such contradiction")
+        Tacticals.tclZEROMSG ~info (Pp.str"No such contradiction")
       | d :: rest ->
           let id = NamedDecl.get_id d in
           let typ = nf_evar sigma (NamedDecl.get_type d) in
@@ -76,10 +73,10 @@ let contradiction_context =
           else match EConstr.kind sigma typ with
           | Prod (na,t,u) when is_empty_type env sigma u ->
              let is_unit_or_eq = match_with_unit_or_eq_type env sigma t in
-             Tacticals.New.tclORELSE
+             Tacticals.tclORELSE
                (match is_unit_or_eq with
                | Some _ ->
-                   let hd,args = decompose_app sigma t in
+                   let hd,args = decompose_app_list sigma t in
                    let (ind,_ as indu) = destInd sigma hd in
                    let nparams = Inductiveops.inductive_nparams env ind in
                    let params = Util.List.firstn nparams args in
@@ -88,10 +85,10 @@ let contradiction_context =
                    simplest_elim (mkApp (mkVar id,[|p|]))
                | None ->
                  let info = Exninfo.reify () in
-                 Tacticals.New.tclZEROMSG ~info (Pp.str"Not a negated unit type."))
+                 Tacticals.tclZEROMSG ~info (Pp.str"Not a negated unit type."))
               (Proofview.tclORELSE
                  (Proofview.Goal.enter begin fun gl ->
-                   let is_conv_leq = Tacmach.New.pf_apply is_conv_leq gl in
+                   let is_conv_leq = Tacmach.pf_apply is_conv_leq gl in
                    filter_hyp (fun typ -> is_conv_leq typ t)
                      (fun id' -> simplest_elim (mkApp (mkVar id,[|mkVar id'|])))
                  end)
@@ -113,14 +110,14 @@ let is_negation_of env sigma typ t =
 
 let contradiction_term (c,lbind as cl) =
   Proofview.Goal.enter begin fun gl ->
-    let sigma = Tacmach.New.project gl in
+    let sigma = Tacmach.project gl in
     let env = Proofview.Goal.env gl in
-    let typ = Tacmach.New.pf_get_type_of gl c in
-    let _, ccl = splay_prod env sigma typ in
+    let typ = Tacmach.pf_get_type_of gl c in
+    let _, ccl = whd_decompose_prod env sigma typ in
     if is_empty_type env sigma ccl then
-      Tacticals.New.tclTHEN
+      Tacticals.tclTHEN
         (elim false None cl None)
-        (Tacticals.New.tclTRY assumption)
+        (Tacticals.tclTRY assumption)
     else
       Proofview.tclORELSE
         begin
@@ -133,11 +130,11 @@ let contradiction_term (c,lbind as cl) =
         end
         begin function (e, info) -> match e with
           | Not_found ->
-            Tacticals.New.tclZEROMSG ~info (Pp.str"Not a contradiction.")
+            Tacticals.tclZEROMSG ~info (Pp.str"Not a contradiction.")
           | e -> Proofview.tclZERO ~info e
         end
   end
 
 let contradiction = function
-  | None -> Tacticals.New.tclTHEN intros contradiction_context
+  | None -> Tacticals.tclTHEN intros contradiction_context
   | Some c -> contradiction_term c

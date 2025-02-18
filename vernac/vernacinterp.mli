@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,25 +8,28 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
+(** Regular intern using the filesystem  *)
+val fs_intern : Library.Intern.t
+
 (** The main interpretation function of vernacular expressions *)
-val interp : ?verbosely:bool -> st:Vernacstate.t -> Vernacexpr.vernac_control -> Vernacstate.t
+val interp
+  : intern:Library.Intern.t
+  -> ?verbosely:bool
+  -> st:Vernacstate.t
+  -> Vernacexpr.vernac_control
+  -> Vernacstate.t
+
+val interp_entry
+  : ?verbosely:bool
+  -> st:Vernacstate.t
+  -> Synterp.vernac_control_entry
+  -> Vernacstate.Interp.t
 
 (** Execute a Qed but with a proof_object which may contain a delayed
    proof and won't be forced *)
 val interp_qed_delayed_proof
   :  proof:Declare.Proof.proof_object
   -> st:Vernacstate.t
-  -> control:Vernacexpr.control_flag list
+  -> control:unit VernacControl.control_entries
   -> Vernacexpr.proof_end CAst.t
-  -> Vernacstate.t
-
-(** [with_fail ~st f] runs [f ()] and expects it to fail, otherwise it fails. *)
-val with_fail : st:Vernacstate.t -> (unit -> 'a) -> unit
-
-(** Flag set when the test-suite is called. Its only effect to display
-    verbose information for [Fail] *)
-val test_mode : bool ref
-
-(** Default proof mode set by `start_proof` *)
-val get_default_proof_mode : unit -> Pvernac.proof_mode
-val proof_mode_opt_name : string list
+  -> Vernacstate.Interp.t

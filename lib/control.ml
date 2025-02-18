@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -37,7 +37,6 @@ let unix_timeout n f x =
   (* Here we assume that the existing timer will also interrupt us. *)
   if old_timer.it_value > 0. && old_timer.it_value <= n then Some (f x) else
     let psh = Sys.signal Sys.sigalrm (Sys.Signal_handle timeout_handler) in
-    let old_timer = setitimer ITIMER_REAL {it_interval = 0.; it_value = n} in
     let restore_timeout () =
       let timer_status = getitimer ITIMER_REAL in
       let old_timer_value = old_timer.it_value -. n +. timer_status.it_value in
@@ -49,6 +48,7 @@ let unix_timeout n f x =
       Sys.set_signal Sys.sigalrm psh
     in
     try
+      let _ = setitimer ITIMER_REAL {it_interval = 0.; it_value = n} in
       let res = f x in
       restore_timeout ();
       Some res
@@ -70,7 +70,7 @@ let windows_timeout n f x =
       if n <= cur -. init then begin
         interrupt := true;
         exited := true;
-        Thread.exit ()
+        Thread.exit () [@ocaml.warning "-3"]
       end;
       Thread.delay 0.5
     done

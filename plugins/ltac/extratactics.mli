@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,10 +8,14 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
+type cmp =
+  | Eq
+  | Lt | Le
+  | Gt | Ge
 
-val discrHyp : Names.Id.t -> unit Proofview.tactic
-val injHyp : Names.Id.t -> unit Proofview.tactic
+val wit_comparison : (cmp, cmp, cmp) Genarg.genarg_type
 
-(* val refine_tac : Evd.open_constr -> unit Proofview.tactic *)
+type 'i test =
+  | Test of cmp * 'i * 'i
 
-val onSomeWithHoles : ('a option -> unit Proofview.tactic) -> 'a Tactypes.delayed_open option -> unit Proofview.tactic
+val wit_test : (int Locus.or_var test, int Locus.or_var test, int test) Genarg.genarg_type

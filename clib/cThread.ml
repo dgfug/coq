@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -59,11 +59,10 @@ let thread_friendly_really_read_line ic =
     let b = Buffer.create 1024 in
     let s = Bytes.make 1 '\000' in
     let endl = Bytes.of_string "\n" in
-    (* Bytes.equal is in 4.03.0 *)
-    while Bytes.compare s endl <> 0 do
+    while not (Bytes.equal s endl) do
       let n = thread_friendly_read_fd fd s ~off:0 ~len:1 in
       if n = 0 then raise End_of_file;
-      if Bytes.compare s endl <> 0 then Buffer.add_bytes b s;
+      if not (Bytes.equal s endl) then Buffer.add_bytes b s;
     done;
     Buffer.contents b
   with Unix.Unix_error _ -> raise End_of_file
@@ -108,21 +107,4 @@ let mask_sigalrm f x =
 let create f x =
   Thread.create (mask_sigalrm f) x
 
-(*
-  Atomic mutex lock taken from https://gitlab.com/gadmm/memprof-limits/-/blob/master/src/thread_map.ml#L23-34
-  Critical sections :
-   - Mutex.lock does not poll on leaving the blocking section
-     since 4.12.
-   - Never inline, to avoid theoretically-possible reorderings with
-     flambda.
-     (workaround to the lack of masking)
-*)
-
-(* We inline the call to Mutex.unlock to avoid polling in bytecode mode *)
-external unlock: Mutex.t -> unit = "caml_mutex_unlock"
-
-let[@inline never] with_lock m ~scope =
-  let () = Mutex.lock m (* BEGIN ATOMIC *) in
-  match (* END ATOMIC *) scope () with
-  | (* BEGIN ATOMIC *) x -> unlock m ; (* END ATOMIC *) x
-  | (* BEGIN ATOMIC *) exception e -> unlock m ; (* END ATOMIC *) raise e
+let with_lock = Memprof_coq.Mutex_aux.with_lock

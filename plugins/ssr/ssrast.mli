@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -180,6 +180,4 @@ type ssrapplyarg = ssrterm list * (ssrterm ssragens * ssripats)
 (* OOP : these are general shortcuts *)
 type gist = Tacintern.glob_sign
 type ist = Tacinterp.interp_sign
-type goal = Goal.goal
-type 'a sigma = 'a Evd.sigma
-type v82tac = Tacmach.tactic
+type goal = Evar.t

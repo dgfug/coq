@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -12,22 +12,18 @@
 
 {
 
-let _vmcast = Constr.VMcast
+let defaultCast = Constr.DEFAULTcast
 open Names
 open Pp
-open Pcoq
+open Procq
 open Ltac_plugin
 open Stdarg
 open Tacarg
 open Libnames
-open Tactics
-open Tacmach
 open Util
 open Locus
 open Tacexpr
-open Tacinterp
 open Pltac
-open Extraargs
 open Ppconstr
 
 open Namegen
@@ -35,22 +31,19 @@ open Tactypes
 open Constrexpr
 open Constrexpr_ops
 
-open Proofview
 open Proofview.Notations
 
 open Ssrmatching_plugin.Ssrmatching
 
 open Ssrprinters
 open Ssrcommon
-open Ssrtacticals
-open Ssrbwd
 open Ssrequality
 open Ssripats
 open Libobject
 
 (** Ssreflect load check. *)
 
-(* To allow ssrcoq to be fully compatible with the "plain" Coq, we only *)
+(* To allow ssrcoq to be fully compatible with the "plain" Rocq, we only *)
 (* turn on its incompatible features (the new rewrite syntax, and the   *)
 (* reserved identifiers) when the theory library (ssreflect.v) has      *)
 (* has actually been required, or is being defined. Because this check  *)
@@ -61,17 +54,18 @@ open Libobject
 let ssr_loaded = Summary.ref ~name:"SSR:loaded" false
 let is_ssr_loaded () =
   !ssr_loaded ||
-  (if CLexer.is_keyword "SsrSyntax_is_Imported" then ssr_loaded:=true;
+  (if CLexer.is_keyword (Procq.get_keyword_state()) "SsrSyntax_is_Imported" then ssr_loaded:=true;
    !ssr_loaded)
+let () = Pptactic.ssr_loaded_hook is_ssr_loaded
 
 }
 
-DECLARE PLUGIN "ssreflect_plugin"
+DECLARE PLUGIN "rocq-runtime.plugins.ssreflect"
 
 {
 
 let ssrtac_name name = {
-  mltac_plugin = "ssreflect_plugin";
+  mltac_plugin = "rocq-runtime.plugins.ssreflect";
   mltac_tactic = "ssr" ^ name;
 }
 
@@ -80,7 +74,7 @@ let ssrtac_entry name = {
   mltac_index = 0;
 }
 
-let cache_tactic_notation (_, (key, body, parule)) =
+let cache_tactic_notation (key, body, parule) =
   Tacenv.register_alias key body;
   Pptactic.declare_notation_tactic_pprule key parule
 
@@ -90,9 +84,9 @@ let inSsrGrammar : tactic_grammar_obj -> obj =
   declare_object {(default_object "SsrGrammar") with
                   load_function = (fun _ -> cache_tactic_notation);
                   cache_function = cache_tactic_notation;
-                  classify_function = (fun x -> Keep x)}
+                  classify_function = (fun x -> Keep)}
 
-let path = MPfile (DirPath.make @@ List.map Id.of_string ["ssreflect"; "ssr"; "Coq"])
+let path = MPfile (DirPath.make @@ List.map Id.of_string ["ssreflect"; "ssr"; "Corelib"])
 
 let register_ssrtac name f prods =
   let open Pptactic in
@@ -110,8 +104,8 @@ let register_ssrtac name f prods =
     pptac_prods = prods
   } in
   let obj () =
-    Lib.add_anonymous_leaf (inSsrGrammar (key, body, parule)) in
-  Mltop.declare_cache_obj obj __coq_plugin_name;
+    Lib.add_leaf (inSsrGrammar (key, body, parule)) in
+  Mltop.declare_cache_obj obj "rocq-runtime.plugins.ssreflect";
   key
 
 let cast_arg wit v = Taccoerce.Value.cast (Genarg.topwit wit) v
@@ -122,7 +116,9 @@ let cast_arg wit v = Taccoerce.Value.cast (Genarg.topwit wit) v
 
 (* Defining grammar rules with "xx" in it automatically declares keywords too,
  * we thus save the lexer to restore it at the end of the file *)
-let frozen_lexer = CLexer.get_keyword_state () ;;
+let frozen_lexer = ref (Procq.get_keyword_state ()) ;;
+let () = Mltop.add_init_function "rocq-runtime.plugins.ssreflect" (fun () ->
+    frozen_lexer := Procq.get_keyword_state ())
 
 let tacltop = (LevelLe 5)
 
@@ -170,7 +166,7 @@ let add_genarg tag pr =
   let interp ist x = Ftactic.return (Geninterp.Val.Dyn (tag, x)) in
   let gen_pr env sigma _ _ _ = pr env sigma in
   let () = Genintern.register_intern0 wit glob in
-  let () = Genintern.register_subst0 wit subst in
+  let () = Gensubst.register_subst0 wit subst in
   let () = Geninterp.register_interp0 wit interp in
   let () = Geninterp.register_val0 wit (Some (Geninterp.Val.Base tag)) in
   Pptactic.declare_extra_genarg_pprule wit gen_pr gen_pr gen_pr;
@@ -193,7 +189,7 @@ let intern_hyp ist (SsrHyp (loc, id) as hyp) =
   if not_section_id id then hyp else
   hyp_err ?loc "Can't clear section hypothesis " id
 
-open Pcoq.Prim
+open Procq.Prim
 
 }
 
@@ -216,11 +212,11 @@ let intern_ssrhoi ist = function
     let _ = Tacintern.intern_genarg ist (in_gen (rawwit wit_ident) id) in
     hyp
 
-let interp_ssrhoi ist gl = function
-  | Hyp h -> let s, h' = interp_hyp ist gl h in s, Hyp h'
+let interp_ssrhoi ist env sigma = function
+  | Hyp h -> let h' = interp_hyp ist env sigma h in Hyp h'
   | Id (SsrHyp (loc, id)) ->
-    let s, id' = interp_wit wit_ident ist gl id in
-    s, Id (SsrHyp (loc, id'))
+    let id' = Tacinterp.interp_ident ist env sigma id in
+    Id (SsrHyp (loc, id'))
 
 }
 
@@ -239,8 +235,6 @@ END
 
 {
 
-let pr_rwdir = function L2R -> mt() | R2L -> str "-"
-
 let wit_ssrdir = add_genarg "ssrdir" (fun env sigma -> pr_dir)
 
 (** Simpl switch *)
@@ -249,25 +243,25 @@ let pr_ssrsimpl _ _ _ = pr_simpl
 
 let wit_ssrsimplrep = add_genarg "ssrsimplrep" (fun env sigma -> pr_simpl)
 
-let test_ssrslashnum b1 b2 strm =
-  match LStream.peek_nth 0 strm with
+let test_ssrslashnum b1 b2 kwstate strm =
+  match LStream.peek_nth kwstate 0 strm with
   | Tok.KEYWORD "/" ->
-      (match LStream.peek_nth 1 strm with
+      (match LStream.peek_nth kwstate 1 strm with
       | Tok.NUMBER _ when b1 ->
-         (match LStream.peek_nth 2 strm with
+         (match LStream.peek_nth kwstate 2 strm with
          | Tok.KEYWORD "=" | Tok.KEYWORD "/=" when not b2 -> ()
          | Tok.KEYWORD "/" ->
              if not b2 then () else begin
-               match LStream.peek_nth 3 strm with
+               match LStream.peek_nth kwstate 3 strm with
                | Tok.NUMBER _ -> ()
                | _ -> raise Stream.Failure
              end
          | _ -> raise Stream.Failure)
       | Tok.KEYWORD "/" when not b1 ->
-         (match LStream.peek_nth 2 strm with
+         (match LStream.peek_nth kwstate 2 strm with
          | Tok.KEYWORD "=" when not b2 -> ()
          | Tok.NUMBER _ when b2 ->
-           (match LStream.peek_nth 3 strm with
+           (match LStream.peek_nth kwstate 3 strm with
            | Tok.KEYWORD "=" -> ()
            | _ -> raise Stream.Failure)
          | _ when not b2 -> ()
@@ -275,10 +269,10 @@ let test_ssrslashnum b1 b2 strm =
       | Tok.KEYWORD "=" when not b1 && not b2 -> ()
       | _ -> raise Stream.Failure)
   | Tok.KEYWORD "//" when not b1 ->
-         (match LStream.peek_nth 1 strm with
+         (match LStream.peek_nth kwstate 1 strm with
          | Tok.KEYWORD "=" when not b2 -> ()
          | Tok.NUMBER _ when b2 ->
-           (match LStream.peek_nth 2 strm with
+           (match LStream.peek_nth kwstate 2 strm with
            | Tok.KEYWORD "=" -> ()
            | _ -> raise Stream.Failure)
          | _ when not b2 -> ()
@@ -290,23 +284,23 @@ let test_ssrslashnum11 = test_ssrslashnum true true
 let test_ssrslashnum01 = test_ssrslashnum false true
 let test_ssrslashnum00 = test_ssrslashnum false false
 
-let negate_parser f x =
-  let rc = try Some (f x) with Stream.Failure -> None in
+let negate_parser f x y =
+  let rc = try Some (f x y) with Stream.Failure -> None in
   match rc with
   | None -> ()
   | Some _ -> raise Stream.Failure
 
 let test_not_ssrslashnum =
-  Pcoq.Entry.(of_parser
+  Procq.Entry.(of_parser
     "test_not_ssrslashnum" { parser_fun = negate_parser test_ssrslashnum10 })
 let test_ssrslashnum00 =
-  Pcoq.Entry.(of_parser "test_ssrslashnum01" { parser_fun = test_ssrslashnum00 })
+  Procq.Entry.(of_parser "test_ssrslashnum01" { parser_fun = test_ssrslashnum00 })
 let test_ssrslashnum10 =
-  Pcoq.Entry.(of_parser "test_ssrslashnum10" { parser_fun = test_ssrslashnum10 })
+  Procq.Entry.(of_parser "test_ssrslashnum10" { parser_fun = test_ssrslashnum10 })
 let test_ssrslashnum11 =
-  Pcoq.Entry.(of_parser "test_ssrslashnum11" { parser_fun = test_ssrslashnum11 })
+  Procq.Entry.(of_parser "test_ssrslashnum11" { parser_fun = test_ssrslashnum11 })
 let test_ssrslashnum01 =
-  Pcoq.Entry.(of_parser "test_ssrslashnum01" { parser_fun = test_ssrslashnum01 })
+  Procq.Entry.(of_parser "test_ssrslashnum01" { parser_fun = test_ssrslashnum01 })
 
 }
 
@@ -315,7 +309,7 @@ ARGUMENT EXTEND ssrsimpl_ne TYPED AS ssrsimplrep PRINTED BY { pr_ssrsimpl }
 | [ "/=" ] -> { Simpl ~-1 }
 END
 
-(* Pcoq.Prim. *)
+(* Procq.Prim. *)
 GRAMMAR EXTEND Gram
   GLOBAL: ssrsimpl_ne;
   ssrsimpl_ne: TOP [
@@ -369,8 +363,7 @@ let mk_index ?loc = function
   | ArgArg i -> ArgArg (check_index ?loc i)
   | iv -> iv
 
-let interp_index ist gl idx =
-  Tacmach.project gl,
+let interp_index ist env sigma idx =
   match idx with
   | ArgArg _ -> idx
   | ArgVar id ->
@@ -382,15 +375,15 @@ let interp_index ist gl idx =
         | None ->
         begin match Tacinterp.Value.to_constr v with
         | Some c ->
-          let rc = Detyping.detype Detyping.Now false Id.Set.empty (pf_env gl) (project gl) c in
-          begin match Notation.uninterp_prim_token rc (None, []) with
+          let rc = Detyping.detype Detyping.Now env sigma c in
+          begin match Notation.uninterp_prim_token rc ([], []) with
           | Constrexpr.Number n, _ when NumTok.Signed.is_int n ->
             int_of_string (NumTok.Signed.to_string n)
           | _ -> raise Not_found
           end
         | None -> raise Not_found
         end end
-    with _ -> CErrors.user_err ?loc:id.CAst.loc (str"Index not a number") in
+    with e when CErrors.noncritical e -> CErrors.user_err ?loc:id.CAst.loc (str"Index not a number") in
     ArgArg (check_index ?loc:id.CAst.loc i)
 
 open Pltac
@@ -418,7 +411,7 @@ END
 
 let pr_ssrocc _ _ _ = pr_occ
 
-open Pcoq.Prim
+open Procq.Prim
 
 }
 
@@ -437,7 +430,7 @@ END
 let pr_mmod = function May -> str "?" | Must -> str "!" | Once -> mt ()
 
 let wit_ssrmmod = add_genarg "ssrmmod" (fun env sigma -> pr_mmod)
-let ssrmmod = Pcoq.create_generic_entry2 "ssrmmod" (Genarg.rawwit wit_ssrmmod);;
+let ssrmmod = Procq.create_generic_entry2 "ssrmmod" (Genarg.rawwit wit_ssrmmod);;
 
 }
 
@@ -488,23 +481,23 @@ END
 
 (* Old kinds of terms *)
 
-let input_ssrtermkind strm = match LStream.peek_nth 0 strm with
+let input_ssrtermkind kwstate strm = match LStream.peek_nth kwstate 0 strm with
   | Tok.KEYWORD "(" -> InParens
   | Tok.KEYWORD "@" -> WithAt
   | _ -> NoFlag
 
-let ssrtermkind = Pcoq.Entry.(of_parser "ssrtermkind" { parser_fun = input_ssrtermkind })
+let ssrtermkind = Procq.Entry.(of_parser "ssrtermkind" { parser_fun = input_ssrtermkind })
 
 (* New kinds of terms *)
 
-let input_term_annotation strm =
-  match LStream.npeek 2 strm with
+let input_term_annotation kwstate strm =
+  match LStream.npeek kwstate 2 strm with
   | Tok.KEYWORD "(" :: Tok.KEYWORD "(" :: _ -> `DoubleParens
   | Tok.KEYWORD "(" :: _ -> `Parens
   | Tok.KEYWORD "@" :: _ -> `At
   | _ -> `None
 let term_annotation =
-  Pcoq.Entry.(of_parser "term_annotation" { parser_fun = input_term_annotation })
+  Procq.Entry.(of_parser "term_annotation" { parser_fun = input_term_annotation })
 
 (* terms *)
 
@@ -524,9 +517,9 @@ let glob_ssrterm gs = function
   | k, (_, Some c) -> k, Tacintern.intern_constr gs c
   | ct -> ct
 let subst_ssrterm s (k, c) = k, Tacsubst.subst_glob_constr_and_expr s c
-let interp_ssrterm _ gl t = Tacmach.project gl, t
+let interp_ssrterm _ _ _ t = t
 
-open Pcoq.Constr
+open Procq.Constr
 
 }
 
@@ -540,7 +533,7 @@ END
 
 GRAMMAR EXTEND Gram
   GLOBAL: ssrterm;
-  ssrterm: TOP [[ k = ssrtermkind; c = Pcoq.Constr.constr -> { mk_term k c } ]];
+  ssrterm: TOP [[ k = ssrtermkind; c = Procq.Constr.constr -> { mk_term k c } ]];
 END
 
 (* New terms *)
@@ -584,12 +577,12 @@ ARGUMENT EXTEND ssrbwdview TYPED AS ssrterm list
    PRINTED BY { pr_ssrbwdview }
 END
 
-(* Pcoq *)
+(* Procq *)
 GRAMMAR EXTEND Gram
   GLOBAL: ssrbwdview;
   ssrbwdview: TOP [
-    [  test_not_ssrslashnum; "/"; c = Pcoq.Constr.constr -> { [mk_term NoFlag c] }
-    |  test_not_ssrslashnum; "/"; c = Pcoq.Constr.constr; w = ssrbwdview -> {
+    [  test_not_ssrslashnum; "/"; c = Procq.Constr.constr -> { [mk_term NoFlag c] }
+    |  test_not_ssrslashnum; "/"; c = Procq.Constr.constr; w = ssrbwdview -> {
                     (mk_term NoFlag c) :: w } ]];
 END
 
@@ -607,7 +600,7 @@ ARGUMENT EXTEND ssrfwdview TYPED AS ast_closure_term list
    PRINTED BY { pr_ssrfwdview }
 END
 
-(* Pcoq *)
+(* Procq *)
 GRAMMAR EXTEND Gram
   GLOBAL: ssrfwdview;
   ssrfwdview: TOP [
@@ -677,11 +670,12 @@ let intern_ipat ist =
 
 let intern_ipats ist = List.map (intern_ipat ist)
 
-let interp_intro_pattern = interp_wit wit_intro_pattern
+let interp_intro_pattern = Tacinterp.interp_intro_pattern
 
-let interp_introid ist gl id =
- try IntroNaming (IntroIdentifier (hyp_id (snd (interp_hyp ist gl (SsrHyp (Loc.tag id))))))
- with _ -> (snd (interp_intro_pattern ist gl (CAst.make @@ IntroNaming (IntroIdentifier id)))).CAst.v
+let interp_introid ist env sigma id =
+ try IntroNaming (IntroIdentifier (hyp_id (interp_hyp ist env sigma (SsrHyp (Loc.tag id)))))
+ with e when CErrors.noncritical e ->
+   (interp_intro_pattern ist env sigma (CAst.make @@ IntroNaming (IntroIdentifier id))).CAst.v
 
 let get_intro_id = function
   | IntroNaming (IntroIdentifier id) -> id
@@ -709,28 +703,28 @@ let rec add_intro_pattern_hyps ipat hyps =
 
 (* We interp the ipat using the standard ltac machinery for ids, since
  * we have no clue what a name could be bound to (maybe another ipat) *)
-let interp_ipat ist gl =
+let interp_ipat ist env sigma =
   let ltacvar id = Id.Map.mem id ist.Tacinterp.lfun in
   let interp_block = function
     | Prefix id when ltacvar id ->
-        begin match interp_introid ist gl id with
+        begin match interp_introid ist env sigma id with
         | IntroNaming (IntroIdentifier id) -> Prefix id
         | _ -> Ssrcommon.errorstrm Pp.(str"Variable " ++ Id.print id ++ str" in block intro pattern should be bound to an identifier.")
         end
     | SuffixId id when ltacvar id ->
-        begin match interp_introid ist gl id with
+        begin match interp_introid ist env sigma id with
         | IntroNaming (IntroIdentifier id) -> SuffixId id
         | _ -> Ssrcommon.errorstrm Pp.(str"Variable " ++ Id.print id ++ str" in block intro pattern should be bound to an identifier.")
         end
     | x -> x in
   let rec interp = function
   | IPatId id when ltacvar id ->
-    ipat_of_intro_pattern (interp_introid ist gl id)
+    ipat_of_intro_pattern (interp_introid ist env sigma id)
   | IPatId _ as x -> x
   | IPatClear clr ->
     let add_hyps (SsrHyp (loc, id) as hyp) hyps =
       if not (ltacvar id) then hyp :: hyps else
-      add_intro_pattern_hyps CAst.(make ?loc (interp_introid ist gl id)) hyps in
+      add_intro_pattern_hyps CAst.(make ?loc (interp_introid ist env sigma id)) hyps in
     let clr' = List.fold_right add_hyps clr [] in
     check_hyps_uniq [] clr';
     IPatClear clr'
@@ -744,14 +738,14 @@ let interp_ipat ist gl =
 
   | IPatInj iorpat -> IPatInj (List.map (List.map interp) iorpat)
   | IPatAbstractVars l ->
-     IPatAbstractVars (List.map get_intro_id (List.map (interp_introid ist gl) l))
-  | IPatView l -> IPatView (List.map (fun x -> snd(interp_ast_closure_term ist
-     gl x)) l)
+     IPatAbstractVars (List.map get_intro_id (List.map (interp_introid ist env sigma) l))
+  | IPatView l -> IPatView (List.map (fun x -> interp_ast_closure_term ist
+     env sigma x) l)
   | (IPatSimpl _ | IPatAnon _ | IPatRewrite _ | IPatNoop | IPatFastNondep) as x -> x
     in
   interp
 
-let interp_ipats ist gl l = project gl, List.map (interp_ipat ist gl) l
+let interp_ipats ist env sigma l = List.map (interp_ipat ist env sigma) l
 
 let pushIPatRewrite = function
   | pats :: orpat -> (IPatRewrite (allocc, L2R) :: pats) :: orpat
@@ -762,7 +756,7 @@ let pushIPatNoop = function
   | [] -> []
 
 let test_ident_no_do =
-  let open Pcoq.Lookahead in
+  let open Procq.Lookahead in
   to_entry "test_ident_no_do" begin
     lk_ident_except ["do"]
   end
@@ -837,36 +831,45 @@ END
 
 {
 
-let reject_ssrhid strm =
-  match LStream.peek_nth 0 strm with
+let test_leftsquarebracket_equal =
+  let open Procq.Lookahead in
+  to_entry "test_leftsquarebracket_equal" begin
+    lk_kw "[" >> lk_kw "=" >> check_no_space
+  end
+
+let reject_ssrhid kwstate strm =
+  match LStream.peek_nth kwstate 0 strm with
   | Tok.KEYWORD "[" ->
-      (match LStream.peek_nth 1 strm with
+      (match LStream.peek_nth kwstate 1 strm with
       | Tok.KEYWORD ":" -> raise Stream.Failure
       | _ -> ())
   | _ -> ()
 
-let test_nohidden = Pcoq.Entry.(of_parser "test_ssrhid" { parser_fun = reject_ssrhid })
+let test_nohidden = Procq.Entry.(of_parser "test_ssrhid" { parser_fun = reject_ssrhid })
 
-let rec reject_binder crossed_paren k s =
+let rec reject_binder crossed_paren k kwstate s =
   match
-    try Some (LStream.peek_nth k s)
+    try Some (LStream.peek_nth kwstate k s)
     with Stream.Failure -> None
   with
-  | Some (Tok.KEYWORD "(") when not crossed_paren -> reject_binder true (k+1) s
-  | Some (Tok.IDENT _) when crossed_paren -> reject_binder true (k+1) s
+  | Some (Tok.KEYWORD "(") when not crossed_paren -> reject_binder true (k+1) kwstate s
+  | Some (Tok.IDENT _) when crossed_paren -> reject_binder true (k+1) kwstate s
   | Some (Tok.KEYWORD ":" | Tok.KEYWORD ":=") when crossed_paren ->
       raise Stream.Failure
   | Some (Tok.KEYWORD ")") when crossed_paren -> raise Stream.Failure
   | _ -> if crossed_paren then () else raise Stream.Failure
 
-let _test_nobinder = Pcoq.Entry.(of_parser "test_nobinder" { parser_fun = reject_binder false 0 })
+let _test_nobinder = Procq.Entry.(of_parser "test_nobinder" { parser_fun = reject_binder false 0 })
 
 }
 
 ARGUMENT EXTEND ssrcpat TYPED AS ssripatrep PRINTED BY { pr_ssripat }
+  INTERPRETED BY { interp_ipat }
+  GLOBALIZED BY { intern_ipat }
+
 END
 
-(* Pcoq *)
+(* Procq *)
 GRAMMAR EXTEND Gram
   GLOBAL: ssrcpat;
   hat: [
@@ -877,12 +880,12 @@ GRAMMAR EXTEND Gram
   | "^~"; n = natural -> { SuffixNum n }
   ]];
   ssrcpat: TOP [
-   [ test_nohidden; "["; hat_id = hat; "]" -> {
+   [ test_leftsquarebracket_equal; test_nohidden; "["; "="; iorpat = ssriorpat; "]" -> {
+      IPatInj iorpat }
+   | test_nohidden; "["; hat_id = hat; "]" -> {
       IPatCase (Block(hat_id)) }
    | test_nohidden; "["; iorpat = ssriorpat; "]" -> {
-      IPatCase (Regular iorpat) }
-   | test_nohidden; "[="; iorpat = ssriorpat; "]" -> {
-      IPatInj iorpat } ]];
+      IPatCase (Regular iorpat) } ]];
 END
 
 GRAMMAR EXTEND Gram
@@ -900,7 +903,7 @@ ARGUMENT EXTEND ssripats_ne TYPED AS ssripat PRINTED BY { pr_ssripats }
 
 (* TODO: review what this function does, it looks suspicious *)
 let check_ssrhpats loc w_binders ipats =
-  let err_loc s = CErrors.user_err ~loc ~hdr:"ssreflect" s in
+  let err_loc s = CErrors.user_err ~loc s in
   let clr, ipats =
     let opt_app = function None -> fun l -> Some l
       | Some l1 -> fun l2 -> Some (l1 @ l2) in
@@ -1003,14 +1006,14 @@ let pr_ssrfwdidx _ _ _ = pr_ssrfwdid
 }
 
 (* We use a primitive parser for the head identifier of forward *)
-(* tactis to avoid syntactic conflicts with basic Coq tactics. *)
+(* tactis to avoid syntactic conflicts with basic Rocq tactics. *)
 ARGUMENT EXTEND ssrfwdid TYPED AS ident PRINTED BY { pr_ssrfwdidx }
 END
 
 {
 
 let test_ssrfwdid =
-  let open Pcoq.Lookahead in
+  let open Procq.Lookahead in
   to_entry "test_ssrfwdid" begin
     lk_ident >> (lk_ident <+> lk_kws [":"; ":="; "("])
   end
@@ -1086,7 +1089,7 @@ END
 {
 
 let pr_hint env sigma prt arg =
-  if arg = nohint then mt() else str "by " ++ pr_hintarg env sigma prt arg
+  if arg = nohint then mt() else spc () ++ str "by" ++ spc () ++ pr_hintarg env sigma prt arg
 let pr_ssrhint env sigma _ _ = pr_hint env sigma
 
 }
@@ -1109,7 +1112,6 @@ END
 
 {
 
-open Ssrmatching_plugin.Ssrmatching
 open Ssrmatching_plugin.G_ssrmatching
 
 let pr_wgen = function
@@ -1211,32 +1213,32 @@ let pr_binder prl = function
     str ": " ++ prl t
 
 let rec format_local_binders h0 bl0 = match h0, bl0 with
-  | BFvar :: h, CLocalAssum ([{CAst.v=x}], _,  _) :: bl ->
+  | BFvar :: h, CLocalAssum ([{CAst.v=x}], _, _,  _) :: bl ->
     Bvar x :: format_local_binders h bl
-  | BFdecl _ :: h, CLocalAssum (lxs, _, t) :: bl ->
+  | BFdecl _ :: h, CLocalAssum (lxs, _, _, t) :: bl ->
     Bdecl (List.map (fun x -> x.CAst.v) lxs, t) :: format_local_binders h bl
-  | BFdef :: h, CLocalDef ({CAst.v=x}, v, oty) :: bl ->
+  | BFdef :: h, CLocalDef ({CAst.v=x}, _, v, oty) :: bl ->
     Bdef (x, oty, v) :: format_local_binders h bl
   | _ -> []
 
 let rec format_constr_expr h0 c0 = let open CAst in match h0, c0 with
-  | BFvar :: h, { v = CLambdaN ([CLocalAssum([{CAst.v=x}], _, _)], c) } ->
+  | BFvar :: h, { v = CLambdaN ([CLocalAssum([{CAst.v=x}], _, _, _)], c) } ->
     let bs, c' = format_constr_expr h c in
     Bvar x :: bs, c'
-  | BFdecl _:: h, { v = CLambdaN ([CLocalAssum(lxs, _, t)], c) } ->
+  | BFdecl _:: h, { v = CLambdaN ([CLocalAssum(lxs, _, _, t)], c) } ->
     let bs, c' = format_constr_expr h c in
     Bdecl (List.map (fun x -> x.CAst.v) lxs, t) :: bs, c'
   | BFdef :: h, { v = CLetIn({CAst.v=x}, v, oty, c) } ->
     let bs, c' = format_constr_expr h c in
     Bdef (x, oty, v) :: bs, c'
-  | [BFcast], { v = CCast (c, Glob_term.CastConv t) } ->
+  | [BFcast], { v = CCast (c, defaultCast, t) } ->
     [Bcast t], c
   | BFrec (has_str, has_cast) :: h,
-    { v = CFix ( _, [_, Some {CAst.v = CStructRec locn}, bl, t, c]) } ->
+    { v = CFix ( _, [_, _, Some {CAst.v = CStructRec locn}, bl, t, c]) } ->
     let bs = format_local_binders h bl in
     let bstr = if has_str then [Bstruct (Name locn.CAst.v)] else [] in
     bs @ bstr @ (if has_cast then [Bcast t] else []), c
-  | BFrec (_, has_cast) :: h, { v = CCoFix ( _, [_, bl, t, c]) } ->
+  | BFrec (_, has_cast) :: h, { v = CCoFix ( _, [_, _, bl, t, c]) } ->
     format_local_binders h bl @ (if has_cast then [Bcast t] else []), c
   | _, c ->
     [], c
@@ -1258,7 +1260,6 @@ let wit_ssrfwdfmt = add_genarg "ssrfwdfmt" (fun env sigma -> pr_fwdfmt)
 
 let mkFwdVal fk c = ((fk, []), c)
 let mkssrFwdVal fk c = ((fk, []), (c,None))
-let dC t = Glob_term.CastConv t
 
 let same_ist { interp_env = x } { interp_env = y } =
   match x,y with
@@ -1272,7 +1273,7 @@ let mkFwdCast fk ?loc ?c t =
     | Some c -> assert (same_ist t c); c.body in
   ((fk, [BFcast]),
    { t with annotation = `None;
-            body = (CAst.make ?loc @@ CCast (c, dC t.body)) })
+            body = (CAst.make ?loc @@ CCast (c, Some defaultCast, t.body)) })
 
 let mkssrFwdCast fk loc t c = ((fk, [BFcast]), (c, Some t))
 
@@ -1339,20 +1340,20 @@ ARGUMENT EXTEND ssrbinder TYPED AS (ssrfwdfmt * constr) PRINTED BY { pr_ssrbinde
  | [ ssrbvar(bv) ] ->
    { let { CAst.loc=xloc } as x = bvar_lname bv in
      (FwdPose, [BFvar]),
-     CAst.make ~loc @@ CLambdaN ([CLocalAssum([x],Default Glob_term.Explicit,mkCHole xloc)],mkCHole (Some loc)) }
+     CAst.make ~loc @@ CLambdaN ([CLocalAssum([x],None,Default Glob_term.Explicit,mkCHole xloc)],mkCHole (Some loc)) }
  | [ "(" ssrbvar(bv) ")" ] ->
    { let { CAst.loc=xloc } as x = bvar_lname bv in
      (FwdPose, [BFvar]),
-     CAst.make ~loc @@ CLambdaN ([CLocalAssum([x],Default Glob_term.Explicit,mkCHole xloc)],mkCHole (Some loc)) }
+     CAst.make ~loc @@ CLambdaN ([CLocalAssum([x],None,Default Glob_term.Explicit,mkCHole xloc)],mkCHole (Some loc)) }
  | [ "(" ssrbvar(bv) ":" lconstr(t) ")" ] ->
    { let x = bvar_lname bv in
      (FwdPose, [BFdecl 1]),
-     CAst.make ~loc @@ CLambdaN ([CLocalAssum([x], Default Glob_term.Explicit, t)], mkCHole (Some loc)) }
+     CAst.make ~loc @@ CLambdaN ([CLocalAssum([x], None, Default Glob_term.Explicit, t)], mkCHole (Some loc)) }
  | [ "(" ssrbvar(bv) ne_ssrbvar_list(bvs) ":" lconstr(t) ")" ] ->
    { let xs = List.map bvar_lname (bv :: bvs) in
      let n = List.length xs in
      (FwdPose, [BFdecl n]),
-     CAst.make ~loc @@ CLambdaN ([CLocalAssum (xs, Default Glob_term.Explicit, t)], mkCHole (Some loc)) }
+     CAst.make ~loc @@ CLambdaN ([CLocalAssum (xs, None, Default Glob_term.Explicit, t)], mkCHole (Some loc)) }
  | [ "(" ssrbvar(id) ":" lconstr(t) ":=" lconstr(v) ")" ] ->
    { (FwdPose,[BFdef]), CAst.make ~loc @@ CLetIn (bvar_lname id, v, Some t, mkCHole (Some loc)) }
  | [ "(" ssrbvar(id) ":=" lconstr(v) ")" ] ->
@@ -1364,7 +1365,7 @@ GRAMMAR EXTEND Gram
   ssrbinder: TOP [
   [  ["of" -> { () } | "&" -> { () } ]; c = term LEVEL "99" -> {
      (FwdPose, [BFvar]),
-     CAst.make ~loc @@ CLambdaN ([CLocalAssum ([CAst.make ~loc Anonymous],Default Glob_term.Explicit,c)],mkCHole (Some loc)) } ]
+     CAst.make ~loc @@ CLambdaN ([CLocalAssum ([CAst.make ~loc Anonymous],None,Default Glob_term.Explicit,c)],mkCHole (Some loc)) } ]
   ];
 END
 
@@ -1387,15 +1388,15 @@ let push_binders c2 bs =
   | [] -> c
   | _ -> anomaly "binder not a lambda nor a let in" in
   match c2 with
-  | { loc; v = CCast (ct, Glob_term.CastConv cty) } ->
-      CAst.make ?loc @@ (CCast (loop false ct bs, Glob_term.CastConv (loop true cty bs)))
+  | { loc; v = CCast (ct, defaultCast, cty) } ->
+      CAst.make ?loc @@ (CCast (loop false ct bs, defaultCast, (loop true cty bs)))
   | ct -> loop false ct bs
 
 let rec fix_binders = let open CAst in function
-  | (_, { v = CLambdaN ([CLocalAssum(xs, _, t)], _) } ) :: bs ->
-      CLocalAssum (xs, Default Glob_term.Explicit, t) :: fix_binders bs
+  | (_, { v = CLambdaN ([CLocalAssum(xs, _, _, t)], _) } ) :: bs ->
+      CLocalAssum (xs, None, Default Glob_term.Explicit, t) :: fix_binders bs
   | (_, { v = CLetIn (x, v, oty, _) } ) :: bs ->
-    CLocalDef (x, v, oty) :: fix_binders bs
+    CLocalDef (x, None, v, oty) :: fix_binders bs
   | _ -> []
 
 let pr_ssrstruct _ _ _ = function
@@ -1456,7 +1457,7 @@ ARGUMENT EXTEND ssrfixfwd TYPED AS (ident * ssrfwd) PRINTED BY { pr_ssrfixfwd }
           | [] -> CErrors.user_err (Pp.str "Bad structural argument") in
         loop (names_of_local_assums lb) in
       let h' = BFrec (has_struct, has_cast) :: binders_fmts bs in
-      let fix = CAst.make ~loc @@ CFix (lid, [lid, (Some (CAst.make (CStructRec i))), lb, t', c']) in
+      let fix = CAst.make ~loc @@ CFix (lid, [lid, None, (Some (CAst.make (CStructRec i))), lb, t', c']) in
       id, ((fk, h'),  { ac with body = fix }) }
 END
 
@@ -1478,17 +1479,17 @@ ARGUMENT EXTEND ssrcofixfwd TYPED AS ssrfixfwd PRINTED BY { pr_ssrcofixfwd }
       | [Bcast t'], c' -> true, t', c'
       | _ -> false, mkCHole (constr_loc c), c in
       let h' = BFrec (false, has_cast) :: binders_fmts bs in
-      let cofix = CAst.make ~loc @@ CCoFix (lid, [lid, fix_binders bs, t', c']) in
+      let cofix = CAst.make ~loc @@ CCoFix (lid, [lid, None, fix_binders bs, t', c']) in
       id, ((fk, h'), { ac with body = cofix })
     }
 END
 
 {
 
-(* This does not print the type, it should be fixed... *)
-let pr_ssrsetfwd _ _ _ (((fk,_),(t,_)), docc) =
-  pr_gen_fwd (fun _ _ -> pr_cpattern)
-    (fun _ -> mt()) (fun _ -> mt()) fk ([Bcast ()],t)
+let pr_ssrsetfwd _ _ _ (((fk,_),(c,t)), docc) =
+  let t = Option.default [] @@ Option.map (fun t -> [Bcast t]) t in
+  pr_gen_fwd (fun _ _ c -> Pp.(pr_docc docc ++ pr_cpattern c))
+    (fun _ -> mt()) pr_ast_closure_term fk (t, c)
 
 }
 
@@ -1523,13 +1524,13 @@ let intro_id_to_binder = List.map (function
   | IPatId id ->
       let { CAst.loc=xloc } as x = bvar_lname (mkCVar id) in
       (FwdPose, [BFvar]),
-        CAst.make @@ CLambdaN ([CLocalAssum([x], Default Glob_term.Explicit, mkCHole xloc)],
+        CAst.make @@ CLambdaN ([CLocalAssum([x], None, Default Glob_term.Explicit, mkCHole xloc)],
           mkCHole None)
   | _ -> anomaly "non-id accepted as binder")
 
 let binder_to_intro_id = CAst.(List.map (function
-  | (FwdPose, [BFvar]), { v = CLambdaN ([CLocalAssum(ids,_,_)],_) }
-  | (FwdPose, [BFdecl _]), { v = CLambdaN ([CLocalAssum(ids,_,_)],_) } ->
+  | (FwdPose, [BFvar]), { v = CLambdaN ([CLocalAssum(ids,_,_,_)],_) }
+  | (FwdPose, [BFdecl _]), { v = CLambdaN ([CLocalAssum(ids,_,_,_)],_) } ->
       List.map (function {v=Name id} -> IPatId id | _ -> IPatAnon (One None)) ids
   | (FwdPose, [BFdef]), { v = CLetIn ({v=Name id},_,_,_) } -> [IPatId id]
   | (FwdPose, [BFdef]), { v = CLetIn ({v=Anonymous},_,_,_) } -> [IPatAnon (One None)]
@@ -1594,21 +1595,14 @@ let sq_brace_tacnames =
    (* "by" is a keyword *)
 
 let test_ssrseqvar =
-  let open Pcoq.Lookahead in
+  let open Procq.Lookahead in
   to_entry "test_ssrseqvar" begin
     lk_ident_except sq_brace_tacnames >> (lk_kws ["[";"first";"last"])
   end
 
 let swaptacarg (loc, b) = (b, []), Some (CAst.make ~loc (TacId []))
 
-let check_seqtacarg dir arg = match snd arg, dir with
-  | ((true, []), Some { CAst.loc; v=(TacAtom _)}), L2R ->
-    CErrors.user_err ?loc (str "expected \"last\"")
-  | ((false, []), Some { CAst.loc; v=(TacAtom _) }), R2L ->
-    CErrors.user_err ?loc (str "expected \"first\"")
-  | _, _ -> arg
-
-let ssrorelse = Entry.create "ssrorelse"
+let ssrorelse = Entry.make "ssrorelse"
 
 }
 
@@ -1638,7 +1632,7 @@ let ltac_expr = Pltac.ltac_expr
 
 (** Name generation *)
 
-(* Since Coq now does repeated internal checks of its external lexical *)
+(* Since Rocq now does repeated internal checks of its external lexical *)
 (* rules, we now need to carve ssreflect reserved identifiers out of   *)
 (* out of the user namespace. We use identifiers of the form _id_ for  *)
 (* this purpose, e.g., we "anonymize" an identifier id as _id_, adding *)
@@ -1649,22 +1643,15 @@ let ltac_expr = Pltac.ltac_expr
 
 {
 
-let ssr_reserved_ids = Summary.ref ~name:"SSR:idents" true
-
-let () =
-  Goptions.(declare_bool_option
-    { optkey   = ["SsrIdents"];
-      optdepr  = false;
-      optread  = (fun _ -> !ssr_reserved_ids);
-      optwrite = (fun b -> ssr_reserved_ids := b)
-    })
+let { Goptions.get = ssr_reserved_ids } =
+  Goptions.declare_bool_option_and_ref ~stage:Synterp ~key:["SsrIdents"] ~value:true ()
 
 let is_ssr_reserved s =
   let n = String.length s in n > 2 && s.[0] = '_' && s.[n - 1] = '_'
 
 let ssr_id_of_string loc s =
   if is_ssr_reserved s && is_ssr_loaded () then begin
-    if !ssr_reserved_ids then
+    if ssr_reserved_ids() then
       CErrors.user_err ~loc (str ("The identifier " ^ s ^ " is reserved."))
     else if is_internal_name s then
       Feedback.msg_warning (str ("Conflict between " ^ s ^ " and ssreflect internal names."))
@@ -1673,7 +1660,7 @@ let ssr_id_of_string loc s =
   ^ "Scripts with explicit references to anonymous variables are fragile."))
     end; Id.of_string s
 
-let ssr_null_entry = Pcoq.Entry.(of_parser "ssr_null" { parser_fun = fun _ -> () })
+let ssr_null_entry = Procq.Entry.(of_parser "ssr_null" { parser_fun = fun _ _ -> () })
 
 }
 
@@ -1722,7 +1709,10 @@ let tclintros_expr ?loc tac ipats =
 
 GRAMMAR EXTEND Gram
   GLOBAL: ltac_expr;
-  ltac_expr: LEVEL "1" [
+  ltac_expr: LEVEL "3" [
+    [ tac = ltac_expr; intros = ssrintros_ne -> { tclintros_expr ~loc tac intros }
+    ] ];
+  ltac_expr: LEVEL "4" [
     [ tac = ltac_expr; intros = ssrintros_ne -> { tclintros_expr ~loc tac intros }
     ] ];
 END
@@ -1742,950 +1732,12 @@ GRAMMAR EXTEND Gram
   ltac_expr: LEVEL "0" [[ arg = ssrparentacarg -> { CAst.make ~loc (TacArg CAst.(arg.v)) } ]];
 END
 
-(** The internal "done" and "ssrautoprop" tactics. *)
-
-(* For additional flexibility, "done" and "ssrautoprop" are  *)
-(* defined in Ltac.                                          *)
-(* Although we provide a default definition in ssreflect,    *)
-(* we look up the definition dynamically at each call point, *)
-(* to allow for user extensions. "ssrautoprop" defaults to   *)
-(* trivial.                                                  *)
-
-{
-
-let ssrautoprop =
-  Proofview.Goal.enter begin fun gl ->
-  try
-    let tacname =
-      try Tacenv.locate_tactic (qualid_of_ident (Id.of_string "ssrautoprop"))
-      with Not_found -> Tacenv.locate_tactic (ssrqid "ssrautoprop") in
-    let tacexpr = CAst.make @@ Tacexpr.Reference (ArgArg (Loc.tag @@ tacname)) in
-    eval_tactic (CAst.make @@ Tacexpr.TacArg CAst.(tacexpr.v))
-  with Not_found -> Auto.full_trivial []
-  end
-
-let () = ssrautoprop_tac := ssrautoprop
-
-let tclBY tac = Tacticals.New.tclTHEN tac (donetac ~-1)
-
-(** Tactical arguments. *)
-
-(* We have four kinds: simple tactics, [|]-bracketed lists, hints, and swaps *)
-(* The latter two are used in forward-chaining tactics (have, suffice, wlog) *)
-(* and subgoal reordering tacticals (; first & ; last), respectively.        *)
-
-(* Force use of the ltac_expr parsing entry, to rule out tick marks. *)
-
-(** The "by" tactical. *)
-
-
-open Ssrfwd
-
-}
-
-TACTIC EXTEND ssrtclby
-| [ "by" ssrhintarg(tac) ] -> { hinttac ist true tac }
-END
-
-(* We can't parse "by" in ARGUMENT EXTEND because it will only be made *)
-(* into a keyword in ssreflect.v; so we anticipate this in GEXTEND.    *)
-
-GRAMMAR EXTEND Gram
-  GLOBAL: ssrhint simple_tactic;
-  ssrhint: TOP [[ "by"; arg = ssrhintarg -> { arg } ]];
-END
-
-(** The "do" tactical. ********************************************************)
-
-{
-
-let tcldokey =
-  let open Pptactic in
-  let prods = [ TacTerm "do"; mk_non_term wit_ssrdoarg (Names.Id.of_string "arg") ] in
-  let tac = begin fun args ist -> match args with
-    | [arg] ->
-      let arg = cast_arg wit_ssrdoarg arg in
-      ssrdotac ist arg
-    | _ -> assert false
-  end in
-  register_ssrtac "tcldo" tac prods
-
-let ssrdotac_expr ?loc n m tac clauses =
-  let arg = ((n, m), tac), clauses in
-  ssrtac_expr ?loc tcldokey [in_gen (rawwit wit_ssrdoarg) arg]
-
-}
-
-GRAMMAR EXTEND Gram
-  GLOBAL: ltac_expr;
-  ssrdotac: [
-    [ tac = ltac_expr LEVEL "3" -> { mk_hint tac }
-    | tacs = ssrortacarg -> { tacs }
-  ] ];
-  ltac_expr: LEVEL "3" [
-    [ IDENT "do"; m = ssrmmod; tac = ssrdotac; clauses = ssrclauses ->
-      { ssrdotac_expr ~loc noindex m tac clauses }
-    | IDENT "do"; tac = ssrortacarg; clauses = ssrclauses ->
-      { ssrdotac_expr ~loc noindex Once tac clauses }
-    | IDENT "do"; n = nat_or_var; m = ssrmmod;
-                  tac = ssrdotac; clauses = ssrclauses ->
-      { ssrdotac_expr ~loc (mk_index ~loc n) m tac clauses }
-    ] ];
-END
-
-{
-
-(* We can't actually parse the direction separately because this   *)
-(* would introduce conflicts with the basic ltac syntax.           *)
-let pr_ssrseqdir _ _ _ = function
-  | L2R -> str ";" ++ spc () ++ str "first "
-  | R2L -> str ";" ++ spc () ++ str "last "
-
-}
-
-ARGUMENT EXTEND ssrseqdir TYPED AS ssrdir PRINTED BY { pr_ssrseqdir }
-END
-
-{
-
-let tclseqkey =
-  let prods =
-    [ mk_non_term wit_ssrtclarg (Names.Id.of_string "tac")
-    ; mk_non_term wit_ssrseqdir (Names.Id.of_string "dir")
-    ; mk_non_term wit_ssrseqarg (Names.Id.of_string "arg") ] in
-  let tac =  begin fun args ist -> match args with
-    | [tac; dir; arg] ->
-      let tac = cast_arg wit_ssrtclarg tac in
-      let dir = cast_arg wit_ssrseqdir dir in
-      let arg = cast_arg wit_ssrseqarg arg in
-      tclSEQAT ist tac dir arg
-    | _ -> assert false
-  end in
-  register_ssrtac "tclseq" tac prods
-
-let tclseq_expr ?loc tac dir arg =
-  let arg1 = in_gen (rawwit wit_ssrtclarg) tac in
-  let arg2 = in_gen (rawwit wit_ssrseqdir) dir in
-  let arg3 = in_gen (rawwit wit_ssrseqarg) (check_seqtacarg dir arg) in
-  ssrtac_expr ?loc tclseqkey [arg1; arg2; arg3]
-
-}
-
-GRAMMAR EXTEND Gram
-  GLOBAL: ltac_expr;
-  ssr_first: [
-    [ tac = ssr_first; ipats = ssrintros_ne -> { tclintros_expr ~loc tac ipats }
-    | "["; tacl = LIST0 ltac_expr SEP "|"; "]" -> { CAst.make ~loc (TacFirst tacl) }
-    ] ];
-  ssr_first_else: [
-    [ tac1 = ssr_first; tac2 = ssrorelse -> { CAst.make ~loc (TacOrelse (tac1, tac2)) }
-    | tac = ssr_first -> { tac } ]];
-  ltac_expr: LEVEL "4" [
-    [ tac1 = ltac_expr; ";"; IDENT "first"; tac2 = ssr_first_else ->
-      { CAst.make ~loc (TacThen (tac1, tac2)) }
-    | tac = ltac_expr; ";"; IDENT "first"; arg = ssrseqarg ->
-      { tclseq_expr ~loc tac L2R arg }
-    | tac = ltac_expr; ";"; IDENT "last"; arg = ssrseqarg ->
-      { tclseq_expr ~loc tac R2L arg }
-    ] ];
-END
-
-(** 5. Bookkeeping tactics (clear, move, case, elim) *)
-
-(** Generalization (discharge) item *)
-
-(* An item is a switch + term pair.                                     *)
-
-(* type ssrgen = ssrdocc * ssrterm *)
-
-{
-
-let pr_gen (docc, dt) = pr_docc docc ++ pr_cpattern dt
-
-let pr_ssrgen _ _ _ = pr_gen
-
-}
-
-ARGUMENT EXTEND ssrgen TYPED AS (ssrdocc * cpattern) PRINTED BY { pr_ssrgen }
-| [ ssrdocc(docc) cpattern(dt) ] -> {
-     match docc with
-     | Some [], _ -> CErrors.user_err ~loc (str"Clear flag {} not allowed here")
-     | _ -> docc, dt }
-| [ cpattern(dt) ] -> { nodocc, dt }
-END
-
-{
-
-let has_occ ((_, occ), _) = occ <> None
-
-(** Generalization (discharge) sequence *)
-
-(* A discharge sequence is represented as a list of up to two   *)
-(* lists of d-items, plus an ident list set (the possibly empty *)
-(* final clear switch). The main list is empty iff the command  *)
-(* is defective, and has length two if there is a sequence of   *)
-(* dependent terms (and in that case it is the first of the two *)
-(* lists). Thus, the first of the two lists is never empty.     *)
-
-(* type ssrgens = ssrgen list *)
-(* type ssrdgens = ssrgens list * ssrclear *)
-
-let gens_sep = function [], [] -> mt | _ -> spc
-
-let pr_dgens pr_gen (gensl, clr) =
-  let prgens s gens =
-  if CList.is_empty gens then mt () else str s ++ pr_list spc pr_gen gens in
-  let prdeps deps = prgens ": " deps ++ spc () ++ str "/" in
-  match gensl with
-  | [deps; []] -> prdeps deps ++ pr_clear pr_spc clr
-  | [deps; gens] -> prdeps deps ++ prgens " " gens ++ pr_clear spc clr
-  | [gens] -> prgens ": " gens ++ pr_clear spc clr
-  | _ -> pr_clear pr_spc clr
-
-let pr_ssrdgens _ _ _ = pr_dgens pr_gen
-
-let cons_gen gen = function
-  | gens :: gensl, clr -> (gen :: gens) :: gensl, clr
-  | _ -> anomaly "missing gen list"
-
-let cons_dep (gensl, clr) =
-  if List.length gensl = 1 then ([] :: gensl, clr) else
-  CErrors.user_err (Pp.str "multiple dependents switches '/'")
-
-}
-
-ARGUMENT EXTEND ssrdgens_tl TYPED AS (ssrgen list list * ssrclear)
-                            PRINTED BY { pr_ssrdgens }
-| [ "{" ne_ssrhyp_list(clr) "}" cpattern(dt) ssrdgens_tl(dgens) ] ->
-  { cons_gen (mkclr clr, dt) dgens }
-| [ "{" ne_ssrhyp_list(clr) "}" ] ->
-  { [[]], clr }
-| [ "{" ssrocc(occ) "}" cpattern(dt) ssrdgens_tl(dgens) ] ->
-  { cons_gen (mkocc occ, dt) dgens }
-| [ "/" ssrdgens_tl(dgens) ] ->
-  { cons_dep dgens }
-| [ cpattern(dt) ssrdgens_tl(dgens) ] ->
-  { cons_gen (nodocc, dt) dgens }
-| [ ] ->
-  { [[]], [] }
-END
-
-ARGUMENT EXTEND ssrdgens TYPED AS ssrdgens_tl PRINTED BY { pr_ssrdgens }
-| [ ":" ssrgen(gen) ssrdgens_tl(dgens) ] -> { cons_gen gen dgens }
-END
-
-(** Equations *)
-
-(* argument *)
-
 {
 type ssreqid = ssripatrep option
 
-let pr_eqid = function Some pat -> str " " ++ pr_ipat pat | None -> mt ()
-let pr_ssreqid _ _ _ = pr_eqid
-
-}
-
-(* We must use primitive parsing here to avoid conflicts with the  *)
-(* basic move, case, and elim tactics.                             *)
-ARGUMENT EXTEND ssreqid TYPED AS ssripatrep option PRINTED BY { pr_ssreqid }
-END
-
-{
-
-let test_ssreqid =
-  let open Pcoq.Lookahead in
-  to_entry "test_ssreqid" begin
-    ((lk_ident <+> lk_kws ["_"; "?"; "->"; "<-"]) >> lk_kw ":") <+> lk_kw ":"
-  end
-
-}
-
-GRAMMAR EXTEND Gram
-  GLOBAL: ssreqid;
-  ssreqpat: [
-    [ id = Prim.ident -> { IPatId id }
-    | "_" -> { IPatAnon Drop }
-    | "?" -> { IPatAnon (One None) }
-    | "+" -> { IPatAnon Temporary }
-    | occ = ssrdocc; "->" -> { match occ with
-      | None, occ -> IPatRewrite (occ, L2R)
-      | _ -> CErrors.user_err ~loc (str"Only occurrences are allowed here") }
-    | occ = ssrdocc; "<-" -> { match occ with
-      | None, occ ->  IPatRewrite (occ, R2L)
-      | _ -> CErrors.user_err ~loc (str "Only occurrences are allowed here") }
-    | "->" -> { IPatRewrite (allocc, L2R) }
-    | "<-" -> { IPatRewrite (allocc, R2L) }
-    ]];
-  ssreqid: TOP [
-    [ test_ssreqid; pat = ssreqpat -> { Some pat }
-    | test_ssreqid -> { None }
-    ]];
-END
-
-(** Bookkeeping (discharge-intro) argument *)
-
-(* Since all bookkeeping ssr commands have the same discharge-intro    *)
-(* argument format we use a single grammar entry point to parse them.  *)
-(* the entry point parses only non-empty arguments to avoid conflicts  *)
-(* with the basic Coq tactics.                                         *)
-
-{
-
 type ssrarg = ssrfwdview * (ssreqid * (cpattern ssragens * ssripats))
 
-(* type ssrarg = ssrbwdview * (ssreqid * (ssrdgens * ssripats)) *)
-
-let pr_ssrarg _ _ _ (view, (eqid, (dgens, ipats))) =
-  let pri = pr_intros (gens_sep dgens) in
-  pr_view2 view ++ pr_eqid eqid ++ pr_dgens pr_gen dgens ++ pri ipats
-
 }
-
-ARGUMENT EXTEND ssrarg TYPED AS (ssrfwdview * (ssreqid * (ssrdgens * ssrintros)))
-   PRINTED BY { pr_ssrarg }
-| [ ssrfwdview(view) ssreqid(eqid) ssrdgens(dgens) ssrintros(ipats) ] ->
-  { view, (eqid, (dgens, ipats)) }
-| [ ssrfwdview(view) ssrclear(clr) ssrintros(ipats) ] ->
-  { view, (None, (([], clr), ipats)) }
-| [ ssreqid(eqid) ssrdgens(dgens) ssrintros(ipats) ] ->
-  { [], (eqid, (dgens, ipats)) }
-| [ ssrclear_ne(clr) ssrintros(ipats) ] ->
-  { [], (None, (([], clr), ipats)) }
-| [ ssrintros_ne(ipats) ] ->
-  { [], (None, (([], []), ipats)) }
-END
-
-(** The "clear" tactic *)
-
-(* We just add a numeric version that clears the n top assumptions. *)
-
-TACTIC EXTEND ssrclear
-  | [ "clear" natural(n) ] -> { tclIPAT (List.init n (fun _ -> IOpDrop)) }
-END
-
-(** The "move" tactic *)
-
-{
-
-(* TODO: review this, in particular the => _ and => [] cases *)
-let rec improper_intros = function
-  | IPatSimpl _ :: ipats -> improper_intros ipats
-  | (IPatId _ | IPatAnon _ | IPatCase _ | IPatDispatch _) :: _ -> false
-  | _ -> true (* FIXME *)
-
-let check_movearg = function
-  | view, (eqid, _) when view <> [] && eqid <> None ->
-    CErrors.user_err (Pp.str "incompatible view and equation in move tactic")
-  | view, (_, (([gen :: _], _), _)) when view <> [] && has_occ gen ->
-    CErrors.user_err (Pp.str "incompatible view and occurrence switch in move tactic")
-  | _, (_, ((dgens, _), _)) when List.length dgens > 1 ->
-    CErrors.user_err (Pp.str "dependents switch `/' in move tactic")
-  | _, (eqid, (_, ipats)) when eqid <> None && improper_intros ipats ->
-    CErrors.user_err (Pp.str "no proper intro pattern for equation in move tactic")
-  | arg -> arg
-
-}
-
-ARGUMENT EXTEND ssrmovearg TYPED AS ssrarg PRINTED BY { pr_ssrarg }
-| [ ssrarg(arg) ] -> { check_movearg arg }
-END
-
-{
-
-let movearg_of_parsed_movearg (v,(eq,(dg,ip))) =
-  (v,(eq,(ssrdgens_of_parsed_dgens dg,ip)))
-
-}
-
-TACTIC EXTEND ssrmove
-| [ "move" ssrmovearg(arg) ssrrpat(pat) ] ->
-  { ssrmovetac (movearg_of_parsed_movearg arg) <*> tclIPAT (tclCompileIPats [pat]) }
-| [ "move" ssrmovearg(arg) ssrclauses(clauses) ] ->
-  { tclCLAUSES (ssrmovetac (movearg_of_parsed_movearg arg)) clauses }
-| [ "move" ssrrpat(pat) ] -> { tclIPAT (tclCompileIPats [pat]) }
-| [ "move" ] -> { ssrsmovetac }
-END
-
-{
-
-let check_casearg = function
-| view, (_, (([_; gen :: _], _), _)) when view <> [] && has_occ gen ->
-  CErrors.user_err (Pp.str "incompatible view and occurrence switch in dependent case tactic")
-| arg -> arg
-
-}
-
-ARGUMENT EXTEND ssrcasearg TYPED AS ssrarg PRINTED BY { pr_ssrarg }
-| [ ssrarg(arg) ] -> { check_casearg arg }
-END
-
-TACTIC EXTEND ssrcase
-| [ "case" ssrcasearg(arg) ssrclauses(clauses) ] ->
-  { tclCLAUSES (ssrcasetac (movearg_of_parsed_movearg arg)) clauses }
-| [ "case" ] -> { ssrscasetoptac }
-END
-
-(** The "elim" tactic *)
-
-TACTIC EXTEND ssrelim
-| [ "elim" ssrarg(arg) ssrclauses(clauses) ] ->
-  { tclCLAUSES (ssrelimtac (movearg_of_parsed_movearg arg)) clauses }
-| [ "elim" ] -> { ssrselimtoptac }
-END
-
-(** 6. Backward chaining tactics: apply, exact, congr. *)
-
-(** The "apply" tactic *)
-
-{
-
-let pr_agen (docc, dt) = pr_docc docc ++ pr_term dt
-let pr_ssragen _ _ _ = pr_agen
-let pr_ssragens _ _ _ = pr_dgens pr_agen
-
-}
-
-ARGUMENT EXTEND ssragen TYPED AS (ssrdocc * ssrterm) PRINTED BY { pr_ssragen }
-| [ "{" ne_ssrhyp_list(clr) "}" ssrterm(dt) ] -> { mkclr clr, dt }
-| [ ssrterm(dt) ] -> { nodocc, dt }
-END
-
-ARGUMENT EXTEND ssragens TYPED AS (ssragen list list * ssrclear)
-PRINTED BY { pr_ssragens }
-| [ "{" ne_ssrhyp_list(clr) "}" ssrterm(dt) ssragens(agens) ] ->
-  { cons_gen (mkclr clr, dt) agens }
-| [ "{" ne_ssrhyp_list(clr) "}" ] -> { [[]], clr}
-| [ ssrterm(dt) ssragens(agens) ] ->
-  { cons_gen (nodocc, dt) agens }
-| [ ] -> { [[]], [] }
-END
-
-{
-
-let mk_applyarg views agens intros = views, (agens, intros)
-
-let pr_ssraarg _ _ _ (view, (dgens, ipats)) =
-  let pri = pr_intros (gens_sep dgens) in
-  pr_view view ++ pr_dgens pr_agen dgens ++ pri ipats
-
-}
-
-ARGUMENT EXTEND ssrapplyarg
-TYPED AS (ssrbwdview * (ssragens * ssrintros))
-PRINTED BY { pr_ssraarg }
-| [ ":" ssragen(gen) ssragens(dgens) ssrintros(intros) ] ->
-  { mk_applyarg [] (cons_gen gen dgens) intros }
-| [ ssrclear_ne(clr) ssrintros(intros) ] ->
-  { mk_applyarg [] ([], clr) intros }
-| [ ssrintros_ne(intros) ] ->
-  { mk_applyarg [] ([], []) intros }
-| [ ssrbwdview(view) ":" ssragen(gen) ssragens(dgens) ssrintros(intros) ] ->
-  { mk_applyarg view (cons_gen gen dgens) intros }
-| [ ssrbwdview(view) ssrclear(clr) ssrintros(intros) ] ->
-  { mk_applyarg view ([], clr) intros }
-    END
-
-TACTIC EXTEND ssrapply
-| [ "apply" ssrapplyarg(arg) ] -> {
-     let views, (gens_clr, intros) = arg in
-     inner_ssrapplytac views gens_clr ist <*> tclIPATssr intros }
-| [ "apply" ] -> { apply_top_tac }
-END
-
-(** The "exact" tactic *)
-
-{
-
-let mk_exactarg views dgens = mk_applyarg views dgens []
-
-}
-
-ARGUMENT EXTEND ssrexactarg TYPED AS ssrapplyarg PRINTED BY { pr_ssraarg }
-| [ ":" ssragen(gen) ssragens(dgens) ] ->
-  { mk_exactarg [] (cons_gen gen dgens) }
-| [ ssrbwdview(view) ssrclear(clr) ] ->
-  { mk_exactarg view ([], clr) }
-| [ ssrclear_ne(clr) ] ->
-  { mk_exactarg [] ([], clr) }
-END
-
-{
-
-let vmexacttac pf =
-  Goal.enter begin fun gl ->
-  exact_no_check (EConstr.mkCast (pf, _vmcast, Tacmach.New.pf_concl gl))
-  end
-
-}
-
-TACTIC EXTEND ssrexact
-| [ "exact" ssrexactarg(arg) ] -> {
-     let views, (gens_clr, _) = arg in
-     tclBY (inner_ssrapplytac views gens_clr ist) }
-| [ "exact" ] -> {
-     Tacticals.New.tclORELSE (donetac ~-1) (tclBY apply_top_tac) }
-| [ "exact" "<:" lconstr(pf) ] -> { vmexacttac pf }
-END
-
-(** The "congr" tactic *)
-
-{
-
-let pr_ssrcongrarg _ _ _ ((n, f), dgens) =
-  (if n <= 0 then mt () else str " " ++ int n) ++
-  pr_term f ++ pr_dgens pr_gen dgens
-
-}
-
-ARGUMENT EXTEND ssrcongrarg TYPED AS ((int * ssrterm) * ssrdgens)
-  PRINTED BY { pr_ssrcongrarg }
-| [ natural(n) constr(c) ssrdgens(dgens) ] -> { (n, mk_term NoFlag c), dgens }
-| [ natural(n) constr(c) ] -> { (n, mk_term NoFlag c),([[]],[]) }
-| [ constr(c) ssrdgens(dgens) ] -> { (0, mk_term NoFlag c), dgens }
-| [ constr(c) ] -> { (0, mk_term NoFlag c), ([[]],[]) }
-END
-
-
-
-TACTIC EXTEND ssrcongr
-| [ "congr" ssrcongrarg(arg) ] ->
-{ let arg, dgens = arg in
-  Proofview.Goal.enter begin fun _ ->
-    match dgens with
-    | [gens], clr -> Tacticals.New.tclTHEN (genstac (gens,clr)) (newssrcongrtac arg ist)
-    | _ -> errorstrm (str"Dependent family abstractions not allowed in congr")
-  end }
-END
-
-(** 7. Rewriting tactics (rewrite, unlock) *)
-
-(** Coq rewrite compatibility flag *)
-
-(** Rewrite clear/occ switches *)
-
-{
-
-let pr_rwocc = function
-  | None, None -> mt ()
-  | None, occ -> pr_occ occ
-  | Some clr,  _ ->  pr_clear_ne clr
-
-let pr_ssrrwocc _ _ _ = pr_rwocc
-
-}
-
-ARGUMENT EXTEND ssrrwocc TYPED AS ssrdocc PRINTED BY { pr_ssrrwocc }
-| [ "{" ssrhyp_list(clr) "}" ] -> { mkclr clr }
-| [ "{" ssrocc(occ) "}" ] -> { mkocc occ }
-| [ ] -> { noclr }
-END
-
-(** Rewrite rules *)
-
-{
-
-let pr_rwkind = function
-  | RWred s -> pr_simpl s
-  | RWdef -> str "/"
-  | RWeq -> mt ()
-
-let wit_ssrrwkind = add_genarg "ssrrwkind" (fun env sigma -> pr_rwkind)
-
-let pr_rule = function
-  | RWred s, _ -> pr_simpl s
-  | RWdef, r-> str "/" ++ pr_term r
-  | RWeq, r -> pr_term r
-
-let pr_ssrrule _ _ _ = pr_rule
-
-let noruleterm loc = mk_term NoFlag (mkCProp loc)
-
-}
-
-ARGUMENT EXTEND ssrrule_ne TYPED AS (ssrrwkind * ssrterm) PRINTED BY { pr_ssrrule }
-END
-
-GRAMMAR EXTEND Gram
-  GLOBAL: ssrrule_ne;
-  ssrrule_ne : TOP [
-    [ test_not_ssrslashnum; x =
-        [ "/"; t = ssrterm -> { RWdef, t }
-        | t = ssrterm -> { RWeq, t }
-        | s = ssrsimpl_ne -> { RWred s, noruleterm (Some loc) }
-        ] -> { x }
-    | s = ssrsimpl_ne -> { RWred s, noruleterm (Some loc) }
-  ]];
-END
-
-ARGUMENT EXTEND ssrrule TYPED AS ssrrule_ne PRINTED BY { pr_ssrrule }
-  | [ ssrrule_ne(r) ] -> { r }
-  | [ ] -> { RWred Nop, noruleterm (Some loc) }
-END
-
-(** Rewrite arguments *)
-
-{
-
-let pr_option f = function None -> mt() | Some x -> f x
-let pr_pattern_squarep= pr_option (fun r -> str "[" ++ pr_rpattern r ++ str "]")
-let pr_ssrpattern_squarep _ _ _ = pr_pattern_squarep
-let pr_rwarg ((d, m), ((docc, rx), r)) =
-  pr_rwdir d ++ pr_mult m ++ pr_rwocc docc ++ pr_pattern_squarep rx ++ pr_rule r
-
-let pr_ssrrwarg _ _ _ = pr_rwarg
-
-}
-
-ARGUMENT EXTEND ssrpattern_squarep
-TYPED AS rpattern option PRINTED BY { pr_ssrpattern_squarep }
-  | [ "[" rpattern(rdx) "]" ] -> { Some rdx }
-  | [ ] -> { None }
-END
-
-ARGUMENT EXTEND ssrpattern_ne_squarep
-TYPED AS rpattern option PRINTED BY { pr_ssrpattern_squarep }
-  | [ "[" rpattern(rdx) "]" ] -> { Some rdx }
-END
-
-
-ARGUMENT EXTEND ssrrwarg
-  TYPED AS ((ssrdir * ssrmult) * ((ssrdocc * rpattern option) * ssrrule))
-  PRINTED BY { pr_ssrrwarg }
-  | [ "-" ssrmult(m) ssrrwocc(docc) ssrpattern_squarep(rx) ssrrule_ne(r) ] ->
-    { mk_rwarg (R2L, m) (docc, rx) r }
-  | [ "-/" ssrterm(t) ] ->     (* just in case '-/' should become a token *)
-    { mk_rwarg (R2L, nomult) norwocc (RWdef, t) }
-  | [ ssrmult_ne(m) ssrrwocc(docc) ssrpattern_squarep(rx) ssrrule_ne(r) ] ->
-    { mk_rwarg (L2R, m) (docc, rx) r }
-  | [ "{" ne_ssrhyp_list(clr) "}" ssrpattern_ne_squarep(rx) ssrrule_ne(r) ] ->
-    { mk_rwarg norwmult (mkclr clr, rx) r }
-  | [ "{" ne_ssrhyp_list(clr) "}" ssrrule(r) ] ->
-    { mk_rwarg norwmult (mkclr clr, None) r }
-  | [ "{" ssrocc(occ) "}" ssrpattern_squarep(rx) ssrrule_ne(r) ] ->
-    { mk_rwarg norwmult (mkocc occ, rx) r }
-  | [ "{" "}" ssrpattern_squarep(rx) ssrrule_ne(r) ] ->
-    { mk_rwarg norwmult (nodocc, rx) r }
-  | [ ssrpattern_ne_squarep(rx) ssrrule_ne(r) ] ->
-    { mk_rwarg norwmult (noclr, rx) r }
-  | [ ssrrule_ne(r) ] ->
-    { mk_rwarg norwmult norwocc r }
-END
-
-TACTIC EXTEND ssrinstofruleL2R
-| [ "ssrinstancesofruleL2R" ssrterm(arg) ] -> { ssrinstancesofrule ist L2R arg }
-END
-TACTIC EXTEND ssrinstofruleR2L
-| [ "ssrinstancesofruleR2L" ssrterm(arg) ] -> { ssrinstancesofrule ist R2L arg }
-END
-
-(** Rewrite argument sequence *)
-
-(* type ssrrwargs = ssrrwarg list *)
-
-{
-
-let pr_ssrrwargs _ _ _ rwargs = pr_list spc pr_rwarg rwargs
-
-}
-
-ARGUMENT EXTEND ssrrwargs TYPED AS ssrrwarg list PRINTED BY { pr_ssrrwargs }
-END
-
-{
-
-let ssr_rw_syntax = Summary.ref ~name:"SSR:rewrite" true
-
-let () =
-  Goptions.(declare_bool_option
-    { optkey   = ["SsrRewrite"];
-      optread  = (fun _ -> !ssr_rw_syntax);
-      optdepr  = false;
-      optwrite = (fun b -> ssr_rw_syntax := b) })
-
-let lbrace = Char.chr 123
-(** Workaround to a limitation of coqpp *)
-
-let test_ssr_rw_syntax =
-  let test strm =
-    if not !ssr_rw_syntax then raise Stream.Failure else
-    if is_ssr_loaded () then () else
-    match LStream.peek_nth 0 strm with
-    | Tok.KEYWORD key when List.mem key.[0] [lbrace; '['; '/'] -> ()
-    | _ -> raise Stream.Failure in
-  Pcoq.Entry.(of_parser "test_ssr_rw_syntax" { parser_fun = test })
-
-}
-
-GRAMMAR EXTEND Gram
-  GLOBAL: ssrrwargs;
-  ssrrwargs: TOP [[ test_ssr_rw_syntax; a = LIST1 ssrrwarg -> { a } ]];
-END
-
-(** The "rewrite" tactic *)
-
-TACTIC EXTEND ssrrewrite
-  | [ "rewrite" ssrrwargs(args) ssrclauses(clauses) ] ->
-    { tclCLAUSES (ssrrewritetac ist args) clauses }
-END
-
-(** The "unlock" tactic *)
-
-{
-
-let pr_unlockarg (occ, t) = pr_occ occ ++ pr_term t
-let pr_ssrunlockarg _ _ _ = pr_unlockarg
-
-}
-
-ARGUMENT EXTEND ssrunlockarg TYPED AS (ssrocc * ssrterm)
-  PRINTED BY { pr_ssrunlockarg }
-  | [  "{" ssrocc(occ) "}" ssrterm(t) ] -> { occ, t }
-  | [  ssrterm(t) ] -> { None, t }
-END
-
-{
-
-let pr_ssrunlockargs _ _ _ args = pr_list spc pr_unlockarg args
-
-}
-
-ARGUMENT EXTEND ssrunlockargs TYPED AS ssrunlockarg list
-  PRINTED BY { pr_ssrunlockargs }
-  | [  ssrunlockarg_list(args) ] -> { args }
-END
-
-TACTIC EXTEND ssrunlock
-  | [ "unlock" ssrunlockargs(args) ssrclauses(clauses) ] ->
-    { tclCLAUSES (unlocktac ist args) clauses }
-END
-
-(** 8. Forward chaining tactics (pose, set, have, suffice, wlog) *)
-
-
-TACTIC EXTEND ssrpose
-| [ "pose" ssrfixfwd(ffwd) ] -> { ssrposetac ffwd }
-| [ "pose" ssrcofixfwd(ffwd) ] -> { ssrposetac ffwd }
-| [ "pose" ssrfwdid(id) ssrposefwd(fwd) ] -> { ssrposetac (id, fwd) }
-END
-
-(** The "set" tactic *)
-
-(* type ssrsetfwd = ssrfwd * ssrdocc *)
-
-TACTIC EXTEND ssrset
-| [ "set" ssrfwdid(id) ssrsetfwd(fwd) ssrclauses(clauses) ] ->
-  { tclCLAUSES (ssrsettac id fwd) clauses }
-END
-
-(** The "have" tactic *)
-
-(* type ssrhavefwd = ssrfwd * ssrhint *)
-
-
-(* Pltac. *)
-
-(* The standard TACTIC EXTEND does not work for abstract *)
-GRAMMAR EXTEND Gram
-  GLOBAL: ltac_expr;
-  ltac_expr: LEVEL "3"
-    [ [ IDENT "abstract"; gens = ssrdgens ->
-               { CAst.make ~loc (TacML (
-                     ssrtac_entry "abstract", [Tacexpr.TacGeneric (None, Genarg.in_gen (Genarg.rawwit wit_ssrdgens) gens)]))
-                 } ]];
-END
-TACTIC EXTEND ssrabstract
-| [ "abstract" ssrdgens(gens) ] -> {
-    if List.length (fst gens) <> 1 then
-      errorstrm (str"dependents switches '/' not allowed here");
-    Ssripats.ssrabstract (ssrdgens_of_parsed_dgens gens) }
-END
-
-TACTIC EXTEND ssrhave
-| [ "have" ssrhavefwdwbinders(fwd) ] ->
-  { havetac ist fwd false false }
-END
-
-TACTIC EXTEND ssrhavesuff
-| [ "have" "suff" ssrhpats_nobs(pats) ssrhavefwd(fwd) ] ->
-  { havetac ist (false,(pats,fwd)) true false }
-END
-
-TACTIC EXTEND ssrhavesuffices
-| [ "have" "suffices" ssrhpats_nobs(pats) ssrhavefwd(fwd) ] ->
-  { havetac ist (false,(pats,fwd)) true false }
-END
-
-TACTIC EXTEND ssrsuffhave
-| [ "suff" "have" ssrhpats_nobs(pats) ssrhavefwd(fwd) ] ->
-  { havetac ist (false,(pats,fwd)) true true }
-END
-
-TACTIC EXTEND ssrsufficeshave
-| [ "suffices" "have" ssrhpats_nobs(pats) ssrhavefwd(fwd) ] ->
-  { havetac ist (false,(pats,fwd)) true true }
-END
-
-(** The "suffice" tactic *)
-
-{
-
-let pr_ssrsufffwdwbinders env sigma _ _ prt (hpats, (fwd, hint)) =
-  pr_hpats hpats ++ pr_fwd fwd ++ pr_hint env sigma prt hint
-
-}
-
-ARGUMENT EXTEND ssrsufffwd
-  TYPED AS (ssrhpats * (ssrfwd * ssrhint)) PRINTED BY { pr_ssrsufffwdwbinders env sigma }
-| [ ssrhpats(pats) ssrbinder_list(bs)  ":" ast_closure_lterm(t) ssrhint(hint) ] ->
-  { let ((clr, pats), binders), simpl = pats in
-    let allbs = intro_id_to_binder binders @ bs in
-    let allbinders = binders @ List.flatten (binder_to_intro_id bs) in
-    let fwd = mkFwdHint ":" t in
-    (((clr, pats), allbinders), simpl), (bind_fwd allbs fwd, hint) }
-END
-
-
-TACTIC EXTEND ssrsuff
-| [ "suff" ssrsufffwd(fwd) ] -> { sufftac ist fwd }
-END
-
-TACTIC EXTEND ssrsuffices
-| [ "suffices" ssrsufffwd(fwd) ] -> { sufftac ist fwd }
-END
-
-(** The "wlog" (Without Loss Of Generality) tactic *)
-
-(* type ssrwlogfwd = ssrwgen list * ssrfwd *)
-
-{
-
-let pr_ssrwlogfwd _ _ _ (gens, t) =
-  str ":" ++ pr_list mt pr_wgen gens ++ spc() ++ pr_fwd t
-
-}
-
-ARGUMENT EXTEND ssrwlogfwd TYPED AS (ssrwgen list * ssrfwd)
-                         PRINTED BY { pr_ssrwlogfwd }
-| [ ":" ssrwgen_list(gens) "/" ast_closure_lterm(t) ] -> { gens, mkFwdHint "/" t}
-END
-
-
-TACTIC EXTEND ssrwlog
-| [ "wlog" ssrhpats_nobs(pats) ssrwlogfwd(fwd) ssrhint(hint) ] ->
-  { wlogtac ist pats fwd hint false `NoGen }
-END
-
-TACTIC EXTEND ssrwlogs
-| [ "wlog" "suff" ssrhpats_nobs(pats) ssrwlogfwd(fwd) ssrhint(hint) ] ->
-  { wlogtac ist pats fwd hint true `NoGen }
-END
-
-TACTIC EXTEND ssrwlogss
-| [ "wlog" "suffices" ssrhpats_nobs(pats) ssrwlogfwd(fwd) ssrhint(hint) ]->
-  { wlogtac ist pats fwd hint true `NoGen }
-END
-
-TACTIC EXTEND ssrwithoutloss
-| [ "without" "loss" ssrhpats_nobs(pats) ssrwlogfwd(fwd) ssrhint(hint) ] ->
-  { wlogtac ist pats fwd hint false `NoGen }
-END
-
-TACTIC EXTEND ssrwithoutlosss
-| [ "without" "loss" "suff"
-    ssrhpats_nobs(pats) ssrwlogfwd(fwd) ssrhint(hint) ] ->
-  { wlogtac ist pats fwd hint true `NoGen }
-END
-
-TACTIC EXTEND ssrwithoutlossss
-| [ "without" "loss" "suffices"
-    ssrhpats_nobs(pats) ssrwlogfwd(fwd) ssrhint(hint) ]->
-  { wlogtac ist pats fwd hint true `NoGen }
-END
-
-{
-
-(* Generally have *)
-let pr_idcomma _ _ _ = function
-  | None -> mt()
-  | Some None -> str"_, "
-  | Some (Some id) -> pr_id id ++ str", "
-
-}
-
-ARGUMENT EXTEND ssr_idcomma TYPED AS ident option option PRINTED BY { pr_idcomma }
-  | [ ] -> { None }
-END
-
-{
-
-let test_idcomma =
-  let open Pcoq.Lookahead in
-  to_entry "test_idcomma" begin
-    (lk_ident <+> lk_kw "_") >> lk_kw ","
-  end
-
-}
-
-GRAMMAR EXTEND Gram
-  GLOBAL: ssr_idcomma;
-  ssr_idcomma: TOP [ [ test_idcomma;
-    ip = [ id = IDENT -> { Some (Id.of_string id) } | "_" -> { None } ]; "," ->
-    { Some ip }
-  ] ];
-END
-
-{
-
-let augment_preclr clr1 (((clr0, x),y),z) =
-  let cl = match clr0 with
-    | None -> if clr1 = [] then None else Some clr1
-    | Some clr0 -> Some (clr1 @ clr0) in
-  (((cl, x),y),z)
-
-}
-
-TACTIC EXTEND ssrgenhave
-| [ "gen" "have" ssrclear(clr)
-    ssr_idcomma(id) ssrhpats_nobs(pats) ssrwlogfwd(fwd) ssrhint(hint) ] ->
-  { let pats = augment_preclr clr pats in
-    wlogtac ist pats fwd hint false (`Gen id) }
-END
-
-TACTIC EXTEND ssrgenhave2
-| [ "generally" "have" ssrclear(clr)
-    ssr_idcomma(id) ssrhpats_nobs(pats) ssrwlogfwd(fwd) ssrhint(hint) ] ->
-  { let pats = augment_preclr clr pats in
-    wlogtac ist pats fwd hint false (`Gen id) }
-END
-
-{
-
-let check_under_arg ((_dir,mult),((_occ,_rpattern),_rule)) =
-  if mult <> nomult then
-    CErrors.user_err Pp.(str"under does not support multipliers")
-
-}
-
-
-TACTIC EXTEND under
-  | [ "under" ssrrwarg(arg) ] -> {
-    check_under_arg arg;
-    Ssrfwd.undertac ist None arg nohint
-    }
-  | [ "under" ssrrwarg(arg) ssrintros_ne(ipats) ] -> {
-    check_under_arg arg;
-    Ssrfwd.undertac ist (Some ipats) arg nohint
-    }
-  | [ "under" ssrrwarg(arg) ssrintros_ne(ipats) "do" ssrhint3arg(h) ] -> {
-    check_under_arg arg;
-    Ssrfwd.undertac ist (Some ipats) arg h
-    }
-  | [ "under" ssrrwarg(arg) "do" ssrhint3arg(h) ] -> { (* implicit "=> [*|*]" *)
-    check_under_arg arg;
-    Ssrfwd.undertac ~pad_intro:true ist (Some [IPatAnon All]) arg h
-    }
-END
 
 {
 
@@ -2693,7 +1745,29 @@ END
 (* The user is supposed to Require Import ssreflect or Require ssreflect   *)
 (* and Import ssreflect.SsrSyntax to obtain these keywords and as a         *)
 (* consequence the extended ssreflect grammar.                             *)
-let () = CLexer.set_keyword_state frozen_lexer ;;
+let () = Mltop.add_init_function "rocq-runtime.plugins.ssreflect" (fun () ->
+      Procq.set_keyword_state !frozen_lexer) ;;
+
+module Internal = struct
+  let register_ssrtac = register_ssrtac
+  let mk_index = mk_index
+  let noindex = noindex
+  let tclintros_expr = tclintros_expr
+  let intern_ipat = intern_ipat
+  let interp_ipat = interp_ipat
+  let pr_intros = pr_intros
+  let pr_view = pr_view
+  let pr_mult = pr_mult
+  let is_ssr_loaded = is_ssr_loaded
+  let pr_hpats = pr_hpats
+  let pr_fwd = pr_fwd
+  let pr_hint = pr_hint
+  let intro_id_to_binder = intro_id_to_binder
+  let binder_to_intro_id = binder_to_intro_id
+  let mkFwdHint = mkFwdHint
+  let bind_fwd = bind_fwd
+  let pr_wgen = pr_wgen
+end
 
 }
 

@@ -1,11 +1,11 @@
-From Coq Require Import Utf8 Bool ssreflect.
+From Corelib Require Import ssreflect.
 
 Set Printing All.
 Set Debug Ssreflect.
 
-Class Class sort := { op : sort → bool }.
+Class Class sort := { op : sort -> bool }.
 Arguments op {_ _}.
-Hint Mode Class !.
+#[export] Hint Mode Class !.
 
 Lemma opP A (C: Class A) (a: A) : reflect True (op a).
 Proof. Admitted.

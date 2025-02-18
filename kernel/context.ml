@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -31,16 +31,25 @@
 open Util
 open Names
 
-type 'a binder_annot = { binder_name : 'a; binder_relevance : Sorts.relevance }
+type ('a,'r) pbinder_annot = { binder_name : 'a; binder_relevance : 'r }
 
-let eq_annot eq {binder_name=na1;binder_relevance=r1} {binder_name=na2;binder_relevance=r2} =
-  eq na1 na2 && Sorts.relevance_equal r1 r2
+let eq_annot eq eqr {binder_name=na1;binder_relevance=r1} {binder_name=na2;binder_relevance=r2} =
+  eq na1 na2 && eqr r1 r2
 
 let hash_annot h {binder_name=n;binder_relevance=r} =
   Hashset.Combine.combinesmall (Sorts.relevance_hash r) (h n)
 
 let map_annot f {binder_name=na;binder_relevance} =
-  {binder_name=f na;binder_relevance}
+  let na' = f na in
+  {binder_name=na';binder_relevance}
+
+let map_annot_relevance fr ({binder_name=na;binder_relevance=r} as a) =
+  let r' = fr r in
+  if r == r' then a else {binder_name=na;binder_relevance=r'}
+
+let map_annot_relevance_het fr {binder_name=na;binder_relevance=r} =
+  let r' = fr r in
+  {binder_name=na;binder_relevance=r'}
 
 let make_annot x r = {binder_name=x;binder_relevance=r}
 
@@ -60,9 +69,9 @@ struct
   module Declaration =
   struct
     (* local declaration *)
-    type ('constr, 'types) pt =
-      | LocalAssum of Name.t binder_annot * 'types            (** name, type *)
-      | LocalDef of Name.t binder_annot * 'constr * 'types   (** name, value, type *)
+    type ('constr, 'types, 'r) pt =
+      | LocalAssum of (Name.t,'r) pbinder_annot * 'types            (** name, type *)
+      | LocalDef of (Name.t,'r) pbinder_annot * 'constr * 'types   (** name, value, type *)
 
     let get_annot = function
       | LocalAssum (na,_) | LocalDef (na,_,_) -> na
@@ -82,10 +91,19 @@ struct
 
     let get_relevance x = (get_annot x).binder_relevance
 
+    let set_annot x d =
+      if get_annot d == x then d else match d with
+      | LocalAssum (_,ty) -> LocalAssum (x, ty)
+      | LocalDef (_,v,ty) -> LocalDef (x, v, ty)
+
     (** Set the name that is bound by a given declaration. *)
     let set_name na = function
       | LocalAssum (x,ty) -> LocalAssum ({x with binder_name=na}, ty)
       | LocalDef (x,v,ty) -> LocalDef ({x with binder_name=na}, v, ty)
+
+    let set_relevance r = function
+      | LocalAssum (x,ty) -> LocalAssum ({x with binder_relevance=r}, ty)
+      | LocalDef (x,v,ty) -> LocalDef ({x with binder_relevance=r}, v, ty)
 
     (** Set the type of the bound variable in a given declaration. *)
     let set_type ty = function
@@ -113,12 +131,12 @@ struct
       | LocalDef (_, v, ty) -> f v && f ty
 
     (** Check whether the two given declarations are equal. *)
-    let equal eq decl1 decl2 =
+    let equal eqr eq decl1 decl2 =
       match decl1, decl2 with
       | LocalAssum (n1,ty1), LocalAssum (n2, ty2) ->
-          eq_annot Name.equal n1 n2 && eq ty1 ty2
+          eq_annot Name.equal eqr n1 n2 && eq ty1 ty2
       | LocalDef (n1,v1,ty1), LocalDef (n2,v2,ty2) ->
-          eq_annot Name.equal n1 n2 && eq v1 v2 && eq ty1 ty2
+          eq_annot Name.equal eqr n1 n2 && eq v1 v2 && eq ty1 ty2
       | _ ->
           false
 
@@ -127,6 +145,11 @@ struct
       let na = get_name x in
       let na' = f na in
       if na == na' then x else set_name na' x
+
+    let map_relevance f x =
+      let r = get_relevance x in
+      let r' = f r in
+      if r == r' then x else set_relevance r' x
 
     (** For local assumptions, this function returns the original local assumptions.
         For local definitions, this function maps the value in the local definition. *)
@@ -155,14 +178,26 @@ struct
           let ty' = f ty in
           if v == v' && ty == ty' then decl else LocalDef (na, v', ty')
 
-    let map_constr_het f = function
+    (** Map all terms in a given declaration. *)
+    let map_constr_with_relevance g f = function
+      | LocalAssum (na, ty) as decl ->
+          let na' = map_annot_relevance g na in
+          let ty' = f ty in
+          if na == na' && ty == ty' then decl else LocalAssum (na', ty')
+      | LocalDef (na, v, ty) as decl ->
+          let na' = map_annot_relevance g na in
+          let v' = f v in
+          let ty' = f ty in
+          if na == na' && v == v' && ty == ty' then decl else LocalDef (na', v', ty')
+
+    let map_constr_het fr f = function
       | LocalAssum (na, ty) ->
           let ty' = f ty in
-          LocalAssum (na, ty')
+          LocalAssum (map_annot_relevance_het fr na, ty')
       | LocalDef (na, v, ty) ->
           let v' = f v in
           let ty' = f ty in
-          LocalDef (na, v', ty')
+          LocalDef (map_annot_relevance_het fr na, v', ty')
 
     (** Perform a given action on all terms in a given declaration. *)
     let iter_constr f = function
@@ -188,7 +223,7 @@ struct
   (** Rel-context is represented as a list of declarations.
       Inner-most declarations are at the beginning of the list.
       Outer-most declarations are at the end of the list. *)
-  type ('constr, 'types) pt = ('constr, 'types) Declaration.pt list
+  type ('constr, 'types, 'r) pt = ('constr, 'types, 'r) Declaration.pt list
 
   (** empty rel-context *)
   let empty = []
@@ -218,10 +253,14 @@ struct
     | _, []        -> raise Not_found
 
   (** Check whether given two rel-contexts are equal. *)
-  let equal eq l = List.equal (fun c -> Declaration.equal eq c) l
+  let equal eqr eq l = List.equal (fun c -> Declaration.equal eqr eq c) l
 
   (** Map all terms in a given rel-context. *)
   let map f = List.Smart.map (Declaration.map_constr f)
+
+  let map_with_relevance g f = List.Smart.map (Declaration.map_constr_with_relevance g f)
+
+  let map_het fr f = List.map (Declaration.map_constr_het fr f)
 
   (** Map all terms in a given rel-context. *)
   let map_with_binders f ctx =
@@ -245,6 +284,14 @@ struct
       Outermost declarations are processed first. *)
   let fold_outside f l ~init = List.fold_right f l init
 
+  (** Return the set of all named variables bound in a given rel-context. *)
+  let to_vars l =
+    List.fold_left (fun accu decl ->
+        match Declaration.get_name decl with
+        | Name id -> Id.Set.add id accu
+        | Anonymous -> accu)
+      Id.Set.empty l
+
   (** Map a given rel-context to a list where each {e local assumption} is mapped to [true]
       and each {e local definition} is mapped to [false]. *)
   let to_tags l =
@@ -255,6 +302,16 @@ struct
     in aux [] l
 
   let drop_bodies l = List.Smart.map Declaration.drop_body l
+
+  (** Split a context so that the second part contains [n]
+      [LocalAssum], keeping all [LocalDef] in the middle in the first part *)
+  let chop_nhyps n l =
+    let rec aux l' = function
+      | (0, l) -> (List.rev l', l)
+      | (n, (Declaration.LocalDef _ as h) :: l) -> aux (h::l') (n, l)
+      | (n, (Declaration.LocalAssum _ as h) :: l) -> aux (h::l') (n-1, l)
+      | (_, []) -> CErrors.anomaly (Pp.str "chop_nhyps: not enough hypotheses.")
+    in aux [] (n,l)
 
   (** [extended_list n Γ] builds an instance [args] such that [Γ,Δ ⊢ args:Γ]
       with n = |Δ| and with the {e local definitions} of [Γ] skipped in
@@ -283,9 +340,9 @@ struct
   module Declaration =
   struct
     (** local declaration *)
-    type ('constr, 'types) pt =
-      | LocalAssum of Id.t binder_annot * 'types             (** identifier, type *)
-      | LocalDef of Id.t binder_annot * 'constr * 'types    (** identifier, value, type *)
+    type ('constr, 'types, 'r) pt =
+      | LocalAssum of (Id.t,'r) pbinder_annot * 'types             (** identifier, type *)
+      | LocalDef of (Id.t,'r) pbinder_annot * 'constr * 'types    (** identifier, value, type *)
 
     let get_annot = function
       | LocalAssum (na,_) | LocalDef (na,_,_) -> na
@@ -338,12 +395,12 @@ struct
       | LocalDef (_, v, ty) -> f v && f ty
 
     (** Check whether the two given declarations are equal. *)
-    let equal eq decl1 decl2 =
+    let equal eqr eq decl1 decl2 =
       match decl1, decl2 with
       | LocalAssum (id1, ty1), LocalAssum (id2, ty2) ->
-          eq_annot Id.equal id1 id2 && eq ty1 ty2
+          eq_annot Id.equal eqr id1 id2 && eq ty1 ty2
       | LocalDef (id1, v1, ty1), LocalDef (id2, v2, ty2) ->
-          eq_annot Id.equal id1 id2 && eq v1 v2 && eq ty1 ty2
+          eq_annot Id.equal eqr id1 id2 && eq v1 v2 && eq ty1 ty2
       | _ ->
           false
 
@@ -380,14 +437,26 @@ struct
           let ty' = f ty in
           if v == v' && ty == ty' then decl else LocalDef (id, v', ty')
 
-    let map_constr_het f = function
+    (** Map all terms in a given declaration. *)
+    let map_constr_with_relevance g f = function
+      | LocalAssum (id, ty) as decl ->
+          let id' = map_annot_relevance g id in
+          let ty' = f ty in
+          if id == id' && ty == ty' then decl else LocalAssum (id', ty')
+      | LocalDef (id, v, ty) as decl ->
+          let id' = map_annot_relevance g id in
+          let v' = f v in
+          let ty' = f ty in
+          if id == id' && v == v' && ty == ty' then decl else LocalDef (id', v', ty')
+
+    let map_constr_het fr f = function
       | LocalAssum (id, ty) ->
           let ty' = f ty in
-          LocalAssum (id, ty')
+          LocalAssum (map_annot_relevance_het fr id, ty')
       | LocalDef (id, v, ty) ->
           let v' = f v in
           let ty' = f ty in
-          LocalDef (id, v', ty')
+          LocalDef (map_annot_relevance_het fr id, v', ty')
 
     (** Perform a given action on all terms in a given declaration. *)
     let iter_constr f = function
@@ -414,9 +483,9 @@ struct
 
     let of_rel_decl f = function
       | Rel.Declaration.LocalAssum (na,t) ->
-          LocalAssum (map_annot f na, t)
+        LocalAssum (map_annot f na, t)
       | Rel.Declaration.LocalDef (na,v,t) ->
-          LocalDef (map_annot f na, v, t)
+        LocalDef (map_annot f na, v, t)
 
     let to_rel_decl =
       let name x = {binder_name=Name x.binder_name;binder_relevance=x.binder_relevance} in
@@ -430,7 +499,7 @@ struct
   (** Named-context is represented as a list of declarations.
       Inner-most declarations are at the beginning of the list.
       Outer-most declarations are at the end of the list. *)
-  type ('constr, 'types) pt = ('constr, 'types) Declaration.pt list
+  type ('constr, 'types, 'r) pt = ('constr, 'types, 'r) Declaration.pt list
 
   (** empty named-context *)
   let empty = []
@@ -449,10 +518,14 @@ struct
     | [] -> raise Not_found
 
   (** Check whether given two named-contexts are equal. *)
-  let equal eq l = List.equal (fun c -> Declaration.equal eq c) l
+  let equal eqr eq l = List.equal (fun c -> Declaration.equal eqr eq c) l
 
   (** Map all terms in a given named-context. *)
   let map f = List.Smart.map (Declaration.map_constr f)
+
+  let map_with_relevance g f = List.Smart.map (Declaration.map_constr_with_relevance g f)
+
+  let map_het fr f = List.map (Declaration.map_constr_het fr f)
 
   (** Perform a given action on every declaration in a given named-context. *)
   let iter f = List.iter (Declaration.iter_constr f)
@@ -501,9 +574,9 @@ module Compacted =
   struct
     module Declaration =
       struct
-        type ('constr, 'types) pt =
-          | LocalAssum of Id.t binder_annot list * 'types
-          | LocalDef of Id.t binder_annot list * 'constr * 'types
+        type ('constr, 'types, 'r) pt =
+          | LocalAssum of (Id.t,'r) pbinder_annot list * 'types
+          | LocalDef of (Id.t,'r) pbinder_annot list * 'constr * 'types
 
         let map_constr f = function
           | LocalAssum (ids, ty) as decl ->
@@ -527,7 +600,7 @@ module Compacted =
              List.map (fun id -> Named.Declaration.LocalDef (id,v,t)) ids
       end
 
-    type ('constr, 'types) pt = ('constr, 'types) Declaration.pt list
+    type ('constr, 'types, 'r) pt = ('constr, 'types, 'r) Declaration.pt list
 
     let fold f l ~init = List.fold_right f l init
   end

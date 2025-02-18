@@ -7,9 +7,10 @@ ci_dir="$(dirname "$0")"
 
 git_download equations
 
+if [ "$DOWNLOAD_ONLY" ]; then exit 0; fi
+
 export COQEXTRAFLAGS='-native-compiler no'
 ( cd "${CI_BUILD_DIR}/equations"
-  ./configure.sh coq
-  make ci
-  make install
+  dune build --root . --only-packages rocq-equations
+  dune install --root . --only-packages rocq-equations --prefix="$CI_INSTALL_DIR"
 )

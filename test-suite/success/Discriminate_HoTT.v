@@ -9,7 +9,7 @@ Unset Elimination Schemes.
 
 Set Universe Polymorphism.
 
-Declare ML Module "ltac_plugin".
+Declare ML Module "rocq-runtime.plugins.ltac".
 
 Global Set Default Proof Mode "Classic".
 
@@ -21,7 +21,7 @@ Cumulative Variant paths {A} (a:A) : A -> Type
 Arguments idpath {A a} , [A] a.
 
 Scheme paths_ind := Induction for paths Sort Type.
-Arguments paths_ind [A] a P f y p.
+Arguments paths_ind [A] a P f y p : rename.
 
 Notation "x = y :> A" := (@paths A x y) (at level 70, y at next level, no associativity).
 Notation "x = y" := (x = y :>_) (at level 70, no associativity).

@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -18,7 +18,7 @@ let smart_global r =
   Dumpglob.add_glob ?loc:r.loc gr;
   gr
 
-let cache_bidi_hints (_name, (gr, ohint)) =
+let cache_bidi_hints (gr, ohint) =
   match ohint with
   | None -> Pretyping.clear_bidirectionality_hint gr
   | Some nargs -> Pretyping.add_bidirectionality_hint gr nargs
@@ -30,11 +30,11 @@ let subst_bidi_hints (subst, (gr, ohint as orig)) =
   let gr' = Globnames.subst_global_reference subst gr in
   if gr == gr' then orig else (gr', ohint)
 
-let discharge_bidi_hints (_name, (gr, ohint)) =
+let discharge_bidi_hints (gr, ohint) =
   if Globnames.isVarRef gr && Lib.is_in_section gr then None
   else
-    let vars = Lib.variable_section_segment_of_reference gr in
-    let n = List.length vars in
+    let vars = Lib.section_instance gr in
+    let n = Array.length vars in
     Some (gr, Option.map ((+) n) ohint)
 
 let inBidiHints =
@@ -42,20 +42,30 @@ let inBidiHints =
   declare_object { (default_object "BIDIRECTIONALITY-HINTS" ) with
                    load_function = load_bidi_hints;
                    cache_function = cache_bidi_hints;
-                   classify_function = (fun o -> Substitute o);
+                   classify_function = (fun o -> Substitute);
                    subst_function = subst_bidi_hints;
                    discharge_function = discharge_bidi_hints;
                  }
 
 
 let warn_arguments_assert =
-  CWarnings.create ~name:"arguments-assert" ~category:"vernacular"
+  CWarnings.create ~name:"arguments-assert" ~category:CWarnings.CoreCategories.vernacular
     Pp.(fun sr ->
         strbrk "This command is just asserting the names of arguments of " ++
         Printer.pr_global sr ++ strbrk". If this is what you want, add " ++
         strbrk "': assert' to silence the warning. If you want " ++
         strbrk "to clear implicit arguments, add ': clear implicits'. " ++
         strbrk "If you want to clear notation scopes, add ': clear scopes'")
+
+let warn_scope_delimiter_depth =
+  CWarnings.create ~name:"argument-scope-delimiter" ~category:Deprecation.Version.v8_19
+    Pp.(fun () ->
+        strbrk "The '%' scope delimiter in 'Arguments' commands is deprecated, " ++
+        strbrk "use '%_' instead (available since 8.19). The '%' syntax will be " ++
+        strbrk "reused in a future version with the same semantics as in terms, " ++
+        strbrk "that is adding scope to the stack for all subterms. " ++
+        strbrk "Code can be adapted with a script like: " ++
+        strbrk "for f in $(find . -name '*.v'); do sed '/Arguments/ s/%/%_/g' -i $f ; done")
 
 (* [nargs_for_red] is the number of arguments required to trigger reduction,
    [args] is the main list of arguments statuses,
@@ -69,8 +79,9 @@ let vernac_arguments ~section_local reference args more_implicits flags =
   let extra_scopes_flag = List.mem `ExtraScopes flags in
   let clear_implicits_flag = List.mem `ClearImplicits flags in
   let default_implicits_flag = List.mem `DefaultImplicits flags in
-  let never_unfold_flag = List.mem `ReductionNeverUnfold flags in
-  let nomatch_flag = List.mem `ReductionDontExposeCase flags in
+  let never_unfold_flag = List.mem `SimplNeverUnfold flags in
+  let nomatch_flag = List.mem `SimplDontExposeCase flags in
+  let clear_red_flag = List.mem `ClearReduction flags in
   let clear_bidi_hint = List.mem `ClearBidiHint flags in
 
   let err_incompat x y =
@@ -103,7 +114,7 @@ let vernac_arguments ~section_local reference args more_implicits flags =
   let sr = smart_global reference in
   let inf_names =
     let ty, _ = Typeops.type_of_global_in_context env sr in
-    Impargs.compute_implicits_names env sigma (EConstr.of_constr ty)
+    List.map pi1 (Impargs.compute_implicits_names env sigma (EConstr.of_constr ty))
   in
   let prev_names =
     try Arguments_renaming.arguments_names sr with Not_found -> inf_names
@@ -116,12 +127,12 @@ let vernac_arguments ~section_local reference args more_implicits flags =
   (* Checks *)
 
   let err_extra_args names =
-    CErrors.user_err ~hdr:"vernac_declare_arguments"
+    CErrors.user_err
       Pp.(strbrk "Extra arguments: " ++
           prlist_with_sep pr_comma Name.print names ++ str ".")
   in
   let err_missing_args names =
-    CErrors.user_err ~hdr:"vernac_declare_arguments"
+    CErrors.user_err
       Pp.(strbrk "The following arguments are not declared: " ++
           prlist_with_sep pr_comma Name.print names ++ str ".")
   in
@@ -129,9 +140,9 @@ let vernac_arguments ~section_local reference args more_implicits flags =
   let rec check_extra_args extra_args =
     match extra_args with
     | [] -> ()
-    | { notation_scope = None } :: _ ->
-      CErrors.user_err Pp.(str"Extra arguments should specify a scope.")
-    | { notation_scope = Some _ } :: args -> check_extra_args args
+    | { notation_scope = [] } :: _ ->
+      CErrors.user_err Pp.(str"Extra arguments should specify scopes.")
+    | { notation_scope = _ :: _ } :: args -> check_extra_args args
   in
 
   let args, scopes =
@@ -150,7 +161,7 @@ let vernac_arguments ~section_local reference args more_implicits flags =
   if Option.cata (fun n -> n > num_args) false nargs_before_bidi then
     CErrors.user_err Pp.(str "The \"&\" modifier should be put before any extra scope.");
 
-  let scopes_specified = List.exists Option.has_some scopes in
+  let scopes_specified = List.exists ((<>) []) scopes in
 
   if scopes_specified && clear_scopes_flag then
     CErrors.user_err Pp.(str "The \"clear scopes\" flag is incompatible with scope annotations.");
@@ -210,7 +221,7 @@ let vernac_arguments ~section_local reference args more_implicits flags =
       | Some (o,n) ->
         strbrk "Flag \"rename\" expected to rename " ++ Name.print o ++
         strbrk " into " ++ Name.print n ++ str "."
-    in CErrors.user_err ~hdr:"vernac_declare_arguments" msg
+    in CErrors.user_err msg
   end;
 
   let implicits =
@@ -235,18 +246,22 @@ let vernac_arguments ~section_local reference args more_implicits flags =
 
   let red_behavior =
     let open Reductionops.ReductionBehaviour in
-    match never_unfold_flag, nomatch_flag, rargs, nargs_for_red with
-    | true, false, [], None -> Some NeverUnfold
-    | true, true, _, _ -> err_incompat "simpl never" "simpl nomatch"
-    | true, _, _::_, _ -> err_incompat "simpl never" "!"
-    | true, _, _, Some _ -> err_incompat "simpl never" "/"
-    | false, false, [], None  -> None
-    | false, false, _, _ -> Some (UnfoldWhen { nargs = nargs_for_red;
-                                               recargs = rargs;
-                                             })
-    | false, true, _, _ -> Some (UnfoldWhenNoMatch { nargs = nargs_for_red;
-                                                     recargs = rargs;
-                                                   })
+    match clear_red_flag, never_unfold_flag, nomatch_flag, rargs, nargs_for_red with
+    | true, true, _, _, _ -> err_incompat "clear simpl" "simpl never"
+    | true, false, true, _, _ -> err_incompat "clear simpl" "simpl nomatch"
+    | true, false, false, _ :: _, _ -> err_incompat "clear simpl" "!"
+    | true, false, false, [], Some _ -> err_incompat "clear simpl" "/"
+    | false, true, false, [], None -> Some NeverUnfold
+    | false, true, true, _, _ -> err_incompat "simpl never" "simpl nomatch"
+    | false, true, _, _::_, _ -> err_incompat "simpl never" "!"
+    | false, true, _, _, Some _ -> err_incompat "simpl never" "/"
+    | _, false, false, [], None  -> None
+    | false, false, false, _, _ -> Some (UnfoldWhen { nargs = nargs_for_red;
+                                                      recargs = rargs;
+                                                    })
+    | false, false, true, _, _ -> Some (UnfoldWhenNoMatch { nargs = nargs_for_red;
+                                                            recargs = rargs;
+                                                          })
   in
 
 
@@ -265,7 +280,9 @@ let vernac_arguments ~section_local reference args more_implicits flags =
   end;
 
   if scopes_specified || clear_scopes_flag then begin
-    let scopes = List.map (Option.map (fun {loc;v=k} ->
+    if List.exists (fun {v=d,_} -> d = Constrexpr.DelimUnboundedScope) (List.flatten scopes) then
+      warn_scope_delimiter_depth ();
+    let scopes = List.map (List.map (fun {loc;v=_d,k} ->
         try ignore (Notation.find_scope k); k
         with CErrors.UserError _ ->
           Notation.find_delimiters_scope ?loc k)) scopes
@@ -279,11 +296,11 @@ let vernac_arguments ~section_local reference args more_implicits flags =
   if default_implicits_flag then
     Impargs.declare_implicits section_local (smart_global reference);
 
-  if red_modifiers_specified then begin
+  if red_modifiers_specified || clear_red_flag then begin
     match sr with
-    | GlobRef.ConstRef _ ->
+    | GlobRef.ConstRef c ->
       Reductionops.ReductionBehaviour.set
-        ~local:section_local sr (Option.get red_behavior)
+        ~local:section_local c red_behavior
 
     | _ ->
       CErrors.user_err
@@ -296,14 +313,14 @@ let vernac_arguments ~section_local reference args more_implicits flags =
     if section_local then
       Pretyping.add_bidirectionality_hint sr n
     else
-      Lib.add_anonymous_leaf (inBidiHints (sr, Some n))
+      Lib.add_leaf (inBidiHints (sr, Some n))
   end;
 
   if clear_bidi_hint then begin
     if section_local then
       Pretyping.clear_bidirectionality_hint sr
     else
-      Lib.add_anonymous_leaf (inBidiHints (sr, None))
+      Lib.add_leaf (inBidiHints (sr, None))
   end;
 
   if not (renaming_specified ||

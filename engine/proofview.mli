@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -71,7 +71,7 @@ val finished : proofview -> bool
 val return : proofview -> Evd.evar_map
 
 val partial_proof : entry -> proofview -> constr list
-val initial_goals : entry -> (constr * types) list
+val initial_goals : entry -> (Environ.named_context_val * constr * types) list
 
 (** goal <-> goal_with_state *)
 
@@ -128,7 +128,7 @@ val unfocus : focus_context -> proofview -> proofview
     Tactics of course have arguments, but these are given at the
     meta-level as OCaml functions.  Most tactics in the sense we are
     used to return [()], that is no really interesting values. But
-    some might pass information around.  The tactics seen in Coq's
+    some might pass information around.  The tactics seen in Rocq's
     Ltac are (for now at least) only [unit tactic], the return values
     are kept for the OCaml toolkit.  The operation or the monad are
     [Proofview.tclUNIT] (which is the "return" of the tactic monad)
@@ -427,7 +427,7 @@ val tclTIME : string option -> 'a tactic -> 'a tactic
 
 (** Internal, don't use. *)
 val tclProofInfo : (Names.Id.t * bool) tactic
-[@@ocaml.deprecated "internal, don't use"]
+[@@ocaml.deprecated "(8.10) internal, don't use"]
 
 (** {7 Unsafe primitives} *)
 
@@ -449,10 +449,11 @@ module Unsafe : sig
   (** Set the global environment of the tactic *)
   val tclSETENV : Environ.env -> unit tactic
 
-  (** [tclNEWGOALS gls] adds the goals [gls] to the ones currently
-      being proved, appending them to the list of focused goals. If a
-      goal is already solved, it is not added. *)
-  val tclNEWGOALS : Proofview_monad.goal_with_state list -> unit tactic
+  (** [tclNEWGOALS ~before gls] adds the goals [gls] to the ones currently
+      being proved. If [before] is true, it prepends them to the list of focused
+      goals, otherwise it appends them (default). If a goal is already
+      solved, it is not added. *)
+  val tclNEWGOALS : ?before:bool -> Proofview_monad.goal_with_state list -> unit tactic
 
   (** [tclNEWSHELVED gls] adds the goals [gls] to the shelf. If a
       goal is already solved, it is not added. *)
@@ -524,19 +525,15 @@ module Goal : sig
       environment of [gl] (i.e. the global environment and the
       hypotheses) and the current evar map. *)
   val concl : t -> constr
+  val relevance : t -> ERelevance.t
   val hyps : t -> named_context
   val env : t -> Environ.env
   val sigma : t -> Evd.evar_map
   val state : t -> Proofview_monad.StateStore.t
 
-  (** [nf_enter t] applies the goal-dependent tactic [t] in each goal
+  (** [enter t] applies the goal-dependent tactic [t] in each goal
       independently, in the manner of {!tclINDEPENDENT} except that
-      the current goal is also given as an argument to [t]. The goal
-      is normalised with respect to evars. *)
-  val nf_enter : (t -> unit tactic) -> unit tactic
-  [@@ocaml.deprecated "Normalization is enforced by EConstr, please use [enter]"]
-
-  (** Like {!nf_enter}, but does not normalize the goal beforehand. *)
+      the current goal is also given as an argument to [t]. *)
   val enter : (t -> unit tactic) -> unit tactic
 
   (** Like {!enter}, but assumes exactly one goal under focus, raising
@@ -553,7 +550,6 @@ module Goal : sig
 
   (** Compatibility: avoid if possible *)
   val goal : t -> Evar.t
-  val print : t -> Evar.t Evd.sigma
 
 end
 
@@ -584,49 +580,9 @@ module NonLogical : module type of Logic_monad.NonLogical
 (** [tclLIFT c] is a tactic which behaves exactly as [c]. *)
 val tclLIFT : 'a NonLogical.t -> 'a tactic
 
-
-(**/**)
-
-(*** Compatibility layer with <= 8.2 tactics ***)
-module V82 : sig
-  type tac = Evar.t Evd.sigma -> Evar.t list Evd.sigma
-
-  (* [nf_evars=true] applies the evar (assignment) map to the goals
-   * (conclusion and context) before calling the tactic *)
-  val tactic : ?nf_evars:bool -> tac -> unit tactic
-
-  (* normalises the evars in the goals, and stores the result in
-     solution. *)
-  val nf_evar_goals : unit tactic
-
-  val has_unresolved_evar : proofview -> bool
-
-  (* Main function in the implementation of Grab Existential Variables.
-     Resets the proofview's goals so that it contains all unresolved evars
-     (in chronological order of insertion). *)
-  val grab : proofview -> proofview
-
-  val top_goals : entry -> proofview -> Evar.t list Evd.sigma
-
-  (* returns the existential variable used to start the proof *)
-  val top_evars : entry -> proofview -> Evar.t list
-
-  (* Caution: this function loses quite a bit of information. It
-     should be avoided as much as possible.  It should work as
-     expected for a tactic obtained from {!V82.tactic} though. *)
-  val of_tactic : 'a tactic -> tac
-
-  (* marks as unsafe if the argument is [false] *)
-  val put_status : bool -> unit tactic
-
-  (* exception for which it is deemed to be safe to transmute into
-     tactic failure. *)
-  val catchable_exception : exn -> bool
-
-  (* transforms every Ocaml (catchable) exception into a failure in
-     the monad. *)
-  val wrap_exceptions : (unit -> 'a tactic) -> 'a tactic
-end
+(* transforms every Ocaml (catchable) exception into a failure in
+    the monad. *)
+val wrap_exceptions : (unit -> 'a tactic) -> 'a tactic
 
 (** {7 Notations} *)
 

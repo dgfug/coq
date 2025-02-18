@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -8,95 +8,83 @@
 (*         *     (see LICENSE file for the text of the license)         *)
 (************************************************************************)
 
-open Ltac_plugin
 open Formula
 open Sequent
 open Rules
 open Instances
-open Tacmach.New
-open Tacticals.New
+open Tacmach
+open Tacticals
 
-let update_flags ()=
+let get_flags () =
   let open TransparentState in
   let f accu coe = match coe.Coercionops.coe_value with
     | Names.GlobRef.ConstRef kn -> { accu with tr_cst = Names.Cpred.remove kn accu.tr_cst }
     | _ -> accu
   in
   let flags = List.fold_left f TransparentState.full (Coercionops.coercions ()) in
-    red_flags:=
-    CClosure.RedFlags.red_add_transparent
-      CClosure.betaiotazeta
-      flags
+  { Formula.reds = RedFlags.red_add_transparent RedFlags.all flags }
 
-let ground_tac solver startseq =
+let get_id hd = match hd.id with FormulaId id -> id
+
+let ground_tac ~flags solver startseq =
   Proofview.Goal.enter begin fun gl ->
-  update_flags ();
   let rec toptac skipped seq =
     Proofview.Goal.enter begin fun gl ->
-    let () =
-      if Tacinterp.get_debug()=Tactic_debug.DebugOn 0
-      then
-        let gl = { Evd.it = Proofview.Goal.goal gl; sigma = project gl } in
-        Feedback.msg_debug (Printer.pr_goal gl)
-    in
-    tclORELSE (axiom_tac seq.gl seq)
+    tclORELSE (axiom_tac seq)
       begin
         try
-          let (hd,seq1)=take_formula (project gl) seq
+          let (hd, seq1) = take_formula (pf_env gl) (project gl) seq
           and re_add s=re_add_formula_list (project gl) skipped s in
           let continue=toptac []
           and backtrack =toptac (hd::skipped) seq1 in
+          let AnyFormula hd = hd in
             match hd.pat with
-                Right rpat->
+                RightPattern rpat->
                   begin
                     match rpat with
                         Rand->
-                          and_tac backtrack continue (re_add seq1)
+                          and_tac ~flags backtrack continue (re_add seq1)
                       | Rforall->
                           let backtrack1=
-                            if !qflag then
-                              tclFAIL 0 (Pp.str "reversible in 1st order mode")
-                            else
-                              backtrack in
-                            forall_tac backtrack1 continue (re_add seq1)
+                            tclFAIL (Pp.str "reversible in 1st order mode")
+                          in
+                            forall_tac ~flags backtrack1 continue (re_add seq1)
                       | Rarrow->
-                          arrow_tac backtrack continue (re_add seq1)
+                          arrow_tac ~flags backtrack continue (re_add seq1)
                       | Ror->
-                          or_tac  backtrack continue (re_add seq1)
+                          or_tac ~flags backtrack continue (re_add seq1)
                       | Rfalse->backtrack
                       | Rexists(i,dom,triv)->
-                          let (lfp,seq2)=collect_quantified (project gl) seq in
+                          let (lfp, seq2) = collect_quantified (pf_env gl) (project gl) seq in
                           let backtrack2=toptac (lfp@skipped) seq2 in
-                            if  !qflag && seq.depth>0 then
-                              quantified_tac lfp backtrack2
+                            if Sequent.has_fuel seq then
+                              quantified_tac ~flags lfp backtrack2
                                 continue (re_add seq)
                             else
                               backtrack2 (* need special backtracking *)
                   end
-              | Left lpat->
+              | LeftPattern lpat->
                   begin
                     match lpat with
                         Lfalse->
-                          left_false_tac hd.id
+                          left_false_tac (get_id hd)
                       | Land ind->
-                          left_and_tac ind backtrack
-                          hd.id continue (re_add seq1)
+                          left_and_tac ~flags ind backtrack
+                          (get_id hd) continue (re_add seq1)
                       | Lor ind->
-                          left_or_tac ind backtrack
-                          hd.id continue (re_add seq1)
+                          left_or_tac ~flags ind backtrack
+                          (get_id hd) continue (re_add seq1)
                       | Lforall (_,_,_)->
-                          let (lfp,seq2)=collect_quantified (project gl) seq in
+                          let (lfp, seq2) = collect_quantified (pf_env gl) (project gl) seq in
                           let backtrack2=toptac (lfp@skipped) seq2 in
-                            if  !qflag && seq.depth>0 then
-                              quantified_tac lfp backtrack2
+                            if Sequent.has_fuel seq then
+                              quantified_tac ~flags lfp backtrack2
                                 continue (re_add seq)
                             else
                               backtrack2 (* need special backtracking *)
                       | Lexists ind ->
-                          if !qflag then
-                            left_exists_tac ind backtrack hd.id
-                              continue (re_add seq1)
-                          else backtrack
+                          left_exists_tac ~flags ind backtrack (get_id hd)
+                            continue (re_add seq1)
                       | LA (typ,lap)->
                           let la_tac=
                             begin
@@ -104,28 +92,25 @@ let ground_tac solver startseq =
                                   LLatom -> backtrack
                                 | LLand (ind,largs) | LLor(ind,largs)
                                 | LLfalse (ind,largs)->
-                                    (ll_ind_tac ind largs backtrack
-                                       hd.id continue (re_add seq1))
+                                    (ll_ind_tac ~flags ind largs backtrack
+                                       (get_id hd) continue (re_add seq1))
                                 | LLforall p ->
-                                    if seq.depth>0 && !qflag then
-                                      (ll_forall_tac p backtrack
-                                         hd.id continue (re_add seq1))
+                                    if Sequent.has_fuel seq then
+                                      (ll_forall_tac ~flags p backtrack
+                                         (get_id hd) continue (re_add seq1))
                                     else backtrack
                                 | LLexists (ind,l) ->
-                                    if !qflag then
-                                      ll_ind_tac ind l backtrack
-                                        hd.id continue (re_add seq1)
-                                    else
-                                      backtrack
+                                    ll_ind_tac ~flags ind l backtrack
+                                      (get_id hd) continue (re_add seq1)
                                 | LLarrow (a,b,c) ->
-                                    (ll_arrow_tac a b c backtrack
-                                       hd.id continue (re_add seq1))
+                                    (ll_arrow_tac ~flags a b c backtrack
+                                       (get_id hd) continue (re_add seq1))
                             end in
-                            ll_atom_tac typ la_tac hd.id continue (re_add seq1)
+                            ll_atom_tac ~flags typ la_tac (get_id hd) continue (re_add seq1)
                   end
             with Heap.EmptyHeap->solver
       end
     end in
     let n = List.length (Proofview.Goal.hyps gl) in
-    startseq (fun seq -> wrap n true (toptac []) seq)
+    startseq (fun seq -> wrap ~flags n true (toptac []) seq)
   end

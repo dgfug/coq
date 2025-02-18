@@ -1,5 +1,5 @@
 (************************************************************************)
-(*         *   The Coq Proof Assistant / The Coq Development Team       *)
+(*         *      The Rocq Prover / The Rocq Development Team           *)
 (*  v      *         Copyright INRIA, CNRS and contributors             *)
 (* <O___,, * (see version control and CREDITS file for authors & dates) *)
 (*   \VV/  **************************************************************)
@@ -41,6 +41,17 @@ let pop_output () = glob_output := match !glob_output with
 let pause () = push_output NoGlob
 let continue = pop_output
 
+let with_glob_output g f () =
+  push_output g;
+  try
+    let res = f () in
+    pop_output ();
+    res
+  with reraise ->
+    let reraise = Exninfo.capture reraise in
+    pop_output ();
+    Exninfo.iraise reraise
+
 let dump () = get_output () <> NoGlob
 
 let dump_string s =
@@ -71,7 +82,7 @@ open Declarations
 let type_of_logical_kind = function
   | IsDefinition def ->
       (match def with
-      | Definition | Let -> "def"
+      | Definition | Let | LetContext -> "def"
       | Coercion -> "coe"
       | SubClass -> "subclass"
       | CanonicalStructure -> "canonstruc"
@@ -99,6 +110,7 @@ let type_of_logical_kind = function
       | Proposition
       | Corollary -> "thm")
   | IsPrimitive -> "prim"
+  | IsSymbol -> "symb"
 
 
 (** Data associated to global parameters and constants *)
@@ -248,9 +260,9 @@ let mp_of_kn kn =
 
 let add_glob_kn ?loc kn =
   if dump () then
-    let sp = Nametab.path_of_syndef kn in
-    let lib_dp = Lib.dp_of_mp (mp_of_kn kn) in
-    add_glob_gen ?loc sp lib_dp "syndef"
+    let sp = Nametab.path_of_abbreviation kn in
+    let lib_dp = Names.ModPath.dp (mp_of_kn kn) in
+    add_glob_gen ?loc sp lib_dp "abbrev"
 
 let dump_def ?loc ty secpath id = Option.iter (fun loc ->
   if get_output () = Feedback then
